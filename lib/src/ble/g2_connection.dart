@@ -1,17 +1,32 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
+import 'package:flutter/services.dart';
 
 import '../audio/g2_audio_analysis_worker.dart';
 import '../protocol/g2_protocol.dart';
 import '../util/hex.dart';
 import 'ble_models.dart';
 
+final class G2PairingException implements Exception {
+  const G2PairingException(this.side);
+
+  final String side;
+
+  @override
+  String toString() {
+    return '$side G2 lens pairing was rejected or timed out. '
+        'Confirm “Pair” in the Android Bluetooth request, then retry.';
+  }
+}
+
 final class G2Connection {
   static const Duration _waveformRefreshInterval = Duration(milliseconds: 350);
   static const Duration _gestureDisplayHoldoff = Duration(milliseconds: 500);
+  static const MethodChannel _bondChannel = MethodChannel(
+    'dev.opensourceglasses/r1_bond',
+  );
 
   G2Connection({
     required FlutterReactiveBle ble,
@@ -161,6 +176,8 @@ final class G2Connection {
       ..name = target.right!.name;
 
     try {
+      await _ensureAndroidBond(_right, generation);
+      await _ensureAndroidBond(_left, generation);
       // Establish the control-side right lens first. Some Samsung Bluetooth
       // stacks serialize simultaneous LE connection establishment and let
       // the second G2 attempt expire with status 133. Connecting the pair in
@@ -256,6 +273,70 @@ final class G2Connection {
           },
         );
     return completer.future;
+  }
+
+  Future<void> _ensureAndroidBond(_Lens lens, int generation) async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    final deviceId = lens.deviceId;
+    if (deviceId == null) {
+      throw StateError('${lens.label} lens has no BLE id');
+    }
+
+    const bondNone = 10;
+    const bondBonding = 11;
+    const bondBonded = 12;
+
+    Future<int?> readBondState() async {
+      return _bondChannel.invokeMethod<int>('bondState', <String, Object>{
+        'address': deviceId,
+      });
+    }
+
+    var bondState = await readBondState();
+    if (bondState == bondBonded) {
+      _log('G2 pairing', '${lens.label} lens Android LE bond is ready');
+      return;
+    }
+
+    final requested =
+        await _bondChannel.invokeMethod<bool>('createBond', <String, Object>{
+          'address': deviceId,
+        }) ??
+        false;
+    if (!requested && bondState != bondBonding) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      bondState = await readBondState();
+      if (bondState == bondBonded) {
+        _log('G2 pairing', '${lens.label} lens Android LE bond is ready');
+        return;
+      }
+      if (bondState != bondBonding) {
+        throw G2PairingException(lens.label);
+      }
+    }
+
+    _log('G2 pairing', 'Confirm “Pair” for the ${lens.label} lens in Android');
+    final deadline = DateTime.now().add(const Duration(seconds: 45));
+    var sawBonding = bondState == bondBonding;
+    while (DateTime.now().isBefore(deadline)) {
+      if (generation != _generation) {
+        throw StateError('G2 pairing was cancelled');
+      }
+      bondState = await readBondState();
+      if (bondState == bondBonded) {
+        _log('G2 pairing', '${lens.label} lens Android LE bond established');
+        return;
+      }
+      if (bondState == bondBonding) {
+        sawBonding = true;
+      } else if (bondState == bondNone && sawBonding) {
+        throw G2PairingException(lens.label);
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    throw G2PairingException(lens.label);
   }
 
   Future<void> _configureLens(_Lens lens) async {

@@ -14,7 +14,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val BACKGROUND_CHANNEL =
             "dev.opensourceglasses/background_connection"
-        private const val R1_BOND_CHANNEL =
+        private const val BLUETOOTH_BOND_CHANNEL =
             "dev.opensourceglasses/r1_bond"
         private const val LC3_CHANNEL =
             "dev.opensourceglasses/workbench_lc3"
@@ -50,7 +50,7 @@ class MainActivity : FlutterActivity() {
         }
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            R1_BOND_CHANNEL,
+            BLUETOOTH_BOND_CHANNEL,
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "bondState" -> {
@@ -65,6 +65,24 @@ class MainActivity : FlutterActivity() {
                         result.success(adapter?.getRemoteDevice(address)?.bondState)
                     } catch (error: Exception) {
                         result.error("bond_state", error.message, null)
+                    }
+                }
+                "createBond" -> {
+                    val address = call.argument<String>("address")
+                    if (address == null) {
+                        result.error("missing_address", "Bluetooth address is required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val manager = getSystemService(BluetoothManager::class.java)
+                        val device = manager.adapter?.getRemoteDevice(address)
+                        result.success(
+                            device != null &&
+                                (device.bondState == android.bluetooth.BluetoothDevice.BOND_BONDED ||
+                                    device.createBond()),
+                        )
+                    } catch (error: Exception) {
+                        result.error("create_bond", error.message, null)
                     }
                 }
                 else -> result.notImplemented()
