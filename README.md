@@ -11,13 +11,13 @@
 <p align="center">
   <img
     src="docs/images/workbench-home-demo.png"
-    alt="Work Bench connected to G2 and R1, streaming audio, and displaying a local Kokoro test transcript"
+    alt="Work Bench streaming G2 audio through NNAPI-backed transcription, with R1 waiting and a local Kokoro test transcript"
     width="360"
   >
 </p>
 
 <p align="center">
-  <em>Physical G2 audio → Parakeet 0.6B transcription test. System chrome and live protocol events were removed; rows labeled SAMPLE are synthetic.</em>
+  <em>Physical G2 audio → NNAPI-backed Parakeet 0.6B transcription test. System chrome was removed and event times were replaced with SAMPLE.</em>
 </p>
 
 Work Bench is a local-first wearable work agent built around the Even
