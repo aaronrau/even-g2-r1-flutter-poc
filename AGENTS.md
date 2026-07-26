@@ -43,6 +43,23 @@ The searches intentionally over-report. Review each match, including binary
 metadata and newly generated evidence, and only proceed when every retained
 value is demonstrably generic or public.
 
+## Screenshot handling
+
+Treat screenshots and screen recordings as temporary, sensitive test evidence.
+They must never be created, copied, or retained anywhere inside this repository,
+including in an ignored working-tree directory.
+
+- Before capturing, create a fresh directory outside the repository with
+  `mktemp -d "${TMPDIR:-/tmp}/workbench-screenshots.XXXXXX"` and send every
+  capture directly to that absolute path.
+- Inspect captures only from that temporary directory. Never stage, commit,
+  attach, or push them, even if the visible screen appears generic.
+- Delete the temporary capture directory as soon as validation is complete.
+- Before every push, review newly added image and video files with
+  `git diff --cached --name-only --diff-filter=A` and stop if any are test
+  captures. Repository-owned artwork is allowed only after confirming that it
+  contains no device, account, notification, transcript, or location data.
+
 ## UI/UX source of truth
 
 Always follow the inline **UI/UX examples** section on the Tools page and the

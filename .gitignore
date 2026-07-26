@@ -56,6 +56,14 @@ service-account.*.json
 /evidence/
 /reports/
 /screenshots/
+**/screenshots/
+**/[Ss]creenshot*
+**/[Ss]creen-capture*
+**/[Ss]creen_capture*
+/workbench-*.png
+/workbench-*.jpg
+/workbench-*.jpeg
+/workbench-*.webp
 /test-output/
 /test-results/
 *.hprof
