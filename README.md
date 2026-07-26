@@ -1,12 +1,12 @@
-# Work Bench
-
-<p align="center">
+<h1>
   <img
     src="android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"
     alt="Work Bench app icon"
-    width="96"
+    width="48"
+    align="absmiddle"
   >
-</p>
+  Work Bench
+</h1>
 
 <p align="center">
   <img
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <em>Physical G2 audio → Parakeet 0.6B transcription test. System chrome and live protocol events were removed from this repository-safe image.</em>
+  <em>Physical G2 audio → Parakeet 0.6B transcription test. System chrome and live protocol events were removed; rows labeled SAMPLE are synthetic.</em>
 </p>
 
 Work Bench is a local-first wearable work agent built around the Even
