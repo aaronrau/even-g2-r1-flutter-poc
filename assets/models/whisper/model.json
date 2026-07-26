@@ -1,0 +1,10 @@
+{
+  "id": "tiny-whisper-en",
+  "encoder": "tiny.en-encoder.onnx",
+  "encoderSha256": "dc7de696432d97a3d64387800b230ac69d18e5e4efea0eec0613209dd8b7b0c9",
+  "decoder": "tiny.en-decoder.onnx",
+  "decoderSha256": "54d5a5fd2a757175aeb70a837a8404fc9c31b659610724694f5a0e2c51715f94",
+  "tokens": "tiny.en-tokens.txt",
+  "tokensSha256": "306cd27f03c1a714eca7108e03d66b7dc042abe8c258b44c199a7ed9838dd930",
+  "sampleRate": 16000
+}

@@ -1,0 +1,7 @@
+{
+  "id": "silero-vad",
+  "file": "silero_vad.onnx",
+  "sha256": "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28",
+  "sampleRate": 16000,
+  "windowSize": 512
+}

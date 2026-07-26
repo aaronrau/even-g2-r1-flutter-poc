@@ -1,0 +1,135 @@
+# Local audio pipeline and recovery
+
+```text
+G2 BLE notifications
+        │
+        ▼
+ durable LC3 journal isolate ────────► 15-minute raw recovery files
+        │ acknowledged packets only
+        ▼
+ native LC3 decoder
+        │ 16 kHz mono PCM
+        ├──────────────► one-second UI meter summaries
+        ▼
+ VAD isolate ── 5 s pre-roll / 1 s endpoint ──► atomic speech WAV
+        │
+        ▼
+ transcription supervisor + job ledger
+        │
+        ▼
+ selected STT isolate ─────────────► atomic transcript + JSONL index
+```
+
+The capture journal, decoder, VAD, transcription, BLE callbacks, and Flutter
+rendering do not share a work queue. A slow model or UI frame cannot block raw
+audio persistence. Flutter repaints at up to 30 FPS while every BLE audio
+packet continues through the capture path.
+
+## Startup contract
+
+The app renders immediately, then initializes storage, LC3, VAD, acceleration
+capabilities, and transcription in order. The Connect button remains disabled
+until all local audio components report ready. Model files are copied to
+app-private storage with SHA-256 verification; a verified marker avoids
+rehashing large files on each launch.
+
+The Android device is probed for GPU/OpenGL and Neural Networks support before
+the recognizer is created. A provider must also pass a real recognizer warm-up
+to be selected. The current Sherpa-ONNX Flutter Android runtime does not expose
+a compatible GPU or NNAPI execution provider on the tested Samsung device, so
+Work Bench reports and uses CPU instead of claiming acceleration that silently
+falls back.
+
+## Audio safety
+
+- G2 supplies five 40-byte, 10 ms LC3 frames in each normal 200-byte
+  notification. Work Bench pins capture to the first active lens so duplicate
+  left/right notifications are not decoded twice.
+- A packet reaches decoding only after its sequence, timestamp, length,
+  checksum, and bytes have been flushed to the append-only journal.
+- The journal flushes at most every 250 ms or five packets and rotates about
+  every 15 minutes.
+- Pending packets stay in memory while the journal isolate restarts. If the
+  bounded queue reaches 600 packets, Work Bench disconnects the wearables
+  instead of silently dropping unjournaled source audio.
+- VAD saves speech only. It keeps five seconds before speech and captures one
+  second of PCM after the last positive VAD detection. The `speech_ended`
+  marker reports that duration as `audio_ms`, independent of UI scheduling. It
+  writes a partial WAV first and atomically renames completed files. After
+  finalization, the completed turn is removed from pre-roll before buffering
+  the next turn.
+- A wearable disconnect flushes an active VAD segment before changing link
+  state. Raw journals, WAV files, and completed transcripts are never deleted
+  by a model restart.
+
+Files use the application-support directory:
+
+```text
+workbench/audio/
+├── journal/lc3-<UTC timestamp>.wblc3
+└── speech/
+    ├── <segment>.wav
+    ├── <segment>.txt
+    ├── pending-transcriptions.json
+    └── transcripts.jsonl
+```
+
+App-private storage is the reliable default in this revision. Export to a
+user-selected folder is a separate future feature; capture does not depend on
+an external document provider remaining mounted.
+
+## Failure isolation and recovery
+
+| Failure | Recovery | BLE/audio impact |
+| --- | --- | --- |
+| Journal isolate exits | Replays all unacknowledged packets after restart | No loss while the bounded queue has capacity |
+| VAD isolate exits | Restarts and replays up to 30 seconds of PCM | Journal and BLE continue |
+| Transcription isolate exits | Restarts the model and resubmits ledger jobs | Journal, VAD, and BLE continue |
+| G2 audio notifications stall | Reissues the Hub audio-start command | Does not restart BLE or models |
+| Expected Disconnect | Flushes speech and keeps models loaded | User can immediately reconnect |
+| Unexpected G2 link loss | Flushes speech, retries both lenses, restores Hub audio | Process and local model workers stay alive |
+| Android adapter turns off | Ignores only late native BLE cancellation errors, waits, reconnects after adapter recovery | Process remains alive |
+| Capture queue overflows | Logs a fatal safety marker and disconnects | Prevents silent source loss |
+
+Tools exposes diagnostic VAD and transcription restarts. These controls kill
+only the selected worker, making the recovery paths testable without cycling
+Bluetooth.
+
+## Model setup
+
+Large model artifacts are intentionally not committed. Install the exact
+hash-verified Sherpa-ONNX models before building:
+
+```sh
+./tool/fetch_speech_models.sh
+```
+
+The script downloads the official Silero VAD and `tiny.en` Whisper release,
+verifies every runtime file, and installs it under `assets/models/`. Tiny
+Whisper remains the portable bundled fallback.
+
+Parakeet 0.6B is the default selection. Parakeet 110M and Tiny Whisper can be
+selected from **Tools → Transcription**, and the selection persists across app
+restarts. The Parakeet files stay out of the APK and must be staged into
+app-private storage:
+
+```sh
+./tool/stage_android_stt_model.sh parakeet-110m
+./tool/stage_android_stt_model.sh parakeet-0.6b
+flutter run
+```
+
+Changing the setting verifies the requested files before stopping the current
+worker, then reloads only transcription. Raw capture, BLE, ring input, and VAD
+continue, and any interrupted WAV remains in the durable ledger for the new
+worker. A load failure restores the prior model and does not change the saved
+preference.
+
+Parakeet 110M remains the lower-memory Samsung SM-A256E recommendation; the
+0.6B model caused substantial memory pressure in testing. It is the default for
+now by product choice. All STT variants remain behind the same
+transcription-worker boundary and cannot own the journal, BLE callbacks, or VAD
+recovery buffer.
+
+See [Transcription turn test plan](TRANSCRIPTION_TURN_TEST_PLAN.md) for the
+computer-speaker Kokoro cases and turn-level acceptance criteria.
