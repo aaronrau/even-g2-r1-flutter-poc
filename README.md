@@ -1,5 +1,25 @@
 # Work Bench
 
+<p align="center">
+  <img
+    src="android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"
+    alt="Work Bench app icon"
+    width="96"
+  >
+</p>
+
+<p align="center">
+  <img
+    src="docs/images/workbench-home-demo.png"
+    alt="Work Bench connected to G2 and R1, streaming audio, and displaying a local Kokoro test transcript"
+    width="360"
+  >
+</p>
+
+<p align="center">
+  <em>Physical G2 audio → Parakeet 0.6B transcription test. System chrome and live protocol events were removed from this repository-safe image.</em>
+</p>
+
 Work Bench is a local-first wearable work agent built around the Even
 Realities G2 glasses and R1 ring.
 
@@ -92,6 +112,9 @@ expose for a true locked Hub mode.
   five-second pre-roll and one-second endpoint delay, and transcribes locally
   with a Tools-selectable local model. Parakeet 0.6B is the current default;
   Parakeet 110M and Tiny Whisper remain available.
+- Lets Android users choose a shared device folder for Files-visible speech
+  WAVs and text transcripts while retaining the app-private durable capture
+  path for recovery.
 - Draws a thin waveform in the upper-left using LC3 global gain and an adaptive
   silence floor.
 - Displays `Tap`, `Double tap`, `Swipe up`, `Swipe down`, and
@@ -183,10 +206,21 @@ If the app reports that Parakeet is not installed:
 Then:
 
 1. Grant Nearby Devices and notification permissions.
-2. Tap **Connect devices**. Work Bench scans for the G2 pair and R1, connects
+2. Under **Tools → Transcription → File storage**, tap **Choose folder** and
+   approve the device folder that should receive WAV audio and text
+   transcripts. Existing completed speech files are copied there, and future
+   files are exported as they finish.
+3. Tap **Connect devices**. Work Bench scans for the G2 pair and R1, connects
    them, and releases the temporary R1 setup link after Tri-Sync handoff.
-3. Speak to move the waveform and use the ring to display gestures.
-4. Tap **Disconnect** to reset the complete wearable connection.
+4. Speak to move the waveform and use the ring to display gestures.
+5. Tap **Disconnect** to reset the complete wearable connection.
+
+The selected folder grant persists across app restarts and can be changed or
+cleared from the same setting. Clearing the setting does not delete files
+already exported. Shared WAV and text files can contain sensitive microphone
+content, so choose a folder whose access matches the intended privacy boundary.
+The raw LC3 recovery journal, transcription ledger, and model files remain in
+app-private storage and are never exposed through the shared folder.
 
 ## More detail
 

@@ -45,20 +45,25 @@ value is demonstrably generic or public.
 
 ## Screenshot handling
 
-Treat screenshots and screen recordings as temporary, sensitive test evidence.
-They must never be created, copied, or retained anywhere inside this repository,
-including in an ignored working-tree directory.
+Treat raw screenshots and screen recordings as temporary, sensitive test
+evidence. They must never be created, copied, or retained anywhere inside this
+repository, including in an ignored working-tree directory.
 
 - Before capturing, create a fresh directory outside the repository with
   `mktemp -d "${TMPDIR:-/tmp}/workbench-screenshots.XXXXXX"` and send every
   capture directly to that absolute path.
-- Inspect captures only from that temporary directory. Never stage, commit,
-  attach, or push them, even if the visible screen appears generic.
+- Inspect raw captures only from that temporary directory. Never stage, commit,
+  attach, or push a raw capture, even if the visible screen appears generic.
+- A sanitized documentation derivative may enter `docs/images/` only when the
+  user explicitly requests it. Create the derivative from the temporary source,
+  remove or replace every device, account, notification, transcript, location,
+  and free-form user value with generic demonstration content, then visually
+  inspect it before staging. Never copy the raw source into the repository.
 - Delete the temporary capture directory as soon as validation is complete.
 - Before every push, review newly added image and video files with
   `git diff --cached --name-only --diff-filter=A` and stop if any are test
-  captures. Repository-owned artwork is allowed only after confirming that it
-  contains no device, account, notification, transcript, or location data.
+  captures or unreviewed derivatives. Repository-owned artwork is allowed only
+  after confirming that it contains no personal or device-specific data.
 
 ## UI/UX source of truth
 

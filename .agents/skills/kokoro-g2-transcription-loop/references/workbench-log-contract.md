@@ -18,12 +18,14 @@ Only audio summaries before `playback_start` may contribute to the quiet
 baseline. Transcripts and VAD markers before it are stale and must not be
 scored. A physical run fails if either boundary marker is absent.
 
-The standard fixture is Kokoro `af_maple` at normal speed, 90% computer
-playback volume, one second of zero-PCM leading silence, and 500 ms of
-zero-PCM trailing silence. The report must identify both the clean generated
-stimulus and the file actually played with SHA-256, byte length, sample rate,
-channel count, and duration. Phone-speaker fallback must play the same padded
-fixture. The original volume is restored in a `finally` path.
+The standard fixture is Kokoro `af_maple` at normal speed, deterministically
+peak-normalized to 95% for physical playback, 90% computer playback volume, one
+second of zero-PCM leading silence, and 500 ms of zero-PCM trailing silence.
+The report must identify both the clean generated stimulus and the file
+actually played with SHA-256, byte length, sample rate, channel count, and
+duration, plus the applied normalization gain. Phone-speaker fallback must play
+the same normalized, padded fixture. The original volume is restored in a
+`finally` path.
 
 ```text
 [WorkBench][Capture] state=ready journal=writable

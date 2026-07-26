@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'audio/audio_pipeline_coordinator.dart';
+import 'audio/shared_audio_export_store.dart';
 import 'audio/speech_model.dart';
 import 'audio/speech_model_preferences.dart';
 import 'background/app_runtime_coordinator.dart';
@@ -23,13 +24,17 @@ final class WearableController extends ChangeNotifier
     FlutterReactiveBle? ble,
     SpeechModelPreferences speechModelPreferences =
         const SpeechModelPreferences(),
+    SharedAudioExportStore? sharedAudioExportStore,
   }) : _ble = ble ?? FlutterReactiveBle(),
-       _speechModelPreferences = speechModelPreferences {
+       _speechModelPreferences = speechModelPreferences,
+       _sharedAudioExportStore =
+           sharedAudioExportStore ?? SharedAudioExportStore() {
     _runtime = AppRuntimeCoordinator(log: addLog);
     _audioPipeline = AudioPipelineCoordinator(
       log: addLog,
       onChanged: _safeNotify,
       onCaptureUnsafe: _handleUnsafeCapture,
+      sharedAudioExportStore: _sharedAudioExportStore,
     );
     g2 = G2Connection(
       ble: _ble,
@@ -44,6 +49,7 @@ final class WearableController extends ChangeNotifier
 
   final FlutterReactiveBle _ble;
   final SpeechModelPreferences _speechModelPreferences;
+  final SharedAudioExportStore _sharedAudioExportStore;
   late final AppRuntimeCoordinator _runtime;
   late final AudioPipelineCoordinator _audioPipeline;
   late final G2Connection g2;
@@ -79,6 +85,11 @@ final class WearableController extends ChangeNotifier
   StartupSnapshot get startup => _audioPipeline.startup;
   bool get canConnect => _audioPipeline.canConnect;
   String? get audioFolder => _audioPipeline.audioFolder;
+  SharedAudioFolder? get sharedAudioFolder => _sharedAudioExportStore.folder;
+  bool get supportsSharedAudioFolder => _sharedAudioExportStore.isSupported;
+  bool get isExportingSharedAudio => _audioPipeline.isExportingSharedAudio;
+  String? get sharedAudioExportError => _audioPipeline.sharedExportError;
+  int get sharedExportedFiles => _audioPipeline.sharedExportedFiles;
   String? get lastTranscript => _audioPipeline.lastTranscript;
   int get completedTranscripts => _audioPipeline.completedTranscripts;
   bool get hasWearableSession => _hasWearableSession;
@@ -121,6 +132,16 @@ final class WearableController extends ChangeNotifier
   Future<void> initialize() async {
     WidgetsBinding.instance.addObserver(this);
     await _runtime.initialize();
+    try {
+      await _sharedAudioExportStore.initialize();
+    } catch (error) {
+      addLog(
+        'Storage',
+        '[WorkBench][SharedStorage] state=unavailable '
+            'action=choose_folder_again error=$error',
+        isError: true,
+      );
+    }
     _selectedSpeechModel = await _speechModelPreferences.load();
     try {
       await _audioPipeline.initialize(transcriptionModel: _selectedSpeechModel);
@@ -317,6 +338,28 @@ final class WearableController extends ChangeNotifier
     addLog(
       'Pipeline',
       '[WorkBench][Transcription] state=preference_saved model=${model.id}',
+    );
+    _safeNotify();
+  }
+
+  Future<void> chooseSharedAudioFolder() async {
+    final selected = await _sharedAudioExportStore.chooseFolder();
+    if (selected == null) {
+      return;
+    }
+    addLog(
+      'Storage',
+      '[WorkBench][SharedStorage] state=selected access=persisted',
+    );
+    _safeNotify();
+    await _audioPipeline.syncSharedAudioExport();
+  }
+
+  Future<void> clearSharedAudioFolder() async {
+    await _sharedAudioExportStore.clearFolder();
+    addLog(
+      'Storage',
+      '[WorkBench][SharedStorage] state=cleared fallback=app_private',
     );
     _safeNotify();
   }

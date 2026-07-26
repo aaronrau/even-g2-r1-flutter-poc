@@ -37,8 +37,31 @@ class ScoringTest(unittest.TestCase):
             ["run", "--output-dir", "/tmp/test-run"]
         )
         self.assertEqual(args.computer_volume, 0.90)
+        self.assertIsNone(args.phone_volume)
         self.assertEqual(args.leading_silence_seconds, 1.0)
         self.assertEqual(args.trailing_silence_seconds, 0.5)
+
+    def test_phone_volume_uses_device_range(self) -> None:
+        volume = MODULE.parse_media_volume(
+            "[V] volume is 7 in range [0..15]"
+        )
+        self.assertIsNotNone(volume)
+        assert volume is not None
+        self.assertEqual(volume.current, 7)
+        self.assertEqual(volume.at_fraction(0.90), 14)
+
+        wide_volume = MODULE.parse_media_volume(
+            "[V] volume is 0 in range [0..150]"
+        )
+        self.assertIsNotNone(wide_volume)
+        assert wide_volume is not None
+        self.assertEqual(wide_volume.at_fraction(0.90), 135)
+
+    def test_android_log_tag_can_be_restored_to_empty(self) -> None:
+        self.assertEqual(
+            MODULE.android_setprop_command("log.tag.WorkBench", ""),
+            "setprop log.tag.WorkBench ''",
+        )
 
     def test_padding_preserves_pcm_and_adds_exact_silence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -67,6 +90,34 @@ class ScoringTest(unittest.TestCase):
             self.assertEqual(actual[:10], (0,) * 10)
             self.assertEqual(actual[10:20], samples)
             self.assertEqual(actual[20:], (0,) * 5)
+
+    def test_playback_peak_normalization_is_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+            stimulus = output_dir / "stimulus.wav"
+            samples = (-1000, 0, 500, 1000)
+            with wave.open(str(stimulus), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(10)
+                wav.writeframes(struct.pack("<4h", *samples))
+
+            normalized, details = MODULE.peak_normalized_wav_copy(
+                stimulus,
+                output_dir,
+                target_fraction=0.5,
+            )
+
+            with wave.open(str(normalized), "rb") as wav:
+                actual = struct.unpack("<4h", wav.readframes(4))
+            self.assertEqual(actual, (-16384, 0, 8192, 16384))
+            self.assertEqual(details["target_fraction"], 0.5)
+            self.assertEqual(details["input_peak"], 1000)
+            self.assertEqual(details["output_peak"], 16384)
+            self.assertAlmostEqual(
+                details["gain_db"],
+                20 * MODULE.math.log10(16.384),
+            )
 
     def test_artifact_directory_refuses_to_overwrite_prior_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

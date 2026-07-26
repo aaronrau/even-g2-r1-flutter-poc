@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import statistics
 import struct
@@ -39,6 +40,7 @@ ENGLISH_SPEAKERS = {
     1: "af_sol",
     2: "bf_vale",
 }
+PLAYBACK_PEAK_FRACTION = 0.95
 
 AUDIO_RE = re.compile(
     r"\[Even G2/R1\]\[Audio\].*?"
@@ -85,6 +87,18 @@ class Report:
     trailing_silence_seconds: float | None
     checks: dict[str, bool]
     passed: bool
+
+
+@dataclass(frozen=True)
+class MediaVolume:
+    current: int
+    minimum: int
+    maximum: int
+
+    def at_fraction(self, fraction: float) -> int:
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError("Playback volume must be between 0.0 and 1.0")
+        return round(self.minimum + (self.maximum - self.minimum) * fraction)
 
 
 def cache_root() -> Path:
@@ -379,7 +393,21 @@ def normalize_words(value: str) -> list[str]:
     return words
 
 
-def get_media_volume(adb_prefix: list[str]) -> int | None:
+def parse_media_volume(output: str) -> MediaVolume | None:
+    match = re.search(
+        r"volume is (\d+) in range \[(\d+)\.\.(\d+)\]",
+        output,
+    )
+    if match is None:
+        return None
+    return MediaVolume(
+        current=int(match.group(1)),
+        minimum=int(match.group(2)),
+        maximum=int(match.group(3)),
+    )
+
+
+def get_media_volume(adb_prefix: list[str]) -> MediaVolume | None:
     result = subprocess.run(
         [
             *adb_prefix,
@@ -396,8 +424,7 @@ def get_media_volume(adb_prefix: list[str]) -> int | None:
     )
     if result.returncode != 0:
         return None
-    match = re.search(r"volume is (\d+)", result.stdout + result.stderr)
-    return int(match.group(1)) if match else None
+    return parse_media_volume(result.stdout + result.stderr)
 
 
 def set_media_volume(adb_prefix: list[str], volume: int) -> None:
@@ -413,6 +440,34 @@ def set_media_volume(adb_prefix: list[str], volume: int) -> None:
             "--set",
             str(volume),
         ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def get_android_property(adb_prefix: list[str], name: str) -> str:
+    result = subprocess.run(
+        [*adb_prefix, "shell", "getprop", name],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def android_setprop_command(name: str, value: str) -> str:
+    return f"setprop {shlex.quote(name)} {shlex.quote(value)}"
+
+
+def set_android_property(
+    adb_prefix: list[str],
+    name: str,
+    value: str,
+) -> None:
+    command = android_setprop_command(name, value)
+    subprocess.run(
+        [*adb_prefix, "shell", command],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -677,6 +732,43 @@ def wav_manifest(path: Path) -> dict[str, object]:
         }
 
 
+def peak_normalized_wav_copy(
+    stimulus: Path,
+    output_dir: Path,
+    *,
+    target_fraction: float = PLAYBACK_PEAK_FRACTION,
+) -> tuple[Path, dict[str, float | int]]:
+    if not 0.0 < target_fraction <= 1.0:
+        raise ValueError("Playback peak fraction must be above 0 and at most 1")
+    output = output_dir / "stimulus-normalized.wav"
+    with wave.open(str(stimulus), "rb") as source:
+        params = source.getparams()
+        pcm = source.readframes(source.getnframes())
+    if params.sampwidth != 2:
+        raise ValueError("Playback peak normalization requires 16-bit PCM")
+    sample_count = len(pcm) // 2
+    samples = struct.unpack(f"<{sample_count}h", pcm)
+    input_peak = max((abs(sample) for sample in samples), default=0)
+    target_peak = round(32767 * target_fraction)
+    gain = 1.0 if input_peak == 0 else target_peak / input_peak
+    normalized = (
+        max(-32768, min(32767, round(sample * gain))) for sample in samples
+    )
+    with wave.open(str(output), "wb") as destination:
+        destination.setparams(params)
+        destination.writeframes(
+            struct.pack(f"<{sample_count}h", *normalized),
+        )
+    output_peak = 0 if input_peak == 0 else target_peak
+    gain_db = 0.0 if gain <= 0 else 20 * math.log10(gain)
+    return output, {
+        "target_fraction": target_fraction,
+        "input_peak": input_peak,
+        "output_peak": output_peak,
+        "gain_db": gain_db,
+    }
+
+
 def padded_wav_copy(
     stimulus: Path,
     output_dir: Path,
@@ -775,16 +867,20 @@ def run_physical(args: argparse.Namespace) -> int:
     device_log = output_dir / "device.log"
     report_path = output_dir / "report.json"
     synthesize(args.text, stimulus, args.speaker_id, args.speed)
+    normalized_stimulus, peak_normalization = peak_normalized_wav_copy(
+        stimulus,
+        output_dir,
+    )
     if args.phone_speaker:
         playback = padded_wav_copy(
-            stimulus,
+            normalized_stimulus,
             output_dir,
             leading_silence_seconds=args.leading_silence_seconds,
             trailing_silence_seconds=args.trailing_silence_seconds,
         )
     else:
         playback = playback_copy(
-            stimulus,
+            normalized_stimulus,
             output_dir,
             leading_silence_seconds=args.leading_silence_seconds,
             trailing_silence_seconds=args.trailing_silence_seconds,
@@ -804,22 +900,48 @@ def run_physical(args: argparse.Namespace) -> int:
     if package_result.returncode != 0 or "package:" not in package_result.stdout:
         raise RuntimeError(f"Work Bench is not installed ({APP_PACKAGE})")
 
-    subprocess.run([*adb_prefix, "logcat", "-c"], check=True)
-    log_handle = device_log.open("w", encoding="utf-8")
-    log_process = subprocess.Popen(
-        [*adb_prefix, "logcat", "-v", "time"],
-        stdout=log_handle,
-        stderr=subprocess.STDOUT,
-        text=True,
+    required_log_tags = (
+        "log.tag.WorkBenchTest",
+        "log.tag.flutter",
+        "log.tag.WorkBench",
     )
-    previous_media_volume = (
-        get_media_volume(adb_prefix) if args.phone_speaker else None
-    )
-    wpctl = None if args.phone_speaker else require_tool("wpctl")
-    previous_computer_volume = (
-        None if wpctl is None else get_computer_volume(wpctl)
-    )
+    previous_log_tags: dict[str, str] = {}
+    log_handle = None
+    log_process = None
+    media_volume = None
+    phone_volume = None
+    wpctl = None
+    previous_computer_volume = None
     try:
+        for tag in required_log_tags:
+            previous_log_tags[tag] = get_android_property(adb_prefix, tag)
+            set_android_property(adb_prefix, tag, "V")
+        subprocess.run([*adb_prefix, "logcat", "-c"], check=True)
+        log_handle = device_log.open("w", encoding="utf-8")
+        log_process = subprocess.Popen(
+            [*adb_prefix, "logcat", "-v", "time"],
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        media_volume = (
+            get_media_volume(adb_prefix) if args.phone_speaker else None
+        )
+        if args.phone_speaker and media_volume is None:
+            raise RuntimeError("Could not read the phone media-volume range")
+        phone_volume = (
+            None
+            if media_volume is None
+            else (
+                args.phone_volume
+                if args.phone_volume is not None
+                else media_volume.at_fraction(args.computer_volume)
+            )
+        )
+        wpctl = None if args.phone_speaker else require_tool("wpctl")
+        previous_computer_volume = (
+            None if wpctl is None else get_computer_volume(wpctl)
+        )
         if wpctl is not None:
             set_computer_volume(wpctl, args.computer_volume)
         time.sleep(args.baseline_seconds)
@@ -844,7 +966,8 @@ def run_physical(args: argparse.Namespace) -> int:
                     ],
                     check=True,
                 )
-                set_media_volume(adb_prefix, args.phone_volume)
+                assert phone_volume is not None
+                set_media_volume(adb_prefix, phone_volume)
                 subprocess.run(
                     [
                         *adb_prefix,
@@ -868,9 +991,9 @@ def run_physical(args: argparse.Namespace) -> int:
             emit_android_test_marker(adb_prefix, "playback_end", test_case)
         time.sleep(args.wait_after)
     finally:
-        if previous_media_volume is not None:
+        if media_volume is not None:
             try:
-                set_media_volume(adb_prefix, previous_media_volume)
+                set_media_volume(adb_prefix, media_volume.current)
             except subprocess.CalledProcessError:
                 pass
         if wpctl is not None and previous_computer_volume is not None:
@@ -878,13 +1001,20 @@ def run_physical(args: argparse.Namespace) -> int:
                 set_computer_volume(wpctl, previous_computer_volume)
             except subprocess.CalledProcessError:
                 pass
-        log_process.terminate()
-        try:
-            log_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            log_process.kill()
-            log_process.wait(timeout=5)
-        log_handle.close()
+        if log_process is not None:
+            log_process.terminate()
+            try:
+                log_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                log_process.kill()
+                log_process.wait(timeout=5)
+        if log_handle is not None:
+            log_handle.close()
+        for tag, value in previous_log_tags.items():
+            try:
+                set_android_property(adb_prefix, tag, value)
+            except subprocess.CalledProcessError:
+                pass
 
     log_text = device_log.read_text(encoding="utf-8", errors="replace")
     report = build_report(
@@ -896,9 +1026,7 @@ def run_physical(args: argparse.Namespace) -> int:
         min_frames_per_second=args.min_frames_per_second,
         playback_start_marker=playback_start,
         playback_end_marker=playback_end,
-        playback_volume=(
-            None if args.phone_speaker else args.computer_volume
-        ),
+        playback_volume=args.computer_volume,
         leading_silence_seconds=args.leading_silence_seconds,
         trailing_silence_seconds=args.trailing_silence_seconds,
     )
@@ -912,6 +1040,13 @@ def run_physical(args: argparse.Namespace) -> int:
         "playback_path": (
             "phone_speaker" if args.phone_speaker else "computer_speaker"
         ),
+        "phone_volume_index": phone_volume,
+        "phone_volume_range": (
+            None
+            if media_volume is None
+            else [media_volume.minimum, media_volume.maximum]
+        ),
+        "peak_normalization": peak_normalization,
         "stimulus": wav_manifest(stimulus),
         "playback": wav_manifest(playback),
     }
@@ -991,8 +1126,8 @@ def parser() -> argparse.ArgumentParser:
         type=float,
         default=0.90,
         help=(
-            "Computer sink volume during playback; the original volume is "
-            "always restored"
+            "Playback-volume fraction. Controls the computer sink or the "
+            "phone media range; the original volume is always restored."
         ),
     )
     run.add_argument("--leading-silence-seconds", type=float, default=1.0)
@@ -1006,7 +1141,14 @@ def parser() -> argparse.ArgumentParser:
             "speaker near the glasses."
         ),
     )
-    run.add_argument("--phone-volume", type=int, default=15)
+    run.add_argument(
+        "--phone-volume",
+        type=int,
+        help=(
+            "Raw phone media-volume index override. By default the runner "
+            "uses the same playback fraction as --computer-volume."
+        ),
+    )
     run.add_argument("--baseline-seconds", type=float, default=4.0)
     run.add_argument("--wait-after", type=float, default=12.0)
     add_scoring_arguments(run)

@@ -504,6 +504,58 @@ final class _HomePageState extends State<HomePage> {
               'input continue while transcription reloads.',
               style: theme.textTheme.bodySmall,
             ),
+            const SizedBox(height: 16),
+            Text('File storage', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 4),
+            Text(
+              'Choose a device folder for Files-visible WAV audio and text '
+              'transcripts. Private durable capture remains available if '
+              'shared export is interrupted.',
+              style: theme.textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              controller.sharedAudioExportError ??
+                  (controller.sharedAudioFolder == null
+                      ? 'Save location: app-only storage'
+                      : controller.isExportingSharedAudio
+                      ? 'Saving existing files to '
+                            '${controller.sharedAudioFolder!.displayName}…'
+                      : 'Save location: '
+                            '${controller.sharedAudioFolder!.displayName} · '
+                            '${controller.sharedExportedFiles} files exported'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                OutlinedButton.icon(
+                  onPressed:
+                      _busy ||
+                          controller.isExportingSharedAudio ||
+                          !controller.supportsSharedAudioFolder
+                      ? null
+                      : () => _run(controller.chooseSharedAudioFolder),
+                  icon: const Icon(Icons.folder_open_outlined),
+                  label: Text(
+                    controller.sharedAudioFolder == null
+                        ? 'Choose folder'
+                        : 'Change folder',
+                  ),
+                ),
+                if (controller.sharedAudioFolder != null)
+                  OutlinedButton(
+                    onPressed: _busy || controller.isExportingSharedAudio
+                        ? null
+                        : () => _run(controller.clearSharedAudioFolder),
+                    child: const Text('Use app-only storage'),
+                  ),
+              ],
+            ),
           ],
         ),
       ),
@@ -652,12 +704,9 @@ final class _HomePageState extends State<HomePage> {
               'Transcripts: ${controller.completedTranscripts} • '
               '${controller.startup.provider ?? 'loading'}',
             ),
-            if (controller.audioFolder != null)
-              Text(
-                'Audio folder: ${controller.audioFolder}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
+            Text(
+              'Storage: ${controller.sharedAudioFolder == null ? 'app-only' : 'shared folder'}',
+            ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,

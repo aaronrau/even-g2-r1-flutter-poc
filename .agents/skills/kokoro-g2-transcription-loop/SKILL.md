@@ -35,11 +35,18 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
    The default voice is `af_maple` (speaker ID `0`), an American-English
    Kokoro voice. The only accepted speaker IDs are `0` (`af_maple`), `1`
    (`af_sol`), and `2` (`bf_vale`) so an English test cannot accidentally use
-   one of the model's Chinese voices. Computer playback defaults to 90% and
-   the runner restores the original sink volume in `finally`. It also adds one
-   second of digital silence before speech and 500 ms after speech so sink
-   startup cannot clip the first test words. The runner refuses a non-empty
-   output directory so prior passing or failing evidence cannot be overwritten.
+   one of the model's Chinese voices. The clean generated source is
+   deterministically peak-normalized to 95% for physical playback so Kokoro
+   model output level cannot silently change the acoustic fixture. The report
+   records the applied gain and hashes both the clean and actually played WAVs.
+   Computer playback defaults to 90% and the runner restores the original sink
+   volume in `finally`. It also adds one second of digital silence before speech
+   and 500 ms after speech so sink startup cannot clip the first test words. The
+   runner refuses a non-empty output directory so prior passing or failing
+   evidence cannot be overwritten. The runner temporarily enables only the
+   Android `WorkBenchTest`, `flutter`, and `WorkBench` log tags so OEM-wide
+   silent log defaults cannot erase the evidence, then restores every prior tag
+   value.
 
    If the workstation sink is not physically audible near the glasses, keep
    generation and orchestration on the computer but use the debug build's
@@ -50,6 +57,11 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
      --phone-speaker \
      --output-dir /tmp/workbench-kokoro-phone-001
    ```
+
+   Phone-speaker playback uses 90% of the device-reported media-volume range
+   by default, including devices whose maximum index is greater than 15, and
+   restores the original phone volume in `finally`. Use `--phone-volume` only
+   as a raw device-index override during runner diagnosis.
 
 5. Inspect `report.json`, `device.log`, `stimulus.wav`, and the padded playback
    WAV in the output directory. The report records SHA-256, byte length, sample

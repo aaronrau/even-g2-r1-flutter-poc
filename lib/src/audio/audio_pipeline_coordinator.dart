@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -8,6 +9,8 @@ import 'capture_journal.dart';
 import 'inference_capabilities.dart';
 import 'lc3_decoder.dart';
 import 'model_asset_store.dart';
+import 'pcm_gain.dart';
+import 'shared_audio_export_store.dart';
 import 'speech_model.dart';
 import 'transcript_turn_state.dart';
 import 'transcription_worker.dart';
@@ -21,10 +24,12 @@ final class AudioPipelineCoordinator {
     required this.log,
     required this.onChanged,
     required this.onCaptureUnsafe,
+    required SharedAudioExportStore sharedAudioExportStore,
     ModelAssetStore? modelStore,
     Lc3Decoder? decoder,
   }) : _modelStore = modelStore ?? ModelAssetStore(),
-       _decoder = decoder ?? Lc3Decoder();
+       _decoder = decoder ?? Lc3Decoder(),
+       _sharedAudioExportStore = sharedAudioExportStore;
 
   static const int _maximumVadRecoveryBytes = 16000 * 2 * 30;
 
@@ -33,6 +38,7 @@ final class AudioPipelineCoordinator {
   final void Function() onCaptureUnsafe;
   final ModelAssetStore _modelStore;
   final Lc3Decoder _decoder;
+  final SharedAudioExportStore _sharedAudioExportStore;
   final Queue<Uint8List> _vadRecovery = Queue<Uint8List>();
   final TranscriptTurnState _transcriptTurn = TranscriptTurnState();
 
@@ -54,6 +60,7 @@ final class AudioPipelineCoordinator {
   TranscriptionModelPaths? _transcriptionPaths;
   String? _speechPath;
   List<String>? _inferenceProviders;
+  int _sharedExportOperations = 0;
 
   StartupSnapshot startup = const StartupSnapshot.starting();
   String? audioFolder;
@@ -62,10 +69,13 @@ final class AudioPipelineCoordinator {
   String? activeProvider;
   String? get lastTranscript => _transcriptTurn.visibleText;
   String? lastTranscriptPath;
+  String? sharedExportError;
+  int sharedExportedFiles = 0;
   int completedTranscripts = 0;
 
   bool get canConnect => startup.isReady;
   bool get isSwitchingModel => _modelSwitching;
+  bool get isExportingSharedAudio => _sharedExportOperations > 0;
   String get selectedModelId => _selectedModel.id;
 
   Future<void> initialize({SpeechModelDefinition? transcriptionModel}) async {
@@ -94,7 +104,11 @@ final class AudioPipelineCoordinator {
 
       _setStartup(StartupPhase.decoder, 'Checking the LC3 audio decoder…');
       await _decoder.initialize();
-      log('Pipeline', '[WorkBench][Decoder] state=ready sample_rate=16000');
+      log(
+        'Pipeline',
+        '[WorkBench][Decoder] state=ready sample_rate=16000 '
+            'pcm_gain=${g2PcmGain}x',
+      );
 
       _setStartup(StartupPhase.vad, 'Loading voice activity detection…');
       _vad = VadSupervisor(
@@ -145,6 +159,9 @@ final class AudioPipelineCoordinator {
             'provider=$activeProvider',
       );
       _initialStartupComplete = true;
+      if (_sharedAudioExportStore.hasSharedFolder) {
+        unawaited(syncSharedAudioExport());
+      }
     } catch (error, stackTrace) {
       _setStartup(
         StartupPhase.failed,
@@ -173,7 +190,8 @@ final class AudioPipelineCoordinator {
         return;
       }
       try {
-        final pcm = await _decoder.decode(packet);
+        final decoded = await _decoder.decode(packet);
+        final pcm = applyG2PcmGain(decoded);
         _meterPcm(pcm);
         final vad = _vad;
         if (vad?.isReady ?? false) {
@@ -249,11 +267,21 @@ final class AudioPipelineCoordinator {
   }
 
   void _onSpeechSegment(String id, String wavPath) {
+    unawaited(
+      _exportSharedFiles(<String>[wavPath], reason: 'audio', segmentId: id),
+    );
     _transcription?.transcribe(id, wavPath);
   }
 
   void _onTranscript(String id, String text, String transcriptPath) {
     lastTranscriptPath = transcriptPath;
+    unawaited(
+      _exportSharedFiles(
+        <String>[transcriptPath],
+        reason: 'transcript',
+        segmentId: id,
+      ),
+    );
     completedTranscripts++;
     final displayed = _transcriptTurn.completeTurn(id, text);
     if (!displayed) {
@@ -269,6 +297,61 @@ final class AudioPipelineCoordinator {
       provider: activeProvider,
     );
     onChanged();
+  }
+
+  Future<void> syncSharedAudioExport() async {
+    final speechPath = _speechPath;
+    if (speechPath == null || !_sharedAudioExportStore.hasSharedFolder) {
+      return;
+    }
+    final directory = Directory(speechPath);
+    if (!await directory.exists()) {
+      return;
+    }
+    final paths = await directory
+        .list()
+        .where(
+          (entity) =>
+              entity is File &&
+              (entity.path.endsWith('.wav') || entity.path.endsWith('.txt')),
+        )
+        .map((entity) => entity.path)
+        .toList();
+    await _exportSharedFiles(paths, reason: 'sync');
+  }
+
+  Future<void> _exportSharedFiles(
+    Iterable<String> paths, {
+    required String reason,
+    String? segmentId,
+  }) async {
+    if (!_sharedAudioExportStore.hasSharedFolder) {
+      return;
+    }
+    _sharedExportOperations++;
+    sharedExportError = null;
+    onChanged();
+    try {
+      final count = await _sharedAudioExportStore.exportFiles(paths);
+      sharedExportedFiles += count;
+      log(
+        'Pipeline',
+        '[WorkBench][SharedStorage] state=exported reason=$reason '
+            'files=$count${segmentId == null ? '' : ' segment=$segmentId'}',
+      );
+    } catch (error) {
+      sharedExportError =
+          'Shared-folder export failed. Choose the save folder again.';
+      log(
+        'Pipeline',
+        '[WorkBench][SharedStorage] state=failed reason=$reason '
+            'error=${_oneLine(error)}',
+        isError: true,
+      );
+    } finally {
+      _sharedExportOperations--;
+      onChanged();
+    }
   }
 
   void _pipelineStatus(String message, {bool isError = false}) {

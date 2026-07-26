@@ -1,0 +1,21 @@
+import 'dart:typed_data';
+
+const int g2PcmGain = 16;
+
+Uint8List applyG2PcmGain(Uint8List pcm16, {int gain = g2PcmGain}) {
+  if (gain < 1) {
+    throw RangeError.range(gain, 1, null, 'gain');
+  }
+  if (pcm16.length.isOdd) {
+    throw const FormatException('PCM16 input must contain complete samples.');
+  }
+  final input = ByteData.sublistView(pcm16);
+  final output = Uint8List(pcm16.length);
+  final outputData = ByteData.sublistView(output);
+  for (var offset = 0; offset < pcm16.length; offset += 2) {
+    final sample = input.getInt16(offset, Endian.little);
+    final amplified = (sample * gain).clamp(-32768, 32767);
+    outputData.setInt16(offset, amplified, Endian.little);
+  }
+  return output;
+}

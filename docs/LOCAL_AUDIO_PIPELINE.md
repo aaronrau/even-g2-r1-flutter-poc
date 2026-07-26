@@ -8,16 +8,22 @@ G2 BLE notifications
         │ acknowledged packets only
         ▼
  native LC3 decoder
+        │
+        ▼
+ fixed clipping-safe gain
         │ 16 kHz mono PCM
         ├──────────────► one-second UI meter summaries
         ▼
  VAD isolate ── 5 s pre-roll / 1 s endpoint ──► atomic speech WAV
-        │
+        │                              │
+        │                              └──────► selected shared folder
         ▼
  transcription supervisor + job ledger
         │
         ▼
  selected STT isolate ─────────────► atomic transcript + JSONL index
+                                               │
+                                               └──► selected shared folder
 ```
 
 The capture journal, decoder, VAD, transcription, BLE callbacks, and Flutter
@@ -47,6 +53,10 @@ falls back.
   left/right notifications are not decoded twice.
 - A packet reaches decoding only after its sequence, timestamp, length,
   checksum, and bytes have been flushed to the append-only journal.
+- Decoded PCM receives a fixed 16× clipping-safe gain before metering, VAD,
+  speech-WAV persistence, and transcription. G2 microphone output otherwise
+  remains well below the operating range of the local speech models. The raw
+  LC3 journal is unchanged and remains available for recovery.
 - The journal flushes at most every 250 ms or five packets and rotates about
   every 15 minutes.
 - Pending packets stay in memory while the journal isolate restarts. If the
@@ -74,9 +84,18 @@ workbench/audio/
     └── transcripts.jsonl
 ```
 
-App-private storage is the reliable default in this revision. Export to a
-user-selected folder is a separate future feature; capture does not depend on
-an external document provider remaining mounted.
+App-private storage remains the reliable source of truth. On Android, the
+**Tools → Transcription → File storage** setting opens the system folder picker
+and retains only the narrow document-tree grant selected by the user. Completed
+speech WAV and text files are copied into that folder so they are visible in
+Files and to other apps with access to the same location. Choosing a folder
+also copies existing completed speech files.
+
+Shared export is downstream from durable capture: a revoked grant, unavailable
+document provider, or copy failure never blocks journaling, VAD, or local
+transcription. The UI reports the export failure and asks the user to choose
+the folder again. Raw LC3 journals, partial files, the transcription ledger,
+the JSONL index, and model files stay app-private.
 
 ## Failure isolation and recovery
 
@@ -90,6 +109,7 @@ an external document provider remaining mounted.
 | Unexpected G2 link loss | Flushes speech, retries both lenses, restores Hub audio | Process and local model workers stay alive |
 | Android adapter turns off | Ignores only late native BLE cancellation errors, waits, reconnects after adapter recovery | Process remains alive |
 | Capture queue overflows | Logs a fatal safety marker and disconnects | Prevents silent source loss |
+| Shared folder is unavailable | Keeps app-private files and prompts for a new folder grant | Journal, VAD, transcription, and BLE continue |
 
 Tools exposes diagnostic VAD and transcription restarts. These controls kill
 only the selected worker, making the recovery paths testable without cycling
