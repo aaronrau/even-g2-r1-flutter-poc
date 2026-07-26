@@ -190,9 +190,41 @@ adb -s <android-serial> shell monkey \
   -c android.intent.category.LAUNCHER 1
 ```
 
-The Home status should then read
-`Local audio ready · Parakeet 0.6B · cpu`. The selected model can also be
-confirmed under **Tools → Transcription**.
+The Home status then reports the selected model and the qualified provider.
+Work Bench reports STT and VAD separately under **Tools → Transcription**.
+On Android API 29 or newer, each worker first tries the vendored arm64 NNAPI
+runtime with NNAPI's reference-CPU device disabled. A silent warm-up profile
+must show at least one node owned by `NnapiExecutionProvider`; otherwise that
+model uses the explicit `cpu` provider. Session creation by itself is never
+reported as GPU/NPU acceleration.
+
+### Rebuild the arm64 NNAPI runtime
+
+The APK uses the pinned local Flutter FFI package in
+`third_party/sherpa_onnx_android_arm64_nnapi/`. It contains Sherpa-ONNX
+`v1.13.4`, ONNX Runtime `1.27.0`, the small Sherpa patch that enables
+hardware-only NNAPI registration, license files, and SHA-256 checksums.
+
+To reproduce the native libraries, set `ANDROID_SDK` and `ANDROID_NDK` to
+installed Android toolchains and put CMake 3.28 or newer on `PATH`, then run:
+
+```sh
+ANDROID_SDK=<android-sdk-directory> \
+ANDROID_NDK=<android-ndk-directory> \
+  ./tool/build_sherpa_nnapi_runtime.sh
+```
+
+The script checks out the pinned upstream revision in a fresh temporary
+directory, rebuilds ONNX Runtime with its CPU and NNAPI providers, applies the
+checked-in Sherpa patch, rebuilds the Android API 27 arm64 wrapper, and
+refreshes the package manifest. Work Bench requires Android API 27; the
+hardware-only NNAPI candidate is offered only on API 29 or newer.
+
+This build does not contain an Android GPU execution provider or Qualcomm QNN.
+NNAPI can choose a vendor NPU, DSP, or GPU only when the phone's NNAPI driver
+supports the assigned graph partition. The current quantized Parakeet exports
+contain dynamic-quantization operators that commonly prevent useful NNAPI
+partitioning, so an individual phone may correctly report `cpu`.
 
 If the app reports that Parakeet is not installed:
 

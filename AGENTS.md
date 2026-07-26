@@ -128,3 +128,24 @@ Before accepting physical evidence, run both checked-in skill test files. A
 transcript alone is never a pass: playback boundaries, frame rate, activity
 rise, VAD/queue ordering, transcript threshold, disconnect safety, capture
 safety, and worker recovery must all satisfy the case contract.
+
+## Accelerator claims
+
+Treat execution-provider validation as a separate safety gate. A GPU, NPU, or
+NNAPI hardware hint is not proof that a model used that accelerator. Provider
+selection and a successful warm-up are also insufficient when the native
+runtime can silently fall back to CPU.
+
+- Report VAD and transcription providers separately. Ready and completed
+  markers must name the provider that actually owns the worker.
+- Before labeling a model accelerated, verify that the packaged native runtime
+  contains and registers the provider, disables that provider's CPU device or
+  reference fallback, and assigns model nodes to the hardware in a device-side
+  profile or equivalent native trace.
+- Validate Silero VAD and every selectable transcription model independently.
+  One compatible graph does not establish support for another graph.
+- Keep unsupported models on the explicit `cpu` provider. Never relabel a
+  CPU-backed NNAPI, XNNPACK, or other fallback as GPU or NPU execution.
+- Record the phone OS, app revision, runtime revision, model hash, provider,
+  and profiling evidence for accelerator qualification. Repeat qualification
+  after any runtime, model, OS, or device-family change.

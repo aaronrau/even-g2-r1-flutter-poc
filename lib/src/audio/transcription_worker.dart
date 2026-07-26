@@ -7,6 +7,7 @@ import 'dart:typed_data';
 
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
+import 'nnapi_attestation.dart';
 import 'speech_model.dart';
 
 typedef TranscriptionStatusSink = void Function(String message, {bool isError});
@@ -138,6 +139,17 @@ final class TranscriptionSupervisor {
           'error=${_oneLine(event['error'])}',
         );
         return;
+      case 'provider_attested':
+        onStatus(
+          '[WorkBench][Inference] state=attested '
+          'workload=stt model=${event['model']} provider=nnapi '
+          'nnapi_nodes=${event['nnapiNodes']} '
+          'cpu_nodes=${event['cpuNodes']} '
+          'other_nodes=${event['otherNodes']} '
+          'nnapi_us=${event['nnapiMicros']} '
+          'cpu_us=${event['cpuMicros']}',
+        );
+        return;
       case 'ready':
         activeProvider = event['provider']! as String;
         final recovered = _restarting;
@@ -169,7 +181,8 @@ final class TranscriptionSupervisor {
         onStatus('[WorkBench][Transcript][FINAL] segment=$id text=$text');
         onStatus(
           '[WorkBench][Transcription] state=completed segment=$id '
-          'model=${event['model']} audio_ms=${event['audioMs']} '
+          'model=${event['model']} provider=${event['provider']} '
+          'audio_ms=${event['audioMs']} '
           'decode_ms=${event['decodeMs']}',
         );
         onTranscript(id, text, event['transcriptPath']! as String);
@@ -437,14 +450,39 @@ void _transcriptionWorker(Map<String, Object> bootstrap) {
         'provider': provider,
       });
       sherpa.OfflineRecognizer? candidate;
+      NnapiProfileProbe? probe;
       try {
-        candidate = createRecognizer(provider);
+        if (provider == 'nnapi') {
+          probe = NnapiProfileProbe.create(workload: 'stt-$modelId');
+        }
+        candidate = createRecognizer(probe?.provider ?? provider);
         warmUp(candidate);
+        if (probe != null) {
+          candidate.free();
+          candidate = null;
+          final attestation = probe.finish();
+          probe = null;
+          if (!attestation.usedNnapiHardware) {
+            throw StateError(attestation.rejectionReason);
+          }
+          events.send(<String, Object>{
+            'type': 'provider_attested',
+            'model': modelId,
+            'nnapiNodes': attestation.nnapiNodeExecutions,
+            'cpuNodes': attestation.cpuNodeExecutions,
+            'otherNodes': attestation.otherNodeExecutions,
+            'nnapiMicros': attestation.nnapiDurationMicros,
+            'cpuMicros': attestation.cpuDurationMicros,
+          });
+          candidate = createRecognizer(provider);
+          warmUp(candidate);
+        }
         recognizer = candidate;
         activeProvider = provider;
         break;
       } catch (error) {
         candidate?.free();
+        probe?.discard();
         events.send(<String, Object>{
           'type': 'provider_failed',
           'model': modelId,
@@ -462,6 +500,7 @@ void _transcriptionWorker(Map<String, Object> bootstrap) {
       commands.close();
       return;
     }
+    final selectedProvider = activeProvider;
 
     commands.listen((Object? message) {
       if (message is! Map<Object?, Object?>) {
@@ -505,7 +544,7 @@ void _transcriptionWorker(Map<String, Object> bootstrap) {
             partial.renameSync(transcriptPath);
             final jsonl = File('${File(path).parent.path}/transcripts.jsonl');
             jsonl.writeAsStringSync(
-              '${jsonEncode(<String, Object>{'segment': id, 'audio': path, 'text': text, 'model': modelId, 'provider': activeProvider!, 'audioMs': audioMs, 'decodeMs': stopwatch.elapsedMilliseconds, 'completedAt': DateTime.now().toUtc().toIso8601String()})}\n',
+              '${jsonEncode(<String, Object>{'segment': id, 'audio': path, 'text': text, 'model': modelId, 'provider': selectedProvider, 'audioMs': audioMs, 'decodeMs': stopwatch.elapsedMilliseconds, 'completedAt': DateTime.now().toUtc().toIso8601String()})}\n',
               mode: FileMode.append,
               flush: true,
             );
@@ -514,6 +553,7 @@ void _transcriptionWorker(Map<String, Object> bootstrap) {
               'id': id,
               'text': text,
               'model': modelId,
+              'provider': selectedProvider,
               'audioMs': audioMs,
               'decodeMs': stopwatch.elapsedMilliseconds,
               'transcriptPath': transcriptPath,
@@ -539,7 +579,7 @@ void _transcriptionWorker(Map<String, Object> bootstrap) {
     events.send(<String, Object>{
       'type': 'ready',
       'model': modelId,
-      'provider': activeProvider,
+      'provider': selectedProvider,
     });
   } catch (error) {
     events.send(<String, Object>{'type': 'fatal', 'error': '$error'});

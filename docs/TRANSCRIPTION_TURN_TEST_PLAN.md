@@ -304,11 +304,11 @@ Parakeet 110M check and the `short_continuation` suite case:
 | Short continuation, three clauses | 2 → 216 | 0% | 1000 ms | 389 ms queue-to-final | 100 fps |
 
 Both runs used Kokoro `af_maple`, 90% computer volume, one second of leading
-silence, and 500 ms of trailing silence. Both restored the original 37% volume,
+silence, and 500 ms of trailing silence. Both restored the original volume,
 observed both playback boundaries, preserved capture, and had no unexpected
-disconnect or worker restart. Their artifacts are in
-`/tmp/workbench-valid-padded-001` and
-`/tmp/workbench-suite-padded-short-001`. The one-shot clean stimulus SHA-256 is
+disconnect or worker restart. Their immutable artifacts were retained in
+separate temporary validation directories outside the repository. The one-shot
+clean stimulus SHA-256 is
 `325ea8dc361d06c02d71cb2b9f3e5a63177c11996470c42fa41f63c404350063`;
 the actual padded two-channel playback SHA-256 is
 `2e2f6a32fa6ad2d9cc77e92f660817fe890a4c04ceb73c0b0dac40e2b4b66767`.
@@ -318,7 +318,7 @@ hiding them:
 
 | Trial | Outcome | Failure boundary |
 | --- | --- | --- |
-| `workbench-valid-marker-final` | Fail | 37% manual volume produced only 14 levels of activity rise; no VAD turn |
+| `workbench-valid-marker-final` | Fail | A low manual volume produced only 14 levels of activity rise; no VAD turn |
 | `workbench-valid-marker-final-volume90` | Pass | Manual 90% volume passed at 15.4% WER |
 | `workbench-valid-marker-auto-volume` | Fail | Activity rose, but VAD did not open |
 | `workbench-valid-marker-auto-volume-repeat` | Fail | Final transcript arrived at 30.8% WER, above the 25% limit |
@@ -342,7 +342,7 @@ All eight turns cleared the UI and pre-roll, then queued, processed, and
 completed under the same ordered segment ID. No prior-turn text leaked into a
 later result. There was no unexpected disconnect, capture failure, VAD restart,
 or transcription restart. The workstation volume returned from 90% to its
-original 37% after the run.
+original value after the run.
 
 These older runs predate explicit playback boundaries. They remain useful
 hardware characterization, but they are not accepted as the current regression
@@ -352,7 +352,7 @@ baseline/activity values for a pass/fail decision.
 ## Matched-input model characterization
 
 On July 26, 2026, all three recognizers decoded the exact same 37-second
-G2-captured WAV on the same Samsung SM-A256E. This is a single-device,
+G2-captured WAV on the same reference Android phone. This is a single-device,
 single-decode characterization, not a general model benchmark.
 
 | Model | WER | Decode time | Words | Final-tail coverage |

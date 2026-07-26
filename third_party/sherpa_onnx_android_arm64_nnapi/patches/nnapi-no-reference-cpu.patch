@@ -1,0 +1,39 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1985908..62ec07f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -24,6 +24,12 @@ message(STATUS "CMake version: ${CMAKE_VERSION}")
+ set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+ 
+ project(sherpa-onnx)
++
++if(ANDROID)
++  add_compile_options(
++    "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=/usr/src/workbench/sherpa-onnx"
++  )
++endif()
+ 
+ # Remember to update
+ # ./CHANGELOG.md
+diff --git a/sherpa-onnx/csrc/session.cc b/sherpa-onnx/csrc/session.cc
+index d9cdec1..d60349d 100755
+--- a/sherpa-onnx/csrc/session.cc
++++ b/sherpa-onnx/csrc/session.cc
+@@ -362,7 +362,7 @@ Ort::SessionOptions GetSessionOptionsImpl(
+       // Please see
+       // https://onnxruntime.ai/docs/execution-providers/NNAPI-ExecutionProvider.html#usage
+       // to enable different flags
+-      uint32_t nnapi_flags = 0;
++      uint32_t nnapi_flags = NNAPI_FLAG_CPU_DISABLED;
+       // nnapi_flags |= NNAPI_FLAG_USE_FP16;
+       // nnapi_flags |= NNAPI_FLAG_CPU_DISABLED;
+       OrtStatus *status = OrtSessionOptionsAppendExecutionProvider_Nnapi(
+@@ -377,7 +377,7 @@ Ort::SessionOptions GetSessionOptionsImpl(
+             msg, os.str().c_str());
+         api.ReleaseStatus(status);
+       } else {
+-        SHERPA_ONNX_LOGE("Use nnapi");
++        SHERPA_ONNX_LOGE("Use nnapi with NNAPI CPU devices disabled");
+       }
+ #elif defined(__ANDROID_API__)
+       SHERPA_ONNX_LOGE(

@@ -18,7 +18,7 @@ audited against MentraOS `dev` commit
 
 - Groups left and right advertisements by manufacturer serial number.
 - Connects the right control lens before the left lens to avoid observed
-  Samsung GATT status-133 races.
+  Android GATT status-133 races.
 - Negotiates a 247-byte Android MTU and high-performance connection priority.
 - Authenticates both lenses, selects pipe roles, synchronizes local time,
   completes onboarding state, and initializes gestures.
@@ -136,6 +136,8 @@ without disconnecting either wearable.
 - `lib/src/audio/capture_journal.dart` — durable LC3 journal isolate and
   bounded replay queue.
 - `lib/src/audio/vad_worker.dart` — Silero VAD, pre/post-roll, and atomic WAVs.
+- `lib/src/audio/nnapi_attestation.dart` — disposable ONNX Runtime profiles
+  that prove hardware-only NNAPI node assignment before a provider is labeled.
 - `lib/src/audio/speech_model.dart` — verified STT definitions, Parakeet 0.6B
   default, and runtime model resolution.
 - `lib/src/audio/speech_model_preferences.dart` — persisted Tools selection.
@@ -143,6 +145,10 @@ without disconnecting either wearable.
   transcription job ledger.
 - `lib/src/audio/audio_pipeline_coordinator.dart` — startup gating, worker
   supervision, recovery buffers, and user-visible status.
+- `third_party/sherpa_onnx_android_arm64_nnapi/` — pinned arm64 Sherpa-ONNX
+  runtime fork, NNAPI CPU-device exclusion patch, licenses, and binary hashes.
+- `tool/build_sherpa_nnapi_runtime.sh` — reproducible temporary-checkout build
+  for the vendored Android runtime.
 - `lib/src/ble/g2_connection.dart` — dual-lens lifecycle, audio, display,
   heartbeats, logging, and reconnect.
 - `lib/src/protocol/r1_protocol.dart` — R1 authentication, commands, and
@@ -174,9 +180,9 @@ command construction, manufacturer-data parsing, G2 pair grouping, gesture
 decoding, LC3 global-gain extraction, and speech-level smoothing.
 
 Hardware interoperability still requires physical G2 and R1 devices. Android
-has been exercised on a Samsung SM-A256E, including transcription/VAD worker
-restart, expected reset/reconnect, Android adapter loss/recovery, and an
-acoustic Kokoro-to-G2 transcription loop and matched-WAV Tiny
+has been exercised on a representative physical phone, including
+transcription/VAD worker restart, expected reset/reconnect, Android adapter
+loss/recovery, and an acoustic Kokoro-to-G2 transcription loop and matched-WAV Tiny
 Whisper/Parakeet comparisons. The current native LC3 decoder integration is
 Android-only. Because connecting without durable audio would violate the
 capture-safety contract, Connect remains gated on iOS until its native LC3

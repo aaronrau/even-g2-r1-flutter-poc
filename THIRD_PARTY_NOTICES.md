@@ -42,3 +42,12 @@ Local VAD and speech recognition use
 Apache License, Version 2.0. Large Silero VAD and Whisper model artifacts are
 downloaded separately from the official Sherpa-ONNX model release and are not
 committed to this repository.
+
+The Android arm64 package contains a pinned, patched Sherpa-ONNX `v1.13.4`
+native runtime. The patch enables the NNAPI execution-provider registration
+path and disables NNAPI's reference-CPU device. The Apache-2.0 license is
+included beside the vendored package.
+
+Sherpa-ONNX dynamically links
+[ONNX Runtime](https://github.com/microsoft/onnxruntime) `1.27.0`, licensed
+under the MIT License. Its license is included beside the vendored package.

@@ -67,6 +67,7 @@ final class AudioPipelineCoordinator {
   String? activeModelId;
   String? activeModelName;
   String? activeProvider;
+  String? activeVadProvider;
   String? get lastTranscript => _transcriptTurn.visibleText;
   String? lastTranscriptPath;
   String? sharedExportError;
@@ -110,30 +111,33 @@ final class AudioPipelineCoordinator {
             'pcm_gain=${g2PcmGain}x',
       );
 
-      _setStartup(StartupPhase.vad, 'Loading voice activity detection…');
-      _vad = VadSupervisor(
-        modelPath: paths.vad,
-        outputPath: '${paths.audioRoot}/speech',
-        onSegment: _onSpeechSegment,
-        onStatus: _vadStatus,
-      );
-      await _vad!.start();
-      _vadWasReady = true;
-
       _setStartup(
         StartupPhase.transcription,
         'Checking on-device acceleration…',
       );
       final capabilities = await InferenceCapabilities.detect();
       _inferenceProviders = capabilities.providers;
-      _speechPath = '${paths.audioRoot}/speech';
       log(
         'Pipeline',
-        '[WorkBench][Inference] gpu=${capabilities.hasGpu} '
-            'neural=${capabilities.hasNeuralNetworks} '
+        '[WorkBench][Inference] '
+            'gpu_hardware=${capabilities.hasGpuHardware} '
+            'nnapi_api=${capabilities.hasNnapiApi} '
             'providers=${capabilities.providers.join(',')} '
-            'device=${capabilities.description}',
+            'runtime=${capabilities.description}',
       );
+
+      _setStartup(StartupPhase.vad, 'Loading voice activity detection…');
+      _vad = VadSupervisor(
+        modelPath: paths.vad,
+        outputPath: '${paths.audioRoot}/speech',
+        providers: capabilities.providers,
+        onSegment: _onSpeechSegment,
+        onStatus: _vadStatus,
+      );
+      activeVadProvider = await _vad!.start();
+      _vadWasReady = true;
+
+      _speechPath = '${paths.audioRoot}/speech';
       _transcription = TranscriptionSupervisor(
         model: paths.transcription,
         speechPath: _speechPath!,
@@ -156,7 +160,8 @@ final class AudioPipelineCoordinator {
         'Pipeline',
         '[WorkBench][Pipeline] state=ready '
             'model=${paths.transcription.definition.id} '
-            'provider=$activeProvider',
+            'stt_provider=$activeProvider '
+            'vad_provider=$activeVadProvider',
       );
       _initialStartupComplete = true;
       if (_sharedAudioExportStore.hasSharedFolder) {
@@ -360,6 +365,11 @@ final class AudioPipelineCoordinator {
 
   void _vadStatus(String message, {bool isError = false}) {
     log('Pipeline', message, isError: isError);
+    if (message.contains('state=ready')) {
+      activeVadProvider =
+          RegExp(r'provider=(\S+)').firstMatch(message)?.group(1) ??
+          activeVadProvider;
+    }
     if (message.contains('state=speech_started')) {
       final segmentId = RegExp(
         r'\bsegment=(\S+)',
@@ -691,6 +701,7 @@ final class AudioPipelineCoordinator {
     activeModelId = null;
     activeModelName = null;
     activeProvider = null;
+    activeVadProvider = null;
     _vadRecovery.clear();
     _vadRecoveryBytes = 0;
     _setStartup(StartupPhase.starting, 'Restarting local audio system…');

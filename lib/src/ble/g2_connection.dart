@@ -178,7 +178,7 @@ final class G2Connection {
     try {
       await _ensureAndroidBond(_right, generation);
       await _ensureAndroidBond(_left, generation);
-      // Establish the control-side right lens first. Some Samsung Bluetooth
+      // Establish the control-side right lens first. Some Android Bluetooth
       // stacks serialize simultaneous LE connection establishment and let
       // the second G2 attempt expire with status 133. Connecting the pair in
       // a deterministic order avoids that race; protocol initialization still

@@ -30,6 +30,8 @@ the same normalized, padded fixture. The original volume is restored in a
 ```text
 [WorkBench][Capture] state=ready journal=writable
 [WorkBench][Capture] state=streaming sequence=<integer>
+[WorkBench][Inference] state=attested workload=vad provider=nnapi nnapi_nodes=<positive> cpu_nodes=<integer> other_nodes=<integer> nnapi_us=<integer> cpu_us=<integer>
+[WorkBench][VAD] state=ready provider=<provider> recovered=<true|false>
 [WorkBench][VAD] state=speech_started segment=<id>
 [WorkBench][TranscriptUI] state=cleared reason=speech_started segment=<id>
 [WorkBench][VAD] state=speech_ending segment=<id> delay_ms=<integer>
@@ -37,7 +39,8 @@ the same normalized, padded fixture. The original volume is restored in a
 [WorkBench][VAD] state=speech_ended segment=<id> audio_ms=<integer>
 [WorkBench][Transcription] state=queued segment=<id> pending=<integer>
 [WorkBench][Transcription] state=processing segment=<id>
-[WorkBench][Transcription] state=completed segment=<id> model=<model-id> audio_ms=<integer> decode_ms=<integer>
+[WorkBench][Inference] state=attested workload=stt model=<model-id> provider=nnapi nnapi_nodes=<positive> cpu_nodes=<integer> other_nodes=<integer> nnapi_us=<integer> cpu_us=<integer>
+[WorkBench][Transcription] state=completed segment=<id> model=<model-id> provider=<provider> audio_ms=<integer> decode_ms=<integer>
 [WorkBench][Transcript][FINAL] segment=<id> text=<recognized test phrase>
 ```
 
@@ -45,6 +48,11 @@ the same normalized, padded fixture. The original volume is restored in a
 endpoint delay. `speech_ended audio_ms` reports the PCM duration captured after
 that transition. Validate `audio_ms` rather than logcat wall time because
 isolate-to-UI marker delivery may be batched under load.
+
+The attestation marker is required only when the corresponding ready/completed
+provider is `nnapi`. A CPU provider must not emit a synthetic NNAPI
+attestation. The positive NNAPI node count comes from a silent warm-up profile
+created in the app cache and deleted after its aggregate counts are logged.
 
 For a complete turn, the clear, ending, buffer-clear, ended, queued, processing,
 and final markers must retain the same segment ID and appear in that order.
@@ -108,8 +116,11 @@ For every candidate require:
 
 ```text
 [WorkBench][Transcription] state=ready model=<model-id> provider=<provider>
-[WorkBench][Transcription] state=completed segment=<id> model=<same-model-id> audio_ms=<same-duration> decode_ms=<integer>
+[WorkBench][Transcription] state=completed segment=<id> model=<same-model-id> provider=<same-provider> audio_ms=<same-duration> decode_ms=<integer>
 ```
 
 Score WER and final-tail coverage separately from transport and VAD. Also
 record PSS/RSS/swap, thermal state, and Android low-memory/process-kill events.
+An accelerator label additionally requires a CPU-disabled native profile that
+shows model nodes assigned to that hardware provider. Provider configuration,
+hardware capability, session creation, and warm-up alone are not sufficient.

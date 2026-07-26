@@ -24,7 +24,10 @@ android {
         applicationId = "dev.opensourceglasses.even_g2_r1_poc"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // The vendored arm64 Sherpa-ONNX runtime is compiled for API 27 so its
+        // NNAPI registration code is present. NNAPI is offered only on API 29+
+        // by the Dart capability gate; API 27-28 continue to use CPU.
+        minSdk = 27
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

@@ -125,10 +125,12 @@ Use two deliberately separate test layers:
 3. Decode byte-for-byte copies of that one WAV with every candidate model on
    the same phone. Keep runtime provider, thread count, app revision, and
    thermal starting state fixed.
-4. Require the `state=ready model=<id>` and
-   `state=completed ... model=<id> audio_ms=<n> decode_ms=<n>` markers to match
-   the intended candidate. A display label or build argument alone is not
-   proof that the requested model ran.
+4. Require the `state=ready model=<id> provider=<provider>` and
+   `state=completed ... model=<id> provider=<same-provider> audio_ms=<n>
+   decode_ms=<n>` markers to match the intended candidate. A display label or
+   build argument alone is not proof that the requested model ran. GPU/NPU
+   claims additionally require a CPU-disabled native profile that assigns
+   model nodes to the named hardware provider; warm-up alone is insufficient.
 5. Report WER, decode time, word count, and a unique final-five-second tail
    phrase for each model. Include at least one short capture, one 10–20 second
    capture, and one capture longer than 30 seconds.

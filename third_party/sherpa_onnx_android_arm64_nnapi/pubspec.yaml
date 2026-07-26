@@ -1,0 +1,18 @@
+name: sherpa_onnx_android_arm64
+description: Work Bench arm64 Sherpa-ONNX runtime with hardware-only NNAPI registration.
+version: 1.13.4+workbench.1
+publish_to: none
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=2.8.1"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        ffiPlugin: true

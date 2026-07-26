@@ -92,6 +92,8 @@ final class WearableController extends ChangeNotifier
   int get sharedExportedFiles => _audioPipeline.sharedExportedFiles;
   String? get lastTranscript => _audioPipeline.lastTranscript;
   int get completedTranscripts => _audioPipeline.completedTranscripts;
+  String? get transcriptionProvider => _audioPipeline.activeProvider;
+  String? get vadProvider => _audioPipeline.activeVadProvider;
   bool get hasWearableSession => _hasWearableSession;
   List<SpeechModelDefinition> get speechModels => availableSpeechModels;
   String get selectedSpeechModelId => _selectedSpeechModel.id;

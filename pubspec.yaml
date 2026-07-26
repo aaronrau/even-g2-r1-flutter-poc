@@ -53,6 +53,13 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
+# The public arm64 package builds Sherpa-ONNX for Android API 21, which
+# compiles out its NNAPI registration branch. This pinned local fork rebuilds
+# the native C API for API 27 and disables NNAPI's reference-CPU device.
+dependency_overrides:
+  sherpa_onnx_android_arm64:
+    path: third_party/sherpa_onnx_android_arm64_nnapi
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 

@@ -493,7 +493,8 @@ final class _HomePageState extends State<HomePage> {
                   ? 'Selected: ${controller.selectedSpeechModelName} · '
                         'not loaded'
                   : 'Active: ${controller.selectedSpeechModelName} · '
-                        '${controller.startup.provider}',
+                        'STT ${controller.transcriptionProvider} · '
+                        'VAD ${controller.vadProvider ?? 'loading'}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.bodySmall,
@@ -702,7 +703,8 @@ final class _HomePageState extends State<HomePage> {
             ),
             Text(
               'Transcripts: ${controller.completedTranscripts} • '
-              '${controller.startup.provider ?? 'loading'}',
+              'STT ${controller.transcriptionProvider ?? 'loading'} • '
+              'VAD ${controller.vadProvider ?? 'loading'}',
             ),
             Text(
               'Storage: ${controller.sharedAudioFolder == null ? 'app-only' : 'shared folder'}',

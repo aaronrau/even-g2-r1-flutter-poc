@@ -4,14 +4,16 @@ import 'package:flutter/services.dart';
 
 final class InferenceCapabilities {
   const InferenceCapabilities({
-    required this.hasGpu,
-    required this.hasNeuralNetworks,
+    required this.hasGpuHardware,
+    required this.hasNnapiApi,
     required this.providers,
     this.description,
   });
 
-  final bool hasGpu;
-  final bool hasNeuralNetworks;
+  /// Hardware/API hints only. Neither value proves that an ONNX execution
+  /// provider can assign model nodes to that accelerator.
+  final bool hasGpuHardware;
+  final bool hasNnapiApi;
   final List<String> providers;
   final String? description;
 
@@ -24,32 +26,34 @@ final class InferenceCapabilities {
       final raw = await channel.invokeMapMethod<String, Object>(
         'inferenceCapabilities',
       );
-      final hasGpu = raw?['hasGpu'] == true;
-      final hasNeuralNetworks = raw?['hasNeuralNetworks'] == true;
+      final hasGpuHardware = raw?['hasGpu'] == true;
+      final hasNnapiApi = raw?['hasNeuralNetworks'] == true;
+      final sdkInt = raw?['sdkInt'] as int? ?? 0;
+      final canEnforceHardwareOnlyNnapi = hasNnapiApi && sdkInt >= 29;
       return InferenceCapabilities(
-        hasGpu: hasGpu,
-        hasNeuralNetworks: hasNeuralNetworks,
-        // The current Sherpa Android artifact advertises NNAPI but its API-21
-        // build falls back to CPU; it also does not contain XNNPACK. Do not
-        // mislabel either fallback as accelerated inference.
-        providers: const <String>['cpu'],
+        hasGpuHardware: hasGpuHardware,
+        hasNnapiApi: hasNnapiApi,
+        providers: canEnforceHardwareOnlyNnapi
+            ? const <String>['nnapi', 'cpu']
+            : const <String>['cpu'],
         description:
             'Android SDK ${raw?['sdkInt'] ?? 'unknown'} · '
             'OpenGL ES 0x${(raw?['glesVersion'] as int? ?? 0).toRadixString(16)} · '
-            'NNAPI unavailable in bundled runtime',
+            'GPU EP unavailable · '
+            '${canEnforceHardwareOnlyNnapi ? 'hardware-only NNAPI candidate' : 'CPU'}',
       );
     }
     if (Platform.isIOS) {
       return const InferenceCapabilities(
-        hasGpu: true,
-        hasNeuralNetworks: true,
+        hasGpuHardware: true,
+        hasNnapiApi: false,
         providers: <String>['coreml', 'xnnpack', 'cpu'],
         description: 'Core ML compatibility will be verified by warm-up',
       );
     }
     return const InferenceCapabilities(
-      hasGpu: false,
-      hasNeuralNetworks: false,
+      hasGpuHardware: false,
+      hasNnapiApi: false,
       providers: <String>['xnnpack', 'cpu'],
       description: 'No mobile accelerator probe is available',
     );

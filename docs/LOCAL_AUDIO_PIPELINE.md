@@ -33,18 +33,63 @@ packet continues through the capture path.
 
 ## Startup contract
 
-The app renders immediately, then initializes storage, LC3, VAD, acceleration
-capabilities, and transcription in order. The Connect button remains disabled
-until all local audio components report ready. Model files are copied to
+The app renders immediately, then initializes storage, LC3, acceleration
+capabilities, VAD, and transcription in order. The Connect button remains
+disabled until all local audio components report ready. Model files are copied to
 app-private storage with SHA-256 verification; a verified marker avoids
 rehashing large files on each launch.
 
-The Android device is probed for GPU/OpenGL and Neural Networks support before
-the recognizer is created. A provider must also pass a real recognizer warm-up
-to be selected. The current Sherpa-ONNX Flutter Android runtime does not expose
-a compatible GPU or NNAPI execution provider on the tested Samsung device, so
-Work Bench reports and uses CPU instead of claiming acceleration that silently
-falls back.
+The Android device is probed for GPU/OpenGL and NNAPI API availability before
+either model worker is created. These values are hardware and platform hints,
+not provider proof. Silero VAD and the selected transcription model qualify
+their providers independently and report separate provider markers.
+
+The checked-in arm64 Flutter FFI package replaces the public
+`sherpa_onnx_android_arm64` artifact. It pins Sherpa-ONNX `v1.13.4` and ONNX
+Runtime `1.27.0`, compiles Sherpa for Android API 27 so the NNAPI registration
+branch exists, and passes `NNAPI_FLAG_CPU_DISABLED`. That flag excludes NNAPI's
+reference-CPU device; ONNX Runtime's normal CPU provider still handles
+unsupported nodes and remains the whole-model fallback.
+
+Android API 29 is the minimum for offering the NNAPI candidate because older
+Android versions ignore the CPU-disabled flag. The worker creates a temporary
+provider configuration in the app cache, enables ONNX Runtime profiling,
+decodes silent input, destroys the candidate so the profile is finalized, and
+counts provider-assigned node executions. It accepts `nnapi` only when at least
+one node names `NnapiExecutionProvider`. Raw profiles are deleted immediately
+and never enter the user-selected audio folder. A missing, malformed, or
+CPU-only profile retries with `cpu`.
+
+The packaged runtime has no Android GPU or Qualcomm QNN execution provider.
+NNAPI may route compatible partitions to a vendor NPU, DSP, or GPU, but its API
+does not let Work Bench promise which accelerator a vendor driver selects.
+Direct Qualcomm NPU execution is a separate deployment target requiring a
+QNN-enabled native runtime, redistributable QNN libraries, and qualified
+device/model artifacts.
+
+Static graph inspection explains why a valid runtime can still select CPU:
+
+| Workload | Relevant graph boundary |
+| --- | --- |
+| Silero VAD | The wrapper contains nested `If` and `LSTM` nodes, neither of which establishes an NNAPI partition by itself |
+| Parakeet 110M INT8 | Uses `DynamicQuantizeLinear`, `ConvInteger`, `MatMulInteger`, and `LayerNormalization` forms outside the documented NNAPI operator path |
+| Parakeet 0.6B INT8 | Uses the same dynamic integer forms, plus a Microsoft-domain dynamically quantized LSTM decoder |
+| Tiny Whisper | Contains supported matrix/convolution work but also `Erf`, dynamic shape, range, scatter, expand, and selection operations that can fragment partitions |
+
+The table is a compatibility warning, not provider evidence. Qualification is
+recorded independently for Silero VAD, Parakeet 0.6B, Parakeet 110M, and Tiny
+Whisper on each runtime, OS, and device family.
+
+Rebuild the pinned package with:
+
+```sh
+ANDROID_SDK=<android-sdk-directory> \
+ANDROID_NDK=<android-ndk-directory> \
+  ./tool/build_sherpa_nnapi_runtime.sh
+```
+
+The package README, patch, licenses, and SHA-256 runtime manifest are under
+`third_party/sherpa_onnx_android_arm64_nnapi/`.
 
 ## Audio safety
 
@@ -145,9 +190,9 @@ continue, and any interrupted WAV remains in the durable ledger for the new
 worker. A load failure restores the prior model and does not change the saved
 preference.
 
-Parakeet 110M remains the lower-memory Samsung SM-A256E recommendation; the
-0.6B model caused substantial memory pressure in testing. It is the default for
-now by product choice. All STT variants remain behind the same
+Parakeet 110M is the lower-memory option; the 0.6B model requires substantially
+more memory. The 0.6B model remains the default by product choice. All STT
+variants remain behind the same
 transcription-worker boundary and cannot own the journal, BLE callbacks, or VAD
 recovery buffer.
 
