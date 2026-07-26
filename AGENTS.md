@@ -1,5 +1,48 @@
 # Work Bench repository instructions
 
+## Privacy and pre-push gate
+
+Treat privacy validation as a required release check. Before every push, inspect
+the complete staged diff, every new commit, and all newly tracked files for
+personal information, credentials, and machine-specific configuration.
+
+- Never commit a person's name, personal email, phone number, account name,
+  home-directory path, precise location, notification content, device serial,
+  hardware MAC, advertising identifier, Wi-Fi name, private hostname, or
+  private IP address.
+- Never commit passwords, tokens, API keys, private certificates, signing
+  material, service-account files, unredacted device logs, screenshots, audio
+  captures, or protocol traces containing real identifiers.
+- Documentation, tests, fixtures, command examples, and reports use explicit
+  generic values such as `<android-serial>`, `<g2-serial>`, `<user-home>`,
+  `developer@example.invalid`, and clearly synthetic MAC addresses.
+- Keep protocol constants and required third-party copyright notices intact.
+  They are not personal configuration.
+- Use the repository-safe commit identity
+  `Work Bench Contributors <noreply@workbench.invalid>`. Review the author and
+  committer fields of every outgoing commit.
+- If a check finds a personal value, stop the push, remove it from code and
+  history as needed, replace examples with generic placeholders, and rerun the
+  complete gate. Adding a file to `.gitignore` does not remove it from an
+  existing commit.
+
+At minimum, run and review these checks before pushing:
+
+```sh
+git status --short
+git diff --check
+git diff --cached --check
+git diff --cached
+git log --format='%h %an <%ae> | %cn <%ce>' origin/main..HEAD
+git grep -I -n -E '(/home/[^/[:space:]]+|/Users/[^/[:space:]]+|/mnt/[^/[:space:]]+|[A-Za-z]:\\Users\\)'
+git grep -I -n -E '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+git grep -I -n -i -E '(password|passwd|api[_-]?key|client[_-]?secret|access[_-]?token|private[_-]?key)'
+```
+
+The searches intentionally over-report. Review each match, including binary
+metadata and newly generated evidence, and only proceed when every retained
+value is demonstrably generic or public.
+
 ## UI/UX source of truth
 
 Always follow the inline **UI/UX examples** section on the Tools page and the

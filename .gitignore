@@ -12,6 +12,65 @@
 .swiftpm/
 migrate_working_dir/
 
+# Local identity and machine-specific configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+.envrc
+.direnv/
+*.local
+*.private
+!*.local.example
+!*.private.example
+local.properties
+key.properties
+.vscode/
+.gradle/
+**/xcuserdata/
+*.xcuserstate
+
+# Credentials, signing material, and private certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+*.cer
+*.crt
+*.csr
+credentials.json
+credentials.*.json
+!credentials.example.json
+!credentials.*.example.json
+service-account.json
+service-account.*.json
+!service-account.example.json
+!service-account.*.example.json
+
+# Local device evidence and diagnostic output
+/artifacts/
+/captures/
+/evidence/
+/reports/
+/screenshots/
+/test-output/
+/test-results/
+*.hprof
+*.pcap
+*.pcapng
+*.wav
+*.flac
+*.m4a
+*.aac
+*.pcm
+*.lc3
+*.wblc3
+*.dump
+*.trace
+
 # IntelliJ related
 *.iml
 *.ipr
