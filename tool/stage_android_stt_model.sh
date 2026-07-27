@@ -3,6 +3,8 @@ set -eu
 
 PACKAGE=dev.opensourceglasses.even_g2_r1_poc
 DEVICE_SERIAL=${ANDROID_SERIAL:-}
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPOSITORY_MODEL_ROOT=$SCRIPT_DIR/../models/stt
 
 usage() {
   echo "Usage: $0 [--device ANDROID_SERIAL] {parakeet-110m|parakeet-0.6b}" >&2
@@ -87,6 +89,8 @@ esac
 
 if [ -n "${WORKBENCH_STT_MODEL_DIR:-}" ]; then
   SOURCE_DIR=$WORKBENCH_STT_MODEL_DIR
+elif [ -f "$REPOSITORY_MODEL_ROOT/$MODEL_ID/tokens.txt" ]; then
+  SOURCE_DIR=$REPOSITORY_MODEL_ROOT/$MODEL_ID
 else
   CACHE_BASE=${XDG_CACHE_HOME:-"$HOME/.cache"}
   MODEL_CACHE=$CACHE_BASE/workbench-stt-models
@@ -129,6 +133,18 @@ expected_hash() {
 }
 
 for file in $MODEL_FILES; do
+  if [ ! -f "$SOURCE_DIR/$file" ]; then
+    echo "Missing $MODEL_ID file: $file" >&2
+    exit 1
+  fi
+  file_size=$(wc -c <"$SOURCE_DIR/$file")
+  if [ "$file_size" -lt 1024 ] &&
+    grep -q '^version https://git-lfs.github.com/spec/v1$' \
+      "$SOURCE_DIR/$file"; then
+    echo "$MODEL_ID has an unresolved Git LFS pointer for $file." >&2
+    echo "Run: git lfs pull --include='models/stt/**'" >&2
+    exit 1
+  fi
   printf '%s  %s\n' "$(expected_hash "$file")" "$SOURCE_DIR/$file" |
     sha256sum --check --status
 done

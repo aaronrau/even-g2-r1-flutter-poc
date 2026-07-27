@@ -133,6 +133,8 @@ expose for a true locked Hub mode.
 Use a physical phone with Bluetooth enabled:
 
 ```sh
+git lfs install
+git lfs pull --include='models/stt/**'
 ./tool/fetch_speech_models.sh
 flutter build apk --debug
 flutter install --debug
@@ -141,12 +143,24 @@ flutter run
 ```
 
 The install step creates the app-private model directory; staging then places
-the hash-verified default model there without adding its large files to Git or
-the APK. Stage `parakeet-110m` the same way if it should appear as a usable
-lower-memory choice in Tools. Tiny Whisper is bundled by
-`fetch_speech_models.sh`.
+the hash-verified default model there. The Parakeet weights are versioned with
+Git LFS under `models/stt/`, but remain outside the APK. Stage
+`parakeet-110m` the same way if it should appear as a usable lower-memory
+choice in Tools. Tiny Whisper is bundled by `fetch_speech_models.sh`.
 
 ### Copy a Parakeet model to Android
+
+Install Git LFS and materialize the model files after cloning:
+
+```sh
+git lfs install
+git lfs pull --include='models/stt/**'
+git lfs ls-files
+```
+
+The LFS checkout uses approximately 765 MiB. Files beginning with
+`version https://git-lfs.github.com/spec/v1` are unresolved pointers, not
+usable models; the staging tool detects and rejects them.
 
 Install Work Bench on the phone before copying a Parakeet model. Android must
 show the phone as `device`, not `unauthorized`:
@@ -173,11 +187,13 @@ Use `parakeet-110m` instead of `parakeet-0.6b` to copy the lower-memory model:
 ./tool/stage_android_stt_model.sh --device <android-serial> parakeet-110m
 ```
 
-The script downloads the official Sherpa-ONNX archive into the host cache,
-checks every required file against the hashes pinned in the repository, and
-copies only the selected model into the installed app's private
-`files/workbench/models/<model-id>` directory. The model is not added to Git or
-the APK.
+The script first uses the selected LFS model under `models/stt/`, checks every
+required file against the hashes pinned in the repository, and copies only
+that model into the installed app's private
+`files/workbench/models/<model-id>` directory. The model remains outside the
+APK. `WORKBENCH_STT_MODEL_DIR` can explicitly select another hash-matching
+source directory. Source archives that omit `models/stt/` fall back to the
+official Sherpa-ONNX download cache.
 
 Cold-start the app after staging so it can verify the copied files and create
 its `.verified` markers:

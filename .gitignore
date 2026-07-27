@@ -111,8 +111,8 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# On-device speech models are staged locally for development and distributed
-# separately from the source repository.
+# App-bundled development models remain local. The external Parakeet models
+# used by the Android staging tool live under /models/stt and use Git LFS.
 /assets/models/**/*.onnx
 /assets/models/**/*.bin
 /assets/models/whisper/tiny.en-tokens.txt

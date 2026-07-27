@@ -1,0 +1,6 @@
+acfc2b4456377e15d04f0243af540b7fe7c992f8d898d751cf134c3a55fd2247  parakeet-0.6b/encoder.int8.onnx
+179e50c43d1a9de79c8a24149a2f9bac6eb5981823f2a2ed88d655b24248db4e  parakeet-0.6b/decoder.int8.onnx
+3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3  parakeet-0.6b/joiner.int8.onnx
+d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d  parakeet-0.6b/tokens.txt
+9177a9146cf32ee0cc8152276ef95116f312018d316be37ccf57f7efea81fc1a  parakeet-110m/model.int8.onnx
+450e56bd2f036fe5b6aa821865838cc5aa9d8b0106134ce9a9ba0664abe6cd10  parakeet-110m/tokens.txt

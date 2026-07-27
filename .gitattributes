@@ -1,1 +1,2 @@
 *.patch -whitespace
+models/stt/**/*.onnx filter=lfs diff=lfs merge=lfs -text
