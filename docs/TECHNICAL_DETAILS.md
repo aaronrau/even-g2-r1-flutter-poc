@@ -124,8 +124,10 @@ the app reasserts the screen and background-service policies and presents the
 latest BLE state. While backgrounded, UI notifications are coalesced without
 throttling BLE packets, audio reception, reconnect, heartbeats, or the G2
 waveform. Diagnostic history and log-entry size are bounded; an operating
-system memory-pressure signal trims nonessential logs and stale scan results
-without disconnecting either wearable.
+system memory-pressure signal trims nonessential state and stale scan results
+without disconnecting either wearable. Home retains only the 30 most recent
+events. Its shared transcript view loads saved entries in 20-item scroll
+batches and refreshes only while that text tab is selected.
 
 ## Project map
 

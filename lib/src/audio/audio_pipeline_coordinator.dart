@@ -51,6 +51,7 @@ final class AudioPipelineCoordinator {
   bool _disposed = false;
   bool _vadWasReady = false;
   bool _modelSwitching = false;
+  bool _refreshSharedTranscriptsAfterExport = false;
   int _vadRecoveryBytes = 0;
   int _meterSamples = 0;
   double _meterSquareSum = 0;
@@ -78,6 +79,10 @@ final class AudioPipelineCoordinator {
   bool get isSwitchingModel => _modelSwitching;
   bool get isExportingSharedAudio => _sharedExportOperations > 0;
   String get selectedModelId => _selectedModel.id;
+
+  void setSharedTranscriptRefreshEnabled(bool enabled) {
+    _refreshSharedTranscriptsAfterExport = enabled;
+  }
 
   Future<void> initialize({SpeechModelDefinition? transcriptionModel}) async {
     if (_initialized || _disposed) {
@@ -340,7 +345,9 @@ final class AudioPipelineCoordinator {
     try {
       final count = await _sharedAudioExportStore.exportFiles(paths);
       sharedExportedFiles += count;
-      refreshTranscriptions = reason == 'transcript' || reason == 'sync';
+      refreshTranscriptions =
+          _refreshSharedTranscriptsAfterExport &&
+          (reason == 'transcript' || reason == 'sync');
       log(
         'Pipeline',
         '[WorkBench][SharedStorage] state=exported reason=$reason '

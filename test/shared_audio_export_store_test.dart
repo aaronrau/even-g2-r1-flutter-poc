@@ -19,7 +19,6 @@ void main() {
         'currentDirectory' => <String, Object>{
           'displayName': 'Work Bench Audio',
         },
-        'listTranscriptions' => <Object?>[],
         _ => fail('Unexpected method ${call.method}'),
       };
     });
@@ -37,7 +36,6 @@ void main() {
     messenger.setMockMethodCallHandler(channel, (call) async {
       return switch (call.method) {
         'currentDirectory' => <String, Object>{'displayName': 'Current'},
-        'listTranscriptions' => <Object?>[],
         'chooseDirectory' => null,
         _ => fail('Unexpected method ${call.method}'),
       };
@@ -55,7 +53,6 @@ void main() {
     messenger.setMockMethodCallHandler(channel, (call) async {
       return switch (call.method) {
         'currentDirectory' => <String, Object>{'displayName': 'Shared'},
-        'listTranscriptions' => <Object?>[],
         'exportFiles' => () {
           exportedPaths =
               ((call.arguments as Map<Object?, Object?>)['paths']!
@@ -89,7 +86,6 @@ void main() {
     messenger.setMockMethodCallHandler(channel, (call) async {
       return switch (call.method) {
         'currentDirectory' => <String, Object>{'displayName': 'Shared'},
-        'listTranscriptions' => <Object?>[],
         'clearDirectory' => null,
         _ => fail('Unexpected method ${call.method}'),
       };
@@ -138,6 +134,8 @@ void main() {
     addTearDown(store.dispose);
 
     await store.initialize();
+    expect(store.transcripts, isEmpty);
+    await store.refreshTranscriptions();
 
     expect(store.transcripts.map((transcript) => transcript.text), <String>[
       'Newer transcript',
@@ -165,7 +163,11 @@ void main() {
       final store = SharedAudioExportStore(channel: channel, isAndroid: true);
       addTearDown(store.dispose);
 
-      await expectLater(store.initialize(), throwsA(isA<PlatformException>()));
+      await store.initialize();
+      await expectLater(
+        store.refreshTranscriptions(),
+        throwsA(isA<PlatformException>()),
+      );
 
       expect(store.folder?.displayName, 'Shared');
       expect(store.transcriptLoadError, contains('Could not read'));

@@ -379,6 +379,13 @@ final class _HomePageState extends State<HomePage> {
         onChooseFolder: () => _run(controller.chooseSharedAudioFolder),
         onRefreshTranscriptions: () =>
             _run(controller.refreshSharedTranscripts),
+        onTabChanged: (tab) {
+          final transcriptionsSelected = tab == HomeHistoryTab.transcriptions;
+          controller.setSharedTranscriptViewActive(transcriptionsSelected);
+          if (transcriptionsSelected) {
+            _run(controller.refreshSharedTranscripts);
+          }
+        },
         onToggleTranscriptAudio: (transcript) {
           _run(() => controller.toggleTranscriptAudio(transcript));
         },
@@ -735,18 +742,20 @@ final class _HomePageState extends State<HomePage> {
             const SizedBox(height: 16),
             Text('Peer views', style: theme.textTheme.titleSmall),
             const SizedBox(height: 8),
-            IgnorePointer(
-              child: SegmentedButton<String>(
-                segments: const <ButtonSegment<String>>[
-                  ButtonSegment<String>(value: 'events', label: Text('Events')),
-                  ButtonSegment<String>(
-                    value: 'transcriptions',
-                    label: Text('Transcriptions'),
-                  ),
-                ],
-                selected: const <String>{'events'},
-                showSelectedIcon: false,
-                onSelectionChanged: (_) {},
+            DefaultTabController(
+              length: 2,
+              child: IgnorePointer(
+                child: TabBar(
+                  dividerColor: theme.colorScheme.outlineVariant,
+                  indicatorColor: theme.colorScheme.onSurface,
+                  indicatorSize: TabBarIndicatorSize.tab,
+                  labelStyle: theme.textTheme.titleSmall,
+                  unselectedLabelStyle: theme.textTheme.bodyMedium,
+                  tabs: const <Tab>[
+                    Tab(height: 48, text: 'Events'),
+                    Tab(height: 48, text: 'Transcriptions'),
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: 16),
@@ -797,7 +806,7 @@ final class _HomePageState extends State<HomePage> {
             Text(
               '16dp section padding • 12dp group gap • 8dp control gap\n'
               '48dp minimum targets • grayscale UI • green status dots only\n'
-              'Segmented tabs switch between peer views\n'
+              'Text tabs with an underline switch between peer views\n'
               'Labeled dropdowns select one persisted setting\n'
               'Connected devices replace “Connected” with a battery icon '
               'and percentage',

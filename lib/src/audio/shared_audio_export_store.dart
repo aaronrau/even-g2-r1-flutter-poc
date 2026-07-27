@@ -58,9 +58,6 @@ final class SharedAudioExportStore extends ChangeNotifier {
     folder = _folderFromMessage(
       await _channel.invokeMapMethod<String, Object?>('currentDirectory'),
     );
-    if (folder != null) {
-      await refreshTranscriptions();
-    }
   }
 
   Future<SharedAudioFolder?> chooseFolder() async {

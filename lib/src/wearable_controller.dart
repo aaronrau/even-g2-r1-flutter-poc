@@ -70,8 +70,8 @@ final class WearableController extends ChangeNotifier
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
 
   static const Duration _audioUiFrameInterval = Duration(milliseconds: 33);
-  static const int _maximumLogEntries = 250;
-  static const int _memoryPressureLogEntries = 60;
+  static const int _maximumLogEntries = 30;
+  static const int _memoryPressureLogEntries = _maximumLogEntries;
   static const int _maximumLogMessageCharacters = 2048;
 
   BleStatus bleStatus = BleStatus.unknown;
@@ -368,6 +368,10 @@ final class WearableController extends ChangeNotifier
       '[WorkBench][SharedStorage] state=list_ready '
           'transcriptions=${sharedTranscripts.length}',
     );
+  }
+
+  void setSharedTranscriptViewActive(bool active) {
+    _audioPipeline.setSharedTranscriptRefreshEnabled(active);
   }
 
   Future<void> toggleTranscriptAudio(SharedTranscript transcript) async {

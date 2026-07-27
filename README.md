@@ -115,7 +115,8 @@ expose for a true locked Hub mode.
 - Lets Android users choose a shared device folder for Files-visible speech
   WAVs and text transcripts. Home's **Transcriptions** tab reads the saved text
   and plays its paired WAV directly from that folder while retaining the
-  app-private durable capture path for recovery.
+  app-private durable capture path for recovery. It loads the newest 20 first
+  and reveals more while scrolling.
 - Draws a thin waveform in the upper-left using LC3 global gain and an adaptive
   silence floor.
 - Displays `Tap`, `Double tap`, `Swipe up`, `Swipe down`, and
@@ -260,8 +261,9 @@ Then:
    transcripts. Existing completed speech files are copied there, and future
    files are exported as they finish.
 3. Return to Home and select **Transcriptions** to read the complete saved text
-   or play its paired WAV. Select **Events** to see the complete in-app event
-   history.
+   or play its paired WAV. The list refreshes when this tab is selected and
+   loads 20 entries at a time as you scroll. Select **Events** to see the 30
+   most recent in-app events.
 4. Tap **Connect devices**. Work Bench scans for the G2 pair and R1, connects
    them, and releases the temporary R1 setup link after Tri-Sync handoff.
 5. Speak to move the waveform and use the ring to display gestures.
