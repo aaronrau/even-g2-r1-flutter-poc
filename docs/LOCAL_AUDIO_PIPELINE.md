@@ -131,10 +131,21 @@ workbench/audio/
 
 App-private storage remains the reliable source of truth. On Android, the
 **Tools → Transcription → File storage** setting opens the system folder picker
-and retains only the narrow document-tree grant selected by the user. Completed
-speech WAV and text files are copied into that folder so they are visible in
-Files and to other apps with access to the same location. Choosing a folder
-also copies existing completed speech files.
+and retains only the narrow read/write document-tree grant selected by the
+user. The app does not request broad storage permission. Completed speech WAV
+and text files are copied into that folder so they are visible in Files and to
+other apps after the user gives those apps access to the same location.
+Choosing a folder also copies existing completed speech files.
+
+Home's **Transcriptions** tab enumerates completed `.txt` files through the
+same Android document provider, pairs each with a same-name `.wav`, and reads
+or plays the files directly from the shared folder. Playback uses the content
+URI rather than copying audio back into private storage. **Events** remains a
+peer tab and shows the complete bounded in-app diagnostic history. The native
+storage bridge also keeps an app-private filename-to-document-URI index. This
+preserves deterministic listing and playback on OEM document providers that
+accept writes but return an empty child-directory query; the indexed WAV/TXT
+content itself remains in the user-selected shared folder.
 
 Shared export is downstream from durable capture: a revoked grant, unavailable
 document provider, or copy failure never blocks journaling, VAD, or local

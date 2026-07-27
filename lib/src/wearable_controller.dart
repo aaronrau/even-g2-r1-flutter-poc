@@ -29,6 +29,7 @@ final class WearableController extends ChangeNotifier
        _speechModelPreferences = speechModelPreferences,
        _sharedAudioExportStore =
            sharedAudioExportStore ?? SharedAudioExportStore() {
+    _sharedAudioExportStore.addListener(_sharedStorageChanged);
     _runtime = AppRuntimeCoordinator(log: addLog);
     _audioPipeline = AudioPipelineCoordinator(
       log: addLog,
@@ -90,6 +91,12 @@ final class WearableController extends ChangeNotifier
   bool get isExportingSharedAudio => _audioPipeline.isExportingSharedAudio;
   String? get sharedAudioExportError => _audioPipeline.sharedExportError;
   int get sharedExportedFiles => _audioPipeline.sharedExportedFiles;
+  List<SharedTranscript> get sharedTranscripts =>
+      _sharedAudioExportStore.transcripts;
+  bool get isLoadingSharedTranscripts =>
+      _sharedAudioExportStore.isLoadingTranscripts;
+  String? get sharedTranscriptError =>
+      _sharedAudioExportStore.transcriptLoadError;
   String? get lastTranscript => _audioPipeline.lastTranscript;
   int get completedTranscripts => _audioPipeline.completedTranscripts;
   String? get transcriptionProvider => _audioPipeline.activeProvider;
@@ -117,19 +124,7 @@ final class WearableController extends ChangeNotifier
     return values;
   }
 
-  List<PooledLog> get eventLogs => logs
-      .where(
-        (entry) =>
-            (!entry.source.endsWith(' RX') ||
-                entry.source == 'G2 Tri-Sync RX') &&
-            entry.source != 'R1 advertisement' &&
-            entry.source != 'PCM' &&
-            (entry.source != 'Pipeline' ||
-                entry.isError ||
-                entry.message.contains('[Bluetooth]')),
-      )
-      .take(100)
-      .toList(growable: false);
+  List<PooledLog> get eventLogs => logs.toList(growable: false);
 
   Future<void> initialize() async {
     WidgetsBinding.instance.addObserver(this);
@@ -366,6 +361,30 @@ final class WearableController extends ChangeNotifier
     _safeNotify();
   }
 
+  Future<void> refreshSharedTranscripts() async {
+    await _sharedAudioExportStore.refreshTranscriptions();
+    addLog(
+      'Storage',
+      '[WorkBench][SharedStorage] state=list_ready '
+          'transcriptions=${sharedTranscripts.length}',
+    );
+  }
+
+  Future<void> toggleTranscriptAudio(SharedTranscript transcript) async {
+    final wasPlaying = isPlayingTranscript(transcript);
+    await _sharedAudioExportStore.toggleAudio(transcript);
+    addLog(
+      'Storage',
+      '[WorkBench][SharedStorage] '
+          'state=${wasPlaying ? 'playback_stopped' : 'playback_started'} '
+          'source=shared_folder',
+    );
+  }
+
+  bool isPlayingTranscript(SharedTranscript transcript) =>
+      transcript.audioFileName != null &&
+      transcript.audioFileName == _sharedAudioExportStore.playingAudioFileName;
+
   Future<void> linkRingAndGlasses() async {
     _lastControllerLinkKey = null;
     await _linkRingAndGlasses();
@@ -517,6 +536,10 @@ final class WearableController extends ChangeNotifier
     }
   }
 
+  void _sharedStorageChanged() {
+    _safeNotify();
+  }
+
   void _unexpectedG2Disconnect(String side) {
     if (_g2UnexpectedlyDisconnected || _disposed) {
       return;
@@ -626,6 +649,8 @@ final class WearableController extends ChangeNotifier
   void dispose() {
     _disposed = true;
     WidgetsBinding.instance.removeObserver(this);
+    _sharedAudioExportStore.removeListener(_sharedStorageChanged);
+    _sharedAudioExportStore.dispose();
     _scanTimer?.cancel();
     _notifyTimer?.cancel();
     _audioNotifyTimer?.cancel();

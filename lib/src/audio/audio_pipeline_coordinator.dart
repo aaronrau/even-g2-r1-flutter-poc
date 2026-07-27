@@ -336,9 +336,11 @@ final class AudioPipelineCoordinator {
     _sharedExportOperations++;
     sharedExportError = null;
     onChanged();
+    var refreshTranscriptions = false;
     try {
       final count = await _sharedAudioExportStore.exportFiles(paths);
       sharedExportedFiles += count;
+      refreshTranscriptions = reason == 'transcript' || reason == 'sync';
       log(
         'Pipeline',
         '[WorkBench][SharedStorage] state=exported reason=$reason '
@@ -356,6 +358,18 @@ final class AudioPipelineCoordinator {
     } finally {
       _sharedExportOperations--;
       onChanged();
+    }
+    if (refreshTranscriptions) {
+      try {
+        await _sharedAudioExportStore.refreshTranscriptions();
+      } catch (error) {
+        log(
+          'Pipeline',
+          '[WorkBench][SharedStorage] state=list_failed '
+              'error=${_oneLine(error)}',
+          isError: true,
+        );
+      }
     }
   }
 

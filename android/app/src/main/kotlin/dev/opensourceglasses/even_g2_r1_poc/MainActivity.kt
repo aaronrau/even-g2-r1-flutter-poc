@@ -5,9 +5,12 @@ import android.app.ActivityManager
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
+import android.util.Log
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
@@ -29,11 +32,15 @@ class MainActivity : FlutterActivity() {
             "dev.opensourceglasses/workbench_storage"
         private const val STORAGE_PREFERENCES = "workbench_storage"
         private const val STORAGE_DIRECTORY_URI = "shared_audio_directory_uri"
+        private const val STORAGE_DOCUMENT_INDEX = "shared_audio_document_index"
         private const val CHOOSE_DIRECTORY_REQUEST = 4201
     }
 
     private var pendingDirectoryResult: MethodChannel.Result? = null
     private val storageExecutor = Executors.newSingleThreadExecutor()
+    private lateinit var storageChannel: MethodChannel
+    private var sharedAudioPlayer: MediaPlayer? = null
+    private var sharedAudioFileName: String? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -157,10 +164,11 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
-        MethodChannel(
+        storageChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             STORAGE_CHANNEL,
-        ).setMethodCallHandler { call, result ->
+        )
+        storageChannel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "currentDirectory" -> result.success(currentDirectory())
                 "chooseDirectory" -> chooseDirectory(result)
@@ -179,6 +187,23 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
                     exportFiles(paths, result)
+                }
+                "listTranscriptions" -> listTranscriptions(result)
+                "playAudio" -> {
+                    val fileName = call.argument<String>("fileName")
+                    if (fileName == null) {
+                        result.error(
+                            "missing_audio",
+                            "A saved WAV file is required.",
+                            null,
+                        )
+                        return@setMethodCallHandler
+                    }
+                    playAudio(fileName, result)
+                }
+                "stopAudio" -> {
+                    stopSharedAudio()
+                    result.success(null)
                 }
                 else -> result.notImplemented()
             }
@@ -229,9 +254,13 @@ class MainActivity : FlutterActivity() {
                     (Intent.FLAG_GRANT_READ_URI_PERMISSION or
                         Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             contentResolver.takePersistableUriPermission(uri, flags)
+            val preferences =
+                getSharedPreferences(STORAGE_PREFERENCES, Context.MODE_PRIVATE)
+            if (preferences.getString(STORAGE_DIRECTORY_URI, null) != uri.toString()) {
+                preferences.edit().remove(STORAGE_DOCUMENT_INDEX).apply()
+            }
             releaseStoredDirectory(except = uri)
-            getSharedPreferences(STORAGE_PREFERENCES, Context.MODE_PRIVATE)
-                .edit()
+            preferences.edit()
                 .putString(STORAGE_DIRECTORY_URI, uri.toString())
                 .apply()
             result.success(directoryMessage(uri))
@@ -288,7 +317,7 @@ class MainActivity : FlutterActivity() {
         val uri = Uri.parse(raw)
         val retained =
             contentResolver.persistedUriPermissions.any {
-                it.uri == uri && it.isWritePermission
+                it.uri == uri && it.isReadPermission && it.isWritePermission
             }
         if (!retained) {
             getSharedPreferences(STORAGE_PREFERENCES, Context.MODE_PRIVATE)
@@ -305,6 +334,7 @@ class MainActivity : FlutterActivity() {
         getSharedPreferences(STORAGE_PREFERENCES, Context.MODE_PRIVATE)
             .edit()
             .remove(STORAGE_DIRECTORY_URI)
+            .remove(STORAGE_DOCUMENT_INDEX)
             .apply()
     }
 
@@ -384,7 +414,9 @@ class MainActivity : FlutterActivity() {
                 DocumentsContract.getTreeDocumentId(directory),
             )
         val target =
-            findChild(directory, source.name)
+            indexedDocument(directory, source.name)
+                ?: findChild(directory, source.name)
+                ?: predictableExternalStorageChild(directory, source.name)
                 ?: DocumentsContract.createDocument(
                     contentResolver,
                     rootDocument,
@@ -398,6 +430,7 @@ class MainActivity : FlutterActivity() {
                 output.flush()
             } ?: throw IllegalStateException("The document provider is not writable.")
         }
+        rememberDocument(source.name, target)
     }
 
     private fun findChild(
@@ -435,6 +468,411 @@ class MainActivity : FlutterActivity() {
         return null
     }
 
+    private fun listTranscriptions(result: MethodChannel.Result) {
+        val directory = storedDirectoryUri()
+        if (directory == null) {
+            result.error(
+                "directory_unavailable",
+                "Choose the shared save folder again.",
+                null,
+            )
+            return
+        }
+        storageExecutor.execute {
+            try {
+                val entries = readSharedTranscriptions(directory)
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][SharedStorage] state=list_ready " +
+                        "transcriptions=${entries.size}",
+                )
+                runOnUiThread { result.success(entries) }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    result.error(
+                        "list_failed",
+                        "Could not read transcriptions from the selected folder.",
+                        null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun readSharedTranscriptions(
+        directory: Uri,
+    ): List<Map<String, Any?>> {
+        data class Entry(
+            var text: String? = null,
+            var audioFileName: String? = null,
+            var updatedAtMillis: Long = 0,
+        )
+
+        val children =
+            DocumentsContract.buildChildDocumentsUriUsingTree(
+                directory,
+                DocumentsContract.getTreeDocumentId(directory),
+            )
+        val projection =
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+            )
+        val byId = mutableMapOf<String, Entry>()
+        var documentCount = 0
+        var indexedDocumentCount = 0
+        val wavNames = mutableSetOf<String>()
+        val transcriptNames = mutableSetOf<String>()
+        val readableTranscriptNames = mutableSetOf<String>()
+        for ((name, document) in documentIndex()) {
+            if (!documentBelongsToTree(directory, document) || !documentExists(document)) {
+                continue
+            }
+            indexedDocumentCount++
+            val lowerName = name.lowercase()
+            if (lowerName.endsWith(".part.wav") ||
+                lowerName.endsWith(".part.txt") ||
+                (!lowerName.endsWith(".wav") && !lowerName.endsWith(".txt"))
+            ) {
+                continue
+            }
+            val transcriptId = name.substringBeforeLast(".")
+            if (transcriptId.isEmpty()) {
+                continue
+            }
+            val entry = byId.getOrPut(transcriptId) { Entry() }
+            entry.updatedAtMillis =
+                maxOf(entry.updatedAtMillis, documentLastModified(document))
+            if (lowerName.endsWith(".wav")) {
+                wavNames.add(name)
+                entry.audioFileName = name
+                continue
+            }
+            transcriptNames.add(name)
+            val text =
+                try {
+                    readTranscriptText(document)
+                } catch (_: Exception) {
+                    ""
+                }
+            if (text.isNotEmpty()) {
+                readableTranscriptNames.add(name)
+                entry.text = text
+            }
+        }
+        contentResolver.query(children, projection, null, null, null)?.use { cursor ->
+            val idColumn =
+                cursor.getColumnIndexOrThrow(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                )
+            val nameColumn =
+                cursor.getColumnIndexOrThrow(
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                )
+            val modifiedColumn =
+                cursor.getColumnIndex(
+                    DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+                )
+            while (cursor.moveToNext()) {
+                documentCount++
+                val name = cursor.getString(nameColumn)?.trim().orEmpty()
+                val lowerName = name.lowercase()
+                if (name.isEmpty() ||
+                    lowerName.endsWith(".part.wav") ||
+                    lowerName.endsWith(".part.txt") ||
+                    (!lowerName.endsWith(".wav") && !lowerName.endsWith(".txt"))
+                ) {
+                    continue
+                }
+                val transcriptId = name.substringBeforeLast(".")
+                if (transcriptId.isEmpty()) {
+                    continue
+                }
+                val modified =
+                    if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn)) {
+                        cursor.getLong(modifiedColumn)
+                    } else {
+                        0L
+                    }
+                val entry = byId.getOrPut(transcriptId) { Entry() }
+                entry.updatedAtMillis = maxOf(entry.updatedAtMillis, modified)
+                if (lowerName.endsWith(".wav")) {
+                    wavNames.add(name)
+                    entry.audioFileName = name
+                    continue
+                }
+                transcriptNames.add(name)
+                val document =
+                    DocumentsContract.buildDocumentUriUsingTree(
+                        directory,
+                        cursor.getString(idColumn),
+                    )
+                val text = readTranscriptText(document)
+                if (text.isNotEmpty()) {
+                    readableTranscriptNames.add(name)
+                    entry.text = text
+                }
+            }
+        }
+        Log.i(
+            "WorkBench",
+            "[WorkBench][SharedStorage] state=list_scan " +
+                "provider_documents=$documentCount " +
+                "indexed_documents=$indexedDocumentCount " +
+                "wav_files=${wavNames.size} " +
+                "transcript_files=${transcriptNames.size} " +
+                "readable_transcripts=${readableTranscriptNames.size}",
+        )
+        return byId.entries
+            .asSequence()
+            .filter { it.value.text != null }
+            .sortedWith(
+                compareByDescending<Map.Entry<String, Entry>> {
+                    it.value.updatedAtMillis
+                }.thenByDescending { it.key },
+            )
+            .map { (id, entry) ->
+                mapOf(
+                    "id" to id,
+                    "text" to entry.text,
+                    "audioFileName" to entry.audioFileName,
+                    "updatedAtMillis" to entry.updatedAtMillis,
+                )
+            }.toList()
+    }
+
+    private fun playAudio(
+        fileName: String,
+        result: MethodChannel.Result,
+    ) {
+        if (fileName.contains("/") ||
+            fileName.contains("\\") ||
+            !fileName.lowercase().endsWith(".wav")
+        ) {
+            result.error("invalid_audio", "The saved audio name is invalid.", null)
+            return
+        }
+        val directory = storedDirectoryUri()
+        val document =
+            directory?.let {
+                indexedDocument(it, fileName) ?: findChild(it, fileName)
+            }
+        if (document == null) {
+            result.error("audio_missing", "The saved WAV file is unavailable.", null)
+            return
+        }
+        stopSharedAudio()
+        val player = MediaPlayer()
+        var resultPending = true
+        sharedAudioPlayer = player
+        sharedAudioFileName = fileName
+        player.setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build(),
+        )
+        player.setOnPreparedListener { prepared ->
+            if (sharedAudioPlayer !== prepared) {
+                return@setOnPreparedListener
+            }
+            prepared.start()
+            Log.i(
+                "WorkBench",
+                "[WorkBench][SharedStorage] state=playback_started " +
+                    "source=shared_folder",
+            )
+            if (resultPending) {
+                resultPending = false
+                result.success(null)
+            }
+        }
+        player.setOnCompletionListener { completed ->
+            if (sharedAudioPlayer !== completed) {
+                return@setOnCompletionListener
+            }
+            val completedName = sharedAudioFileName
+            stopSharedAudio()
+            Log.i(
+                "WorkBench",
+                "[WorkBench][SharedStorage] state=playback_completed " +
+                    "source=shared_folder",
+            )
+            storageChannel.invokeMethod(
+                "playbackCompleted",
+                mapOf("fileName" to completedName),
+            )
+        }
+        player.setOnErrorListener { failed, _, _ ->
+            if (sharedAudioPlayer === failed) {
+                val failedName = sharedAudioFileName
+                stopSharedAudio()
+                if (resultPending) {
+                    resultPending = false
+                    result.error(
+                        "audio_playback",
+                        "The saved WAV file could not be played.",
+                        null,
+                    )
+                } else {
+                    storageChannel.invokeMethod(
+                        "playbackCompleted",
+                        mapOf("fileName" to failedName),
+                    )
+                }
+            }
+            true
+        }
+        try {
+            player.setDataSource(applicationContext, document)
+            player.prepareAsync()
+        } catch (_: Exception) {
+            stopSharedAudio()
+            if (resultPending) {
+                resultPending = false
+                result.error(
+                    "audio_playback",
+                    "The saved WAV file could not be opened.",
+                    null,
+                )
+            }
+        }
+    }
+
+    private fun readTranscriptText(document: Uri): String {
+        val input = contentResolver.openInputStream(document) ?: return ""
+        return input.bufferedReader(Charsets.UTF_8).use { reader ->
+            val text = StringBuilder()
+            val buffer = CharArray(4096)
+            while (text.length < 65_536) {
+                val remaining = minOf(buffer.size, 65_536 - text.length)
+                val count = reader.read(buffer, 0, remaining)
+                if (count <= 0) {
+                    break
+                }
+                text.append(buffer, 0, count)
+            }
+            text.toString().trim()
+        }
+    }
+
+    private fun documentIndex(): MutableMap<String, Uri> {
+        val stored =
+            getSharedPreferences(STORAGE_PREFERENCES, Context.MODE_PRIVATE)
+                .getStringSet(STORAGE_DOCUMENT_INDEX, emptySet())
+                .orEmpty()
+        val documents = mutableMapOf<String, Uri>()
+        for (value in stored) {
+            val separator = value.indexOf('\n')
+            if (separator <= 0 || separator == value.lastIndex) {
+                continue
+            }
+            val name = value.substring(0, separator)
+            val uri = Uri.parse(value.substring(separator + 1))
+            documents[name] = uri
+        }
+        return documents
+    }
+
+    private fun rememberDocument(
+        name: String,
+        document: Uri,
+    ) {
+        val documents = documentIndex()
+        documents[name] = document
+        val stored = documents.map { (key, value) -> "$key\n$value" }.toSet()
+        getSharedPreferences(STORAGE_PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .putStringSet(STORAGE_DOCUMENT_INDEX, stored)
+            .apply()
+    }
+
+    private fun indexedDocument(
+        directory: Uri,
+        name: String,
+    ): Uri? {
+        val document = documentIndex()[name] ?: return null
+        return document.takeIf {
+            documentBelongsToTree(directory, it) && documentExists(it)
+        }
+    }
+
+    private fun predictableExternalStorageChild(
+        directory: Uri,
+        name: String,
+    ): Uri? {
+        if (directory.authority != "com.android.externalstorage.documents") {
+            return null
+        }
+        val parentId = DocumentsContract.getTreeDocumentId(directory)
+        val document =
+            DocumentsContract.buildDocumentUriUsingTree(
+                directory,
+                "$parentId/$name",
+            )
+        return document.takeIf(::documentExists)
+    }
+
+    private fun documentBelongsToTree(
+        directory: Uri,
+        document: Uri,
+    ): Boolean =
+        try {
+            directory.authority == document.authority &&
+                DocumentsContract.getTreeDocumentId(directory) ==
+                DocumentsContract.getTreeDocumentId(document)
+        } catch (_: IllegalArgumentException) {
+            false
+        }
+
+    private fun documentExists(document: Uri): Boolean =
+        try {
+            contentResolver.query(
+                document,
+                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                null,
+                null,
+                null,
+            )?.use { it.moveToFirst() } == true
+        } catch (_: Exception) {
+            false
+        }
+
+    private fun documentLastModified(document: Uri): Long =
+        try {
+            contentResolver.query(
+                document,
+                arrayOf(DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst() && !cursor.isNull(0)) {
+                    cursor.getLong(0)
+                } else {
+                    0L
+                }
+            } ?: 0L
+        } catch (_: Exception) {
+            0L
+        }
+
+    private fun stopSharedAudio() {
+        val player = sharedAudioPlayer
+        sharedAudioPlayer = null
+        sharedAudioFileName = null
+        if (player != null) {
+            try {
+                player.stop()
+            } catch (_: IllegalStateException) {
+                // A player still preparing can be released without stopping.
+            }
+            player.reset()
+            player.release()
+        }
+    }
+
     override fun onDestroy() {
         pendingDirectoryResult?.error(
             "activity_closed",
@@ -442,6 +880,7 @@ class MainActivity : FlutterActivity() {
             null,
         )
         pendingDirectoryResult = null
+        stopSharedAudio()
         storageExecutor.shutdown()
         WorkBenchLc3.dispose()
         super.onDestroy()

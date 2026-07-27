@@ -143,6 +143,9 @@ without disconnecting either wearable.
 - `lib/src/audio/speech_model_preferences.dart` — persisted Tools selection.
 - `lib/src/audio/transcription_worker.dart` — selected STT isolate and durable
   transcription job ledger.
+- `lib/src/audio/shared_audio_export_store.dart` — persisted Android
+  document-tree selection, shared transcript listing, and file-backed playback
+  state.
 - `lib/src/audio/audio_pipeline_coordinator.dart` — startup gating, worker
   supervision, recovery buffers, and user-visible status.
 - `third_party/sherpa_onnx_android_arm64_nnapi/` — pinned arm64 Sherpa-ONNX
@@ -157,8 +160,12 @@ without disconnecting either wearable.
   I/O, and reconnect.
 - `lib/src/wearable_controller.dart` — permissions, scanning, persistence,
   logs, and application state.
-- `lib/src/ui/home_page.dart` — simplified Home status/events UI and separate
-  manual Tools screen.
+- `lib/src/ui/home_page.dart` — simplified Home status UI and separate manual
+  Tools screen.
+- `lib/src/ui/home_history_panel.dart` — peer Events/Transcriptions views,
+  complete saved transcript text, and shared WAV playback controls.
+- `android/.../MainActivity.kt` — scoped Android document-tree access,
+  transcript enumeration, and content-URI media playback.
 - `android/.../BleConnectionService.kt` — Android foreground service and wake
   lock.
 - `android/.../WorkBenchApplication.kt` — native BLE cancellation safety.

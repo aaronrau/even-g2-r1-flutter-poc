@@ -15,26 +15,35 @@ void main() {
 
   test('restores a persisted shared folder without exposing its URI', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
-      expect(call.method, 'currentDirectory');
-      return <String, Object>{'displayName': 'Work Bench Audio'};
+      return switch (call.method) {
+        'currentDirectory' => <String, Object>{
+          'displayName': 'Work Bench Audio',
+        },
+        'listTranscriptions' => <Object?>[],
+        _ => fail('Unexpected method ${call.method}'),
+      };
     });
     final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+    addTearDown(store.dispose);
 
     await store.initialize();
 
     expect(store.folder?.displayName, 'Work Bench Audio');
     expect(store.hasSharedFolder, isTrue);
+    expect(store.transcripts, isEmpty);
   });
 
   test('keeps the current folder when the picker is cancelled', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       return switch (call.method) {
         'currentDirectory' => <String, Object>{'displayName': 'Current'},
+        'listTranscriptions' => <Object?>[],
         'chooseDirectory' => null,
         _ => fail('Unexpected method ${call.method}'),
       };
     });
     final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+    addTearDown(store.dispose);
     await store.initialize();
 
     expect(await store.chooseFolder(), isNull);
@@ -46,6 +55,7 @@ void main() {
     messenger.setMockMethodCallHandler(channel, (call) async {
       return switch (call.method) {
         'currentDirectory' => <String, Object>{'displayName': 'Shared'},
+        'listTranscriptions' => <Object?>[],
         'exportFiles' => () {
           exportedPaths =
               ((call.arguments as Map<Object?, Object?>)['paths']!
@@ -57,6 +67,7 @@ void main() {
       };
     });
     final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+    addTearDown(store.dispose);
     await store.initialize();
 
     final count = await store.exportFiles(<String>[
@@ -78,16 +89,111 @@ void main() {
     messenger.setMockMethodCallHandler(channel, (call) async {
       return switch (call.method) {
         'currentDirectory' => <String, Object>{'displayName': 'Shared'},
+        'listTranscriptions' => <Object?>[],
         'clearDirectory' => null,
         _ => fail('Unexpected method ${call.method}'),
       };
     });
     final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+    addTearDown(store.dispose);
     await store.initialize();
 
     await store.clearFolder();
 
     expect(store.folder, isNull);
     expect(store.hasSharedFolder, isFalse);
+  });
+
+  test('loads saved transcripts and controls shared WAV playback', () async {
+    final calls = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      return switch (call.method) {
+        'currentDirectory' => <String, Object>{'displayName': 'Shared'},
+        'listTranscriptions' => <Object?>[
+          <Object?, Object?>{
+            'id': 'older',
+            'text': 'Older transcript',
+            'audioFileName': 'older.wav',
+            'updatedAtMillis': 1000,
+          },
+          <Object?, Object?>{
+            'id': 'newer',
+            'text': 'Newer transcript',
+            'audioFileName': 'newer.wav',
+            'updatedAtMillis': 2000,
+          },
+          <Object?, Object?>{
+            'id': 'invalid',
+            'text': '',
+            'updatedAtMillis': 3000,
+          },
+        ],
+        'playAudio' => null,
+        'stopAudio' => null,
+        _ => fail('Unexpected method ${call.method}'),
+      };
+    });
+    final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+    addTearDown(store.dispose);
+
+    await store.initialize();
+
+    expect(store.transcripts.map((transcript) => transcript.text), <String>[
+      'Newer transcript',
+      'Older transcript',
+    ]);
+    final newest = store.transcripts.first;
+    await store.toggleAudio(newest);
+    expect(store.playingAudioFileName, 'newer.wav');
+
+    await store.toggleAudio(newest);
+    expect(store.playingAudioFileName, isNull);
+    expect(calls, containsAllInOrder(<String>['playAudio', 'stopAudio']));
+  });
+
+  test(
+    'reports shared-folder read failures without dropping the grant',
+    () async {
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        return switch (call.method) {
+          'currentDirectory' => <String, Object>{'displayName': 'Shared'},
+          'listTranscriptions' => throw PlatformException(code: 'list_failed'),
+          _ => fail('Unexpected method ${call.method}'),
+        };
+      });
+      final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+      addTearDown(store.dispose);
+
+      await expectLater(store.initialize(), throwsA(isA<PlatformException>()));
+
+      expect(store.folder?.displayName, 'Shared');
+      expect(store.transcriptLoadError, contains('Could not read'));
+      expect(store.isLoadingTranscripts, isFalse);
+    },
+  );
+
+  test('clears optimistic playback state when native playback fails', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      return switch (call.method) {
+        'playAudio' => throw PlatformException(code: 'audio_playback'),
+        _ => fail('Unexpected method ${call.method}'),
+      };
+    });
+    final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+    addTearDown(store.dispose);
+    final transcript = SharedTranscript(
+      id: 'sample',
+      text: 'Generic sample transcript',
+      audioFileName: 'sample.wav',
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(0),
+    );
+
+    await expectLater(
+      store.toggleAudio(transcript),
+      throwsA(isA<PlatformException>()),
+    );
+
+    expect(store.playingAudioFileName, isNull);
   });
 }

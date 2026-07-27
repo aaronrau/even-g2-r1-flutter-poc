@@ -5,6 +5,7 @@ import '../ble/ble_models.dart';
 import '../startup/startup_state.dart';
 import '../util/hex.dart';
 import '../wearable_controller.dart';
+import 'home_history_panel.dart';
 import 'workbench_theme.dart';
 
 final class HomePage extends StatefulWidget {
@@ -162,7 +163,7 @@ final class _HomePageState extends State<HomePage> {
           const SizedBox(height: 6),
           _buildConnectionsCard(),
           const Divider(height: 16),
-          _buildEventsCard(),
+          _buildHistoryPanel(),
         ],
       ),
     );
@@ -363,60 +364,24 @@ final class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildEventsCard() {
-    final events = controller.eventLogs;
+  Widget _buildHistoryPanel() {
     return Expanded(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Row(
-            children: <Widget>[
-              Expanded(
-                child: Text(
-                  'Events',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-              ),
-              IconButton(
-                tooltip: 'Clear events',
-                onPressed: controller.logs.isEmpty
-                    ? null
-                    : controller.clearLogs,
-                icon: const Icon(Icons.clear_all),
-                visualDensity: VisualDensity.compact,
-              ),
-            ],
-          ),
-          if (events.isEmpty)
-            const Expanded(child: Center(child: Text('No events')))
-          else
-            Expanded(
-              child: ListView.builder(
-                itemCount: events.length,
-                itemExtent: 28,
-                itemBuilder: (context, index) {
-                  final entry = events[index];
-                  final time =
-                      '${entry.timestamp.hour.toString().padLeft(2, '0')}:'
-                      '${entry.timestamp.minute.toString().padLeft(2, '0')}';
-                  return Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      '$time  ${entry.source}  ${_singleLine(entry.message)}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: entry.isError
-                            ? Theme.of(context).colorScheme.error
-                            : null,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-        ],
+      child: HomeHistoryPanel(
+        events: controller.eventLogs,
+        transcriptions: controller.sharedTranscripts,
+        supportsSharedFolder: controller.supportsSharedAudioFolder,
+        sharedFolderName: controller.sharedAudioFolder?.displayName,
+        isLoadingTranscriptions: controller.isLoadingSharedTranscripts,
+        isStorageBusy: _busy || controller.isExportingSharedAudio,
+        transcriptionError: controller.sharedTranscriptError,
+        isPlayingTranscript: controller.isPlayingTranscript,
+        onClearEvents: controller.clearLogs,
+        onChooseFolder: () => _run(controller.chooseSharedAudioFolder),
+        onRefreshTranscriptions: () =>
+            _run(controller.refreshSharedTranscripts),
+        onToggleTranscriptAudio: (transcript) {
+          _run(() => controller.toggleTranscriptAudio(transcript));
+        },
       ),
     );
   }
@@ -510,8 +475,8 @@ final class _HomePageState extends State<HomePage> {
             const SizedBox(height: 4),
             Text(
               'Choose a device folder for Files-visible WAV audio and text '
-              'transcripts. Private durable capture remains available if '
-              'shared export is interrupted.',
+              'transcripts. Home can read and play those shared files; private '
+              'durable capture remains available if export is interrupted.',
               style: theme.textTheme.bodyMedium,
             ),
             const SizedBox(height: 8),
@@ -768,6 +733,23 @@ final class _HomePageState extends State<HomePage> {
               ],
             ),
             const SizedBox(height: 16),
+            Text('Peer views', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 8),
+            IgnorePointer(
+              child: SegmentedButton<String>(
+                segments: const <ButtonSegment<String>>[
+                  ButtonSegment<String>(value: 'events', label: Text('Events')),
+                  ButtonSegment<String>(
+                    value: 'transcriptions',
+                    label: Text('Transcriptions'),
+                  ),
+                ],
+                selected: const <String>{'events'},
+                showSelectedIcon: false,
+                onSelectionChanged: (_) {},
+              ),
+            ),
+            const SizedBox(height: 16),
             Text('Setting', style: theme.textTheme.titleSmall),
             const SizedBox(height: 8),
             IgnorePointer(
@@ -815,6 +797,7 @@ final class _HomePageState extends State<HomePage> {
             Text(
               '16dp section padding • 12dp group gap • 8dp control gap\n'
               '48dp minimum targets • grayscale UI • green status dots only\n'
+              'Segmented tabs switch between peer views\n'
               'Labeled dropdowns select one persisted setting\n'
               'Connected devices replace “Connected” with a battery icon '
               'and percentage',
@@ -825,9 +808,6 @@ final class _HomePageState extends State<HomePage> {
       ),
     );
   }
-
-  String _singleLine(String value) =>
-      value.replaceAll(RegExp(r'\s+'), ' ').trim();
 
   IconData _batteryIcon(int level, {required bool charging}) {
     if (charging) {

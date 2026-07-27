@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 final class SharedAudioFolder {
@@ -8,19 +10,43 @@ final class SharedAudioFolder {
   final String displayName;
 }
 
-final class SharedAudioExportStore {
+final class SharedTranscript {
+  const SharedTranscript({
+    required this.id,
+    required this.text,
+    required this.updatedAt,
+    this.audioFileName,
+  });
+
+  final String id;
+  final String text;
+  final DateTime updatedAt;
+  final String? audioFileName;
+
+  bool get hasAudio => audioFileName != null;
+}
+
+final class SharedAudioExportStore extends ChangeNotifier {
   SharedAudioExportStore({
     MethodChannel channel = const MethodChannel(
       'dev.opensourceglasses/workbench_storage',
     ),
     bool? isAndroid,
   }) : _channel = channel,
-       _isAndroid = isAndroid ?? Platform.isAndroid;
+       _isAndroid = isAndroid ?? Platform.isAndroid {
+    if (_isAndroid) {
+      _channel.setMethodCallHandler(_handlePlatformCall);
+    }
+  }
 
   final MethodChannel _channel;
   final bool _isAndroid;
 
   SharedAudioFolder? folder;
+  List<SharedTranscript> transcripts = const <SharedTranscript>[];
+  bool isLoadingTranscripts = false;
+  String? transcriptLoadError;
+  String? playingAudioFileName;
 
   bool get isSupported => _isAndroid;
   bool get hasSharedFolder => folder != null;
@@ -32,6 +58,9 @@ final class SharedAudioExportStore {
     folder = _folderFromMessage(
       await _channel.invokeMapMethod<String, Object?>('currentDirectory'),
     );
+    if (folder != null) {
+      await refreshTranscriptions();
+    }
   }
 
   Future<SharedAudioFolder?> chooseFolder() async {
@@ -45,6 +74,9 @@ final class SharedAudioExportStore {
     );
     if (selected != null) {
       folder = selected;
+      transcripts = const <SharedTranscript>[];
+      transcriptLoadError = null;
+      notifyListeners();
     }
     return selected;
   }
@@ -53,8 +85,12 @@ final class SharedAudioExportStore {
     if (!_isAndroid) {
       return;
     }
+    await stopAudio();
     await _channel.invokeMethod<void>('clearDirectory');
     folder = null;
+    transcripts = const <SharedTranscript>[];
+    transcriptLoadError = null;
+    notifyListeners();
   }
 
   Future<int> exportFiles(Iterable<String> paths) async {
@@ -75,6 +111,73 @@ final class SharedAudioExportStore {
     return exported ?? 0;
   }
 
+  Future<void> refreshTranscriptions() async {
+    if (!_isAndroid || folder == null) {
+      transcripts = const <SharedTranscript>[];
+      transcriptLoadError = null;
+      notifyListeners();
+      return;
+    }
+    isLoadingTranscripts = true;
+    transcriptLoadError = null;
+    notifyListeners();
+    try {
+      final messages =
+          await _channel.invokeMethod<List<Object?>>('listTranscriptions') ??
+          const <Object?>[];
+      final loaded = messages
+          .whereType<Map<Object?, Object?>>()
+          .map(_transcriptFromMessage)
+          .whereType<SharedTranscript>()
+          .toList(growable: false);
+      loaded.sort((left, right) {
+        final byTime = right.updatedAt.compareTo(left.updatedAt);
+        return byTime != 0 ? byTime : right.id.compareTo(left.id);
+      });
+      transcripts = loaded;
+    } catch (_) {
+      transcriptLoadError =
+          'Could not read the selected folder. Choose it again or retry.';
+      rethrow;
+    } finally {
+      isLoadingTranscripts = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> toggleAudio(SharedTranscript transcript) async {
+    final audioFileName = transcript.audioFileName;
+    if (!_isAndroid || audioFileName == null) {
+      return;
+    }
+    if (playingAudioFileName == audioFileName) {
+      await stopAudio();
+      return;
+    }
+    playingAudioFileName = audioFileName;
+    notifyListeners();
+    try {
+      await _channel.invokeMethod<void>('playAudio', <String, Object>{
+        'fileName': audioFileName,
+      });
+    } catch (_) {
+      if (playingAudioFileName == audioFileName) {
+        playingAudioFileName = null;
+        notifyListeners();
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> stopAudio() async {
+    if (!_isAndroid || playingAudioFileName == null) {
+      return;
+    }
+    await _channel.invokeMethod<void>('stopAudio');
+    playingAudioFileName = null;
+    notifyListeners();
+  }
+
   SharedAudioFolder? _folderFromMessage(Map<String, Object?>? message) {
     final displayName = message?['displayName'];
     if (displayName is! String || displayName.trim().isEmpty) {
@@ -83,10 +186,66 @@ final class SharedAudioExportStore {
     return SharedAudioFolder(displayName: displayName.trim());
   }
 
+  SharedTranscript? _transcriptFromMessage(Map<Object?, Object?> message) {
+    final id = message['id'];
+    final text = message['text'];
+    final updatedAtMillis = message['updatedAtMillis'];
+    if (id is! String ||
+        id.trim().isEmpty ||
+        text is! String ||
+        text.trim().isEmpty ||
+        updatedAtMillis is! int) {
+      return null;
+    }
+    final audioFileName = message['audioFileName'];
+    return SharedTranscript(
+      id: id.trim(),
+      text: text.trim(),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(updatedAtMillis),
+      audioFileName: audioFileName is String && audioFileName.trim().isNotEmpty
+          ? audioFileName.trim()
+          : null,
+    );
+  }
+
+  Future<void> _handlePlatformCall(MethodCall call) async {
+    if (call.method != 'playbackCompleted') {
+      return;
+    }
+    final arguments = call.arguments;
+    final fileName = arguments is Map<Object?, Object?>
+        ? arguments['fileName']
+        : null;
+    if (fileName == playingAudioFileName) {
+      playingAudioFileName = null;
+      notifyListeners();
+    }
+  }
+
   bool _isShareablePath(String path) {
     final lower = path.toLowerCase();
     return (lower.endsWith('.wav') || lower.endsWith('.txt')) &&
         !lower.endsWith('.part.wav') &&
         !lower.endsWith('.part.txt');
+  }
+
+  Future<void> _stopAudioForDispose() async {
+    try {
+      await _channel.invokeMethod<void>('stopAudio');
+    } catch (_) {
+      // The Flutter engine may already be detaching during app shutdown.
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_isAndroid) {
+      if (playingAudioFileName != null) {
+        unawaited(_stopAudioForDispose());
+      }
+      playingAudioFileName = null;
+      _channel.setMethodCallHandler(null);
+    }
+    super.dispose();
   }
 }

@@ -113,8 +113,9 @@ expose for a true locked Hub mode.
   with a Tools-selectable local model. Parakeet 0.6B is the current default;
   Parakeet 110M and Tiny Whisper remain available.
 - Lets Android users choose a shared device folder for Files-visible speech
-  WAVs and text transcripts while retaining the app-private durable capture
-  path for recovery.
+  WAVs and text transcripts. Home's **Transcriptions** tab reads the saved text
+  and plays its paired WAV directly from that folder while retaining the
+  app-private durable capture path for recovery.
 - Draws a thin waveform in the upper-left using LC3 global gain and an adaptive
   silence floor.
 - Displays `Tap`, `Double tap`, `Swipe up`, `Swipe down`, and
@@ -258,17 +259,24 @@ Then:
    approve the device folder that should receive WAV audio and text
    transcripts. Existing completed speech files are copied there, and future
    files are exported as they finish.
-3. Tap **Connect devices**. Work Bench scans for the G2 pair and R1, connects
+3. Return to Home and select **Transcriptions** to read the complete saved text
+   or play its paired WAV. Select **Events** to see the complete in-app event
+   history.
+4. Tap **Connect devices**. Work Bench scans for the G2 pair and R1, connects
    them, and releases the temporary R1 setup link after Tri-Sync handoff.
-4. Speak to move the waveform and use the ring to display gestures.
-5. Tap **Disconnect** to reset the complete wearable connection.
+5. Speak to move the waveform and use the ring to display gestures.
+6. Tap **Disconnect** to reset the complete wearable connection.
 
-The selected folder grant persists across app restarts and can be changed or
-cleared from the same setting. Clearing the setting does not delete files
-already exported. Shared WAV and text files can contain sensitive microphone
-content, so choose a folder whose access matches the intended privacy boundary.
-The raw LC3 recovery journal, transcription ledger, and model files remain in
-app-private storage and are never exposed through the shared folder.
+Android's system folder picker gives Work Bench a persistent, scoped read/write
+grant to only the selected folder; the app does not request broad storage
+permission. The folder remains accessible through a file manager and to other
+apps when the user gives those apps access to the same location. The grant can
+be changed or cleared from the same setting, and clearing it does not delete
+files already exported. Shared WAV and text files can contain sensitive
+microphone content, so choose a folder whose access matches the intended
+privacy boundary. The raw LC3 recovery journal, transcription ledger, and
+model files remain in app-private storage and are never exposed through the
+shared folder.
 
 ## More detail
 
