@@ -16,8 +16,11 @@ void main() {
     final selectedTabs = <HomeHistoryTab>[];
     final transcript = SharedTranscript(
       id: 'sample',
-      text:
+      originalText:
           'Work Bench audio safety check number seven. '
+          'The glasses should transcribe every word.',
+      correctedText:
+          'Work Bench audio safety check number 7. '
           'The glasses should transcribe every word.',
       audioFileName: 'sample.wav',
       updatedAt: DateTime(2026, 1, 2, 3, 4),
@@ -63,7 +66,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(selectedTabs, <HomeHistoryTab>[HomeHistoryTab.transcriptions]);
-    expect(find.text(transcript.text), findsOneWidget);
+    expect(find.text(transcript.originalText), findsOneWidget);
+    expect(find.text(transcript.correctedText!), findsOneWidget);
+    expect(find.text('Original'), findsOneWidget);
+    expect(find.text('Corrected'), findsOneWidget);
     expect(find.text('Files-visible in Work Bench Audio'), findsOneWidget);
     final playButton = find.byTooltip('Play audio');
     expect(playButton, findsOneWidget);
@@ -148,7 +154,8 @@ void main() {
         45,
         (index) => SharedTranscript(
           id: 'sample-$index',
-          text: 'Transcript $index',
+          originalText: 'Transcript $index',
+          correctedText: 'Corrected transcript $index',
           audioFileName: 'sample-$index.wav',
           updatedAt: DateTime(2026, 1, 1).subtract(Duration(minutes: index)),
         ),

@@ -30,6 +30,8 @@ class MainActivity : FlutterActivity() {
             "dev.opensourceglasses/workbench_runtime"
         private const val STORAGE_CHANNEL =
             "dev.opensourceglasses/workbench_storage"
+        private const val GEMMA_CHANNEL =
+            "dev.opensourceglasses/workbench_gemma"
         private const val STORAGE_PREFERENCES = "workbench_storage"
         private const val STORAGE_DIRECTORY_URI = "shared_audio_directory_uri"
         private const val STORAGE_DOCUMENT_INDEX = "shared_audio_document_index"
@@ -41,6 +43,7 @@ class MainActivity : FlutterActivity() {
     private lateinit var storageChannel: MethodChannel
     private var sharedAudioPlayer: MediaPlayer? = null
     private var sharedAudioFileName: String? = null
+    private lateinit var gemmaBridge: GemmaCorrectionBridge
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -208,6 +211,11 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+        gemmaBridge = GemmaCorrectionBridge(applicationContext)
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            GEMMA_CHANNEL,
+        ).setMethodCallHandler(gemmaBridge::handle)
     }
 
     private fun chooseDirectory(result: MethodChannel.Result) {
@@ -503,10 +511,43 @@ class MainActivity : FlutterActivity() {
         directory: Uri,
     ): List<Map<String, Any?>> {
         data class Entry(
-            var text: String? = null,
+            var originalText: String? = null,
+            var legacyText: String? = null,
+            var correctedText: String? = null,
             var audioFileName: String? = null,
             var updatedAtMillis: Long = 0,
         )
+        data class SharedFile(val transcriptId: String, val kind: String)
+
+        fun classify(name: String): SharedFile? {
+            val lower = name.lowercase()
+            if (name.isEmpty() ||
+                lower.endsWith(".part.wav") ||
+                lower.endsWith(".part.txt")
+            ) {
+                return null
+            }
+            val suffix =
+                when {
+                    lower.endsWith(".corrected.txt") -> ".corrected.txt"
+                    lower.endsWith(".raw.txt") -> ".raw.txt"
+                    lower.endsWith(".txt") -> ".txt"
+                    lower.endsWith(".wav") -> ".wav"
+                    else -> return null
+                }
+            val id = name.dropLast(suffix.length)
+            if (id.isEmpty()) {
+                return null
+            }
+            val kind =
+                when (suffix) {
+                    ".corrected.txt" -> "corrected"
+                    ".raw.txt" -> "original"
+                    ".txt" -> "legacy"
+                    else -> "audio"
+                }
+            return SharedFile(id, kind)
+        }
 
         val children =
             DocumentsContract.buildChildDocumentsUriUsingTree(
@@ -530,21 +571,11 @@ class MainActivity : FlutterActivity() {
                 continue
             }
             indexedDocumentCount++
-            val lowerName = name.lowercase()
-            if (lowerName.endsWith(".part.wav") ||
-                lowerName.endsWith(".part.txt") ||
-                (!lowerName.endsWith(".wav") && !lowerName.endsWith(".txt"))
-            ) {
-                continue
-            }
-            val transcriptId = name.substringBeforeLast(".")
-            if (transcriptId.isEmpty()) {
-                continue
-            }
-            val entry = byId.getOrPut(transcriptId) { Entry() }
+            val sharedFile = classify(name) ?: continue
+            val entry = byId.getOrPut(sharedFile.transcriptId) { Entry() }
             entry.updatedAtMillis =
                 maxOf(entry.updatedAtMillis, documentLastModified(document))
-            if (lowerName.endsWith(".wav")) {
+            if (sharedFile.kind == "audio") {
                 wavNames.add(name)
                 entry.audioFileName = name
                 continue
@@ -558,7 +589,11 @@ class MainActivity : FlutterActivity() {
                 }
             if (text.isNotEmpty()) {
                 readableTranscriptNames.add(name)
-                entry.text = text
+                when (sharedFile.kind) {
+                    "original" -> entry.originalText = text
+                    "corrected" -> entry.correctedText = text
+                    else -> entry.legacyText = text
+                }
             }
         }
         contentResolver.query(children, projection, null, null, null)?.use { cursor ->
@@ -577,27 +612,16 @@ class MainActivity : FlutterActivity() {
             while (cursor.moveToNext()) {
                 documentCount++
                 val name = cursor.getString(nameColumn)?.trim().orEmpty()
-                val lowerName = name.lowercase()
-                if (name.isEmpty() ||
-                    lowerName.endsWith(".part.wav") ||
-                    lowerName.endsWith(".part.txt") ||
-                    (!lowerName.endsWith(".wav") && !lowerName.endsWith(".txt"))
-                ) {
-                    continue
-                }
-                val transcriptId = name.substringBeforeLast(".")
-                if (transcriptId.isEmpty()) {
-                    continue
-                }
+                val sharedFile = classify(name) ?: continue
                 val modified =
                     if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn)) {
                         cursor.getLong(modifiedColumn)
                     } else {
                         0L
                     }
-                val entry = byId.getOrPut(transcriptId) { Entry() }
+                val entry = byId.getOrPut(sharedFile.transcriptId) { Entry() }
                 entry.updatedAtMillis = maxOf(entry.updatedAtMillis, modified)
-                if (lowerName.endsWith(".wav")) {
+                if (sharedFile.kind == "audio") {
                     wavNames.add(name)
                     entry.audioFileName = name
                     continue
@@ -611,7 +635,11 @@ class MainActivity : FlutterActivity() {
                 val text = readTranscriptText(document)
                 if (text.isNotEmpty()) {
                     readableTranscriptNames.add(name)
-                    entry.text = text
+                    when (sharedFile.kind) {
+                        "original" -> entry.originalText = text
+                        "corrected" -> entry.correctedText = text
+                        else -> entry.legacyText = text
+                    }
                 }
             }
         }
@@ -626,7 +654,9 @@ class MainActivity : FlutterActivity() {
         )
         return byId.entries
             .asSequence()
-            .filter { it.value.text != null }
+            .filter {
+                it.value.originalText != null || it.value.legacyText != null
+            }
             .sortedWith(
                 compareByDescending<Map.Entry<String, Entry>> {
                     it.value.updatedAtMillis
@@ -635,7 +665,9 @@ class MainActivity : FlutterActivity() {
             .map { (id, entry) ->
                 mapOf(
                     "id" to id,
-                    "text" to entry.text,
+                    "originalText" to
+                        (entry.originalText ?: entry.legacyText),
+                    "correctedText" to entry.correctedText,
                     "audioFileName" to entry.audioFileName,
                     "updatedAtMillis" to entry.updatedAtMillis,
                 )
@@ -880,6 +912,9 @@ class MainActivity : FlutterActivity() {
             null,
         )
         pendingDirectoryResult = null
+        if (::gemmaBridge.isInitialized) {
+            gemmaBridge.dispose()
+        }
         stopSharedAudio()
         storageExecutor.shutdown()
         WorkBenchLc3.dispose()

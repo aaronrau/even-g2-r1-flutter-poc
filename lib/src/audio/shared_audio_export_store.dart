@@ -13,17 +13,21 @@ final class SharedAudioFolder {
 final class SharedTranscript {
   const SharedTranscript({
     required this.id,
-    required this.text,
+    required this.originalText,
     required this.updatedAt,
+    this.correctedText,
     this.audioFileName,
   });
 
   final String id;
-  final String text;
+  final String originalText;
+  final String? correctedText;
   final DateTime updatedAt;
   final String? audioFileName;
 
   bool get hasAudio => audioFileName != null;
+  bool get hasCorrection => correctedText != null;
+  String get text => correctedText ?? originalText;
 }
 
 final class SharedAudioExportStore extends ChangeNotifier {
@@ -185,19 +189,23 @@ final class SharedAudioExportStore extends ChangeNotifier {
 
   SharedTranscript? _transcriptFromMessage(Map<Object?, Object?> message) {
     final id = message['id'];
-    final text = message['text'];
+    final originalText = message['originalText'];
+    final correctedText = message['correctedText'];
     final updatedAtMillis = message['updatedAtMillis'];
     if (id is! String ||
         id.trim().isEmpty ||
-        text is! String ||
-        text.trim().isEmpty ||
+        originalText is! String ||
+        originalText.trim().isEmpty ||
         updatedAtMillis is! int) {
       return null;
     }
     final audioFileName = message['audioFileName'];
     return SharedTranscript(
       id: id.trim(),
-      text: text.trim(),
+      originalText: originalText.trim(),
+      correctedText: correctedText is String && correctedText.trim().isNotEmpty
+          ? correctedText.trim()
+          : null,
       updatedAt: DateTime.fromMillisecondsSinceEpoch(updatedAtMillis),
       audioFileName: audioFileName is String && audioFileName.trim().isNotEmpty
           ? audioFileName.trim()

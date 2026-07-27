@@ -149,3 +149,35 @@ runtime can silently fall back to CPU.
 - Record the phone OS, app revision, runtime revision, model hash, provider,
   and profiling evidence for accelerator qualification. Repeat qualification
   after any runtime, model, OS, or device-family change.
+- The current Gemma 4 E4B / LiteRT-LM 0.14.0 build is GPU-qualified only for
+  the representative RedMagic phone family. The qualifying Android
+  GPU-memory attribution moved from about 3.08 GB with the engine loaded to
+  13 MB after engine release, then returned to about 3.03 GB with the next
+  successful correction. Do not transfer that claim to another model,
+  runtime, OS, or phone family without repeating the gate.
+
+## Transcript correction validation
+
+Keep Gemma correction downstream of the atomic raw STT transcript. Correction
+failure, timeout, process death, invalid configuration, or missing model must
+never block capture, VAD, STT, or access to the original transcript.
+
+- Keep `<segment>.raw.txt` and `<segment>.corrected.txt` separate. Show the
+  original first in the Transcriptions tab.
+- Treat runtime `config.json` as private, ignored configuration. Commit only a
+  generic `config.example.json`. Validate every edit before it can become the
+  next job's instruction.
+- Keep the pinned Gemma weights under `models/llm/` as Git LFS chunks. Install
+  with `tool/install_android_workbench.sh`, which must require an explicit
+  device serial and copy models only through the app identity. Never require
+  Android root or place a complete temporary Gemma copy in shared storage.
+- Never log raw or corrected text outside the explicit fixed Kokoro test phrase.
+  Timing metadata may contain segment IDs, stage durations, providers, model
+  IDs, queue depth, memory, and thermal state.
+- Run Gemma in its dedicated Android process with one engine, one serial
+  worker, and one short-lived conversation per segment. Close the conversation
+  on success, error, timeout, and cancellation.
+- Before accepting continuous operation, run at least 15 minutes while sampling
+  both app processes once per minute. Require bounded post-warm-up memory, no
+  lost raw files, no capture gaps, an eventually empty correction queue, and
+  recovery after killing only the Gemma process.

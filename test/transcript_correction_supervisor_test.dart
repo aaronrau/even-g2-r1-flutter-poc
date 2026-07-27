@@ -1,0 +1,189 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:even_g2_r1_poc/src/audio/gemma_correction_client.dart';
+import 'package:even_g2_r1_poc/src/audio/gemma_model.dart';
+import 'package:even_g2_r1_poc/src/audio/transcript_correction_config.dart';
+import 'package:even_g2_r1_poc/src/audio/transcript_correction_supervisor.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  late Directory temp;
+  late Directory speech;
+  late TranscriptCorrectionConfigStore configStore;
+  late GemmaModelStore modelStore;
+  late _FakeGemmaClient client;
+
+  setUp(() async {
+    temp = Directory.systemTemp.createTempSync(
+      'workbench-correction-supervisor-test-',
+    );
+    speech = Directory('${temp.path}/workbench/audio/speech')
+      ..createSync(recursive: true);
+    configStore = TranscriptCorrectionConfigStore(
+      supportDirectory: () async => temp,
+    );
+    await configStore.initialize();
+    modelStore = GemmaModelStore(supportDirectory: () async => temp);
+    final modelDirectory = Directory(
+      '${temp.path}/workbench/models/${gemma4E4bModel.id}',
+    )..createSync(recursive: true);
+    final model = File('${modelDirectory.path}/${gemma4E4bModel.fileName}');
+    model.openSync(mode: FileMode.write)
+      ..truncateSync(gemma4E4bModel.byteLength)
+      ..closeSync();
+    File(
+      '${model.path}.verified',
+    ).writeAsStringSync('${gemma4E4bModel.sha256}\n', flush: true);
+    client = _FakeGemmaClient();
+  });
+
+  tearDown(() {
+    configStore.dispose();
+    temp.deleteSync(recursive: true);
+  });
+
+  test(
+    'persists corrected text separately with complete timing metadata',
+    () async {
+      final completed = Completer<CorrectedTranscriptResult>();
+      final supervisor = TranscriptCorrectionSupervisor(
+        speechPath: speech.path,
+        configStore: configStore,
+        modelStore: modelStore,
+        client: client,
+        onCorrected: completed.complete,
+        onStatus: (_, {isError = false}) {},
+      );
+      addTearDown(supervisor.dispose);
+      await supervisor.start();
+      final raw = File('${speech.path}/sample.raw.txt')
+        ..writeAsStringSync('run test 15 with --verbose\n');
+
+      await supervisor.queue(
+        TranscriptCorrectionJob(
+          segmentId: 'sample',
+          rawPath: raw.path,
+          sttModel: 'parakeet-0.6b',
+          sttProvider: 'cpu',
+          audioMs: 1200,
+          sttDecodeMs: 80,
+          sttTotalMs: 100,
+          queuedAt: DateTime.now().toUtc(),
+        ),
+      );
+      final result = await completed.future.timeout(const Duration(seconds: 5));
+
+      expect(result.correctedText, 'Run test 15 with --verbose.');
+      expect(
+        File('${speech.path}/sample.corrected.txt').readAsStringSync().trim(),
+        result.correctedText,
+      );
+      final metadata = File(
+        '${speech.path}/sample.transcript.json',
+      ).readAsStringSync();
+      expect(metadata, contains('"runtime":"litertlm-0.14.0"'));
+      expect(metadata, contains('"decodeMs":80'));
+      expect(
+        File('${speech.path}/pending-corrections.json').readAsStringSync(),
+        '{}',
+      );
+    },
+  );
+
+  test(
+    'uses a newly saved instruction on the next queued transcript',
+    () async {
+      final completions =
+          StreamController<CorrectedTranscriptResult>.broadcast();
+      addTearDown(completions.close);
+      final supervisor = TranscriptCorrectionSupervisor(
+        speechPath: speech.path,
+        configStore: configStore,
+        modelStore: modelStore,
+        client: client,
+        onCorrected: completions.add,
+        onStatus: (_, {isError = false}) {},
+      );
+      addTearDown(supervisor.dispose);
+      await supervisor.start();
+      await configStore.saveInstructions('First validated instruction.');
+      final firstCompletion = completions.stream.first;
+      await _queue(supervisor, speech, 'first', 'first transcript');
+      await firstCompletion.timeout(const Duration(seconds: 5));
+      await configStore.saveInstructions('Second validated instruction.');
+      final secondCompletion = completions.stream.first;
+      await _queue(supervisor, speech, 'second', 'second transcript');
+      await secondCompletion.timeout(const Duration(seconds: 5));
+
+      expect(client.instructions, <String>[
+        'First validated instruction.',
+        'Second validated instruction.',
+      ]);
+    },
+  );
+
+  test('rejects correction output that removes protected values', () {
+    expect(
+      () => TranscriptCorrectionSupervisor.validateCorrectedTranscript(
+        original: 'Run version 15 with --verbose.',
+        candidate: 'Run the version.',
+      ),
+      throwsFormatException,
+    );
+    expect(
+      TranscriptCorrectionSupervisor.validateCorrectedTranscript(
+        original: 'run version 15 with --verbose',
+        candidate: 'Run version 15 with --verbose.',
+      ),
+      'Run version 15 with --verbose.',
+    );
+  });
+}
+
+Future<void> _queue(
+  TranscriptCorrectionSupervisor supervisor,
+  Directory speech,
+  String id,
+  String text,
+) async {
+  final raw = File('${speech.path}/$id.raw.txt')..writeAsStringSync('$text\n');
+  await supervisor.queue(
+    TranscriptCorrectionJob(
+      segmentId: id,
+      rawPath: raw.path,
+      sttModel: 'parakeet-0.6b',
+      sttProvider: 'cpu',
+      audioMs: 1000,
+      sttDecodeMs: 50,
+      sttTotalMs: 60,
+      queuedAt: DateTime.now().toUtc(),
+    ),
+  );
+}
+
+final class _FakeGemmaClient implements GemmaCorrectionClient {
+  final List<String> instructions = <String>[];
+
+  @override
+  Future<GemmaCorrectionResult> correct(GemmaCorrectionRequest request) async {
+    instructions.add(request.instructions);
+    final source = request.transcript;
+    final corrected = source == 'run test 15 with --verbose'
+        ? 'Run test 15 with --verbose.'
+        : '${source[0].toUpperCase()}${source.substring(1)}.';
+    return GemmaCorrectionResult(
+      correctedText: corrected,
+      provider: 'gpu',
+      engineLoadMs: 500,
+      inferenceMs: 40,
+      totalMs: 550,
+      timeToFirstTokenMs: 20,
+      prefillTokensPerSecond: 100,
+      decodeTokensPerSecond: 20,
+    );
+  }
+
+  @override
+  Future<void> releaseEngine() async {}
+}

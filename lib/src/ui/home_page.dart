@@ -6,6 +6,7 @@ import '../startup/startup_state.dart';
 import '../util/hex.dart';
 import '../wearable_controller.dart';
 import 'home_history_panel.dart';
+import 'transcript_correction_settings.dart';
 import 'workbench_theme.dart';
 
 final class HomePage extends StatefulWidget {
@@ -478,6 +479,23 @@ final class _HomePageState extends State<HomePage> {
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 16),
+            TranscriptCorrectionSettings(
+              config: controller.correctionConfig,
+              runtimeState: controller.correctionState,
+              provider: controller.correctionProvider,
+              validationError: controller.correctionConfigValidationError,
+              pendingCount: controller.pendingCorrections,
+              completedCount: controller.completedCorrections,
+              busy: _busy,
+              onEnabledChanged: (enabled) =>
+                  _run(() => controller.setCorrectionEnabled(enabled)),
+              onSaveInstructions: (instructions) => _run(
+                () => controller.saveCorrectionInstructions(instructions),
+              ),
+              onResetInstructions: () =>
+                  _run(controller.resetCorrectionInstructions),
+            ),
+            const SizedBox(height: 16),
             Text('File storage', style: theme.textTheme.titleSmall),
             const SizedBox(height: 4),
             Text(
@@ -775,6 +793,20 @@ final class _HomePageState extends State<HomePage> {
               ),
             ),
             const SizedBox(height: 16),
+            Text('Editable instructions', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 8),
+            const IgnorePointer(
+              child: TextField(
+                minLines: 2,
+                maxLines: 3,
+                decoration: InputDecoration(
+                  labelText: 'LLM instructions',
+                  alignLabelWithHint: true,
+                  helperText: 'Save validated changes explicitly.',
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
             Semantics(
               label:
                   'Button examples: filled primary, outlined secondary, '
@@ -808,6 +840,7 @@ final class _HomePageState extends State<HomePage> {
               '48dp minimum targets • grayscale UI • green status dots only\n'
               'Text tabs with an underline switch between peer views\n'
               'Labeled dropdowns select one persisted setting\n'
+              'Multiline settings use a labeled field and explicit Save action\n'
               'Connected devices replace “Connected” with a battery icon '
               'and percentage',
               style: theme.textTheme.bodySmall,

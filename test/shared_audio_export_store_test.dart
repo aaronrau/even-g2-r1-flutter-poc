@@ -109,19 +109,21 @@ void main() {
         'listTranscriptions' => <Object?>[
           <Object?, Object?>{
             'id': 'older',
-            'text': 'Older transcript',
+            'originalText': 'Older raw transcript',
+            'correctedText': 'Older transcript',
             'audioFileName': 'older.wav',
             'updatedAtMillis': 1000,
           },
           <Object?, Object?>{
             'id': 'newer',
-            'text': 'Newer transcript',
+            'originalText': 'Newer raw transcript',
+            'correctedText': 'Newer transcript',
             'audioFileName': 'newer.wav',
             'updatedAtMillis': 2000,
           },
           <Object?, Object?>{
             'id': 'invalid',
-            'text': '',
+            'originalText': '',
             'updatedAtMillis': 3000,
           },
         ],
@@ -186,7 +188,7 @@ void main() {
     addTearDown(store.dispose);
     final transcript = SharedTranscript(
       id: 'sample',
-      text: 'Generic sample transcript',
+      originalText: 'Generic sample transcript',
       audioFileName: 'sample.wav',
       updatedAt: DateTime.fromMillisecondsSinceEpoch(0),
     );

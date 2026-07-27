@@ -25,6 +25,7 @@ migrate_working_dir/
 !*.private.example
 local.properties
 key.properties
+/config.json
 .vscode/
 .gradle/
 **/xcuserdata/
@@ -113,6 +114,9 @@ app.*.map.json
 
 # App-bundled development models remain local. The external Parakeet models
 # used by the Android staging tool live under /models/stt and use Git LFS.
+# Gemma is split into Git LFS chunks under /models/llm so each object remains
+# compatible with hosted LFS file-size limits.
 /assets/models/**/*.onnx
 /assets/models/**/*.bin
 /assets/models/whisper/tiny.en-tokens.txt
+*.litertlm

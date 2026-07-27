@@ -10,6 +10,7 @@ import 'audio/audio_pipeline_coordinator.dart';
 import 'audio/shared_audio_export_store.dart';
 import 'audio/speech_model.dart';
 import 'audio/speech_model_preferences.dart';
+import 'audio/transcript_correction_config.dart';
 import 'background/app_runtime_coordinator.dart';
 import 'background/background_service.dart';
 import 'ble/ble_models.dart';
@@ -101,6 +102,14 @@ final class WearableController extends ChangeNotifier
   int get completedTranscripts => _audioPipeline.completedTranscripts;
   String? get transcriptionProvider => _audioPipeline.activeProvider;
   String? get vadProvider => _audioPipeline.activeVadProvider;
+  String? get correctionProvider => _audioPipeline.activeCorrectionProvider;
+  String get correctionState => _audioPipeline.correctionState;
+  int get pendingCorrections => _audioPipeline.pendingCorrections;
+  int get completedCorrections => _audioPipeline.completedCorrections;
+  TranscriptCorrectionConfig get correctionConfig =>
+      _audioPipeline.correctionConfig;
+  String? get correctionConfigValidationError =>
+      _audioPipeline.correctionConfigValidationError;
   bool get hasWearableSession => _hasWearableSession;
   List<SpeechModelDefinition> get speechModels => availableSpeechModels;
   String get selectedSpeechModelId => _selectedSpeechModel.id;
@@ -335,6 +344,34 @@ final class WearableController extends ChangeNotifier
     addLog(
       'Pipeline',
       '[WorkBench][Transcription] state=preference_saved model=${model.id}',
+    );
+    _safeNotify();
+  }
+
+  Future<void> saveCorrectionInstructions(String instructions) async {
+    await _audioPipeline.saveCorrectionInstructions(instructions);
+    addLog(
+      'Pipeline',
+      '[WorkBench][CorrectionConfig] state=saved applies=next_transcript',
+    );
+    _safeNotify();
+  }
+
+  Future<void> resetCorrectionInstructions() async {
+    await _audioPipeline.resetCorrectionInstructions();
+    addLog(
+      'Pipeline',
+      '[WorkBench][CorrectionConfig] state=reset applies=next_transcript',
+    );
+    _safeNotify();
+  }
+
+  Future<void> setCorrectionEnabled(bool enabled) async {
+    await _audioPipeline.setCorrectionEnabled(enabled);
+    addLog(
+      'Pipeline',
+      '[WorkBench][CorrectionConfig] state=${enabled ? 'enabled' : 'disabled'} '
+          'applies=next_transcript',
     );
     _safeNotify();
   }
@@ -647,6 +684,7 @@ final class WearableController extends ChangeNotifier
       'Runtime',
       'Released nonessential diagnostic history after memory pressure',
     );
+    unawaited(_audioPipeline.handleMemoryPressure());
   }
 
   @override

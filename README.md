@@ -11,13 +11,13 @@
 <p align="center">
   <img
     src="docs/images/workbench-home-demo.png"
-    alt="Work Bench streaming G2 audio through NNAPI-backed transcription, with R1 waiting and a local Kokoro test transcript"
+    alt="Work Bench streaming G2 audio through NNAPI-backed transcription, with R1 connected, text tabs, sample events, and a local Kokoro test transcript"
     width="360"
   >
 </p>
 
 <p align="center">
-  <em>Physical G2 audio → NNAPI-backed Parakeet 0.6B transcription test. System chrome was removed and event times were replaced with SAMPLE.</em>
+  <em>Final physical G2 audio → NNAPI-backed Parakeet 0.6B Kokoro run. System chrome was removed and event times were replaced with SAMPLE.</em>
 </p>
 
 Work Bench is a local-first wearable work agent built around the Even
@@ -99,6 +99,7 @@ expose for a true locked Hub mode.
 | Continuous LC3 stream, waveform, gestures, and Hub recovery | Implemented |
 | Android foreground operation and iOS background-central support | Implemented within platform limits |
 | Durable LC3 capture, VAD, and selectable local Whisper/Parakeet STT | Implemented on Android |
+| Gemma 4 post-STT correction with separate original/corrected files | Implemented on Android; GPU-qualified on the representative RedMagic phone |
 | On-device intent, task context, and approval policy | Planned |
 | Authenticated bridge to the user's computer | Planned |
 | Claude Code and Codex terminal adapters | Planned |
@@ -113,10 +114,14 @@ expose for a true locked Hub mode.
   with a Tools-selectable local model. Parakeet 0.6B is the current default;
   Parakeet 110M and Tiny Whisper remain available.
 - Lets Android users choose a shared device folder for Files-visible speech
-  WAVs and text transcripts. Home's **Transcriptions** tab reads the saved text
-  and plays its paired WAV directly from that folder while retaining the
+  WAVs plus separate `.raw.txt` and `.corrected.txt` transcripts. Home's
+  **Transcriptions** tab shows the original first and corrected text second,
+  and plays the paired WAV directly from that folder while retaining the
   app-private durable capture path for recovery. It loads the newest 20 first
   and reveals more while scrolling.
+- Runs Gemma 4 E4B correction through pinned LiteRT-LM in a dedicated Android
+  process after Parakeet commits the raw transcript. The correction queue is
+  durable and never blocks capture, VAD, or STT.
 - Draws a thin waveform in the upper-left using LC3 global gain and an adaptive
   silence floor.
 - Displays `Tap`, `Double tap`, `Swipe up`, `Swipe down`, and
@@ -136,19 +141,117 @@ Use a physical phone with Bluetooth enabled:
 
 ```sh
 git lfs install
-git lfs pull --include='models/stt/**'
+git lfs pull --include='models/stt/**,models/llm/**'
 ./tool/fetch_speech_models.sh
-flutter build apk --debug
-flutter install --debug
-./tool/stage_android_stt_model.sh parakeet-0.6b
-flutter run
+./tool/install_android_workbench.sh --device <android-serial>
 ```
 
-The install step creates the app-private model directory; staging then places
-the hash-verified default model there. The Parakeet weights are versioned with
-Git LFS under `models/stt/`, but remain outside the APK. Stage
-`parakeet-110m` the same way if it should appear as a usable lower-memory
-choice in Tools. Tiny Whisper is bundled by `fetch_speech_models.sh`.
+The unified installer builds the arm64 APK, installs it only on the explicitly
+selected phone, copies both Parakeet variants and Gemma into app-private
+storage, verifies every model, and launches Work Bench. It uses Android
+`run-as`; phone root is neither used nor required. Tiny Whisper and VAD are APK
+assets, while the larger Parakeet and Gemma weights are versioned in Git LFS
+and copied as part of the same installation workflow.
+
+### Copy Gemma 4 E4B to Android
+
+Gemma is stored under `models/llm/` as four Git LFS chunks. Splitting keeps
+each LFS object below common hosted per-file limits while preserving the exact
+pinned 3.66 GB LiteRT-LM file. Materialize and verify the packaged chunks:
+
+```sh
+git lfs pull --include='models/llm/**'
+(cd models/llm && sha256sum --check SHA256SUMS)
+```
+
+The unified installer streams those chunks directly into the installed app:
+
+```sh
+./tool/install_android_workbench.sh --device <android-serial>
+```
+
+To copy only Gemma into an already installed Work Bench app:
+
+```sh
+./tool/stage_android_gemma_model.sh --device <android-serial>
+```
+
+The device needs at least 5 GB free for the model and runtime cache. An
+external byte-for-byte matching full model remains supported for development:
+
+```sh
+./tool/stage_android_gemma_model.sh \
+  --device <android-serial> \
+  --model-file <gemma-litertlm-file>
+```
+
+The staging tool requires SHA-256
+`0b2a8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0`
+and exactly `3659530240` bytes. It writes directly into the installed app's
+private `files/workbench/models/gemma-4-e4b-it` directory, avoiding a second
+temporary model copy on the phone. An interrupted copy remains a `.part` file
+and is never loaded.
+
+The model source is the official
+[LiteRT Community Gemma 4 E4B package](https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm).
+Gemma 4 is licensed under
+[Apache License 2.0](https://ai.google.dev/gemma/apache_2); the repository
+includes the license beside the LFS model manifest.
+
+Gemma corrects Parakeet text; it does not transcribe audio. The stages and
+providers are reported independently:
+
+```text
+G2 → durable audio → VAD → WAV → Parakeet → .raw.txt
+   → durable correction queue → Gemma 4 → .corrected.txt
+```
+
+LiteRT-LM is pinned to `0.14.0` and configured with `Backend.GPU()` only. It
+does not retry with CPU. The packaged runtime was qualified on a representative
+RedMagic phone by correlating successful inference with Android GPU-memory
+attribution to the isolated `:gemma` process. Releasing the engine under a
+low-memory signal reduced that attribution from about 3.08 GB to 13 MB; the
+next successful correction restored it to about 3.03 GB. The UI and metadata
+therefore report the correction provider as `gpu`.
+
+### Override correction instructions
+
+Open **Tools → Transcription → Transcript correction**. Edit **LLM
+instructions** and tap **Save instructions**. The app validates and atomically
+writes app-private `workbench/config.json`; the correction supervisor reloads
+that file immediately before every job. The new instructions therefore apply
+to the next transcription without restarting the app or model.
+
+[`config.example.json`](config.example.json) documents the complete schema.
+Only schema version 1, the pinned Gemma model, the `gpu` backend, a timeout from
+5 to 120 seconds, and non-empty instructions up to 2,000 characters are
+accepted. If an external edit is malformed, the last validated configuration
+remains active and Settings shows the validation error. Local `config.json` is
+ignored and must never be committed because user instructions may contain
+private vocabulary.
+
+Every completed turn records app-private timing metadata for audio duration,
+STT decode and total time, correction queue delay, engine load, inference,
+time-to-first-token, token rates, and end-to-end pipeline time. Logs contain
+only segment identifiers and measurements, never transcript text beyond the
+existing explicit physical-test marker.
+
+After the one-turn Kokoro check passes, run the required continuous test with a
+fresh evidence directory outside the repository:
+
+```sh
+python3 .agents/skills/kokoro-g2-transcription-loop/scripts/kokoro_g2_loop.py prepare
+python3 tool/run_android_correction_soak.py \
+  --serial <android-serial> \
+  --adb <adb-binary> \
+  --output-dir /tmp/workbench-gemma-soak-001
+```
+
+The runner refuses durations shorter than 15 minutes. It preserves every
+physical trial, requires both the acoustic contract and a completed Gemma
+marker, and samples combined app memory, both process rows, swap, and battery
+temperature throughout the run. Evidence may contain device or transcript
+data and must never be moved into the repository.
 
 ### Copy a Parakeet model to Android
 
@@ -156,11 +259,11 @@ Install Git LFS and materialize the model files after cloning:
 
 ```sh
 git lfs install
-git lfs pull --include='models/stt/**'
+git lfs pull --include='models/stt/**,models/llm/**'
 git lfs ls-files
 ```
 
-The LFS checkout uses approximately 765 MiB. Files beginning with
+The complete LFS checkout uses approximately 4.4 GiB. Files beginning with
 `version https://git-lfs.github.com/spec/v1` are unresolved pointers, not
 usable models; the staging tool detects and rejects them.
 
@@ -238,11 +341,13 @@ checked-in Sherpa patch, rebuilds the Android API 27 arm64 wrapper, and
 refreshes the package manifest. Work Bench requires Android API 27; the
 hardware-only NNAPI candidate is offered only on API 29 or newer.
 
-This build does not contain an Android GPU execution provider or Qualcomm QNN.
-NNAPI can choose a vendor NPU, DSP, or GPU only when the phone's NNAPI driver
-supports the assigned graph partition. The current quantized Parakeet exports
-contain dynamic-quantization operators that commonly prevent useful NNAPI
-partitioning, so an individual phone may correctly report `cpu`.
+This Sherpa/ONNX build does not contain an Android GPU execution provider or
+Qualcomm QNN. NNAPI can choose a vendor NPU, DSP, or GPU only when the phone's
+NNAPI driver supports the assigned graph partition. The current quantized
+Parakeet exports contain dynamic-quantization operators that commonly prevent
+useful NNAPI partitioning, so an individual phone may correctly report `cpu`.
+Gemma correction uses a separate LiteRT-LM GPU runtime and is unaffected by
+this Sherpa limitation.
 
 If the app reports that Parakeet is not installed:
 
@@ -260,10 +365,10 @@ Then:
    approve the device folder that should receive WAV audio and text
    transcripts. Existing completed speech files are copied there, and future
    files are exported as they finish.
-3. Return to Home and select **Transcriptions** to read the complete saved text
-   or play its paired WAV. The list refreshes when this tab is selected and
-   loads 20 entries at a time as you scroll. Select **Events** to see the 30
-   most recent in-app events.
+3. Return to Home and select **Transcriptions** to read the original followed
+   by the corrected text, or play its paired WAV. The list refreshes when this
+   tab is selected and loads 20 entries at a time as you scroll. Select
+   **Events** to see the 30 most recent in-app events.
 4. Tap **Connect devices**. Work Bench scans for the G2 pair and R1, connects
    them, and releases the temporary R1 setup link after Tri-Sync handoff.
 5. Speak to move the waveform and use the ring to display gestures.
@@ -286,6 +391,9 @@ shared folder.
   LC3 analysis, background behavior, project map, and validation.
 - [Local audio pipeline and recovery](docs/LOCAL_AUDIO_PIPELINE.md) — durable
   capture, VAD, transcription isolation, storage, acceleration, and failures.
+- [Gemma transcript correction](docs/GEMMA_TRANSCRIPT_CORRECTION.md) — process
+  isolation, hot configuration, persistence, timing, GPU qualification, and
+  continuous-run acceptance.
 - [Transcription and model test plan](docs/TRANSCRIPTION_TURN_TEST_PLAN.md) —
   physical Kokoro tests and matched-input STT comparison rules.
 - [Hub/Terminal long-press analysis](docs/G2_R1_HUB_LONG_PRESS.md) — physical

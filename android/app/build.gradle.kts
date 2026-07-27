@@ -63,4 +63,7 @@ dependencies {
     // Match reactive_ble_mobile's RxJava runtime so the application can
     // install a narrowly scoped undeliverable-error handler.
     implementation("io.reactivex.rxjava2:rxjava:2.2.17")
+    // Pinned so model/runtime qualification remains reproducible. Gemma runs
+    // in a dedicated Android process and requests the GPU backend explicitly.
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.14.0")
 }

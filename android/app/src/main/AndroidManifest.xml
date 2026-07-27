@@ -22,6 +22,8 @@
         android:name=".WorkBenchApplication"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round">
+        <uses-native-library android:name="libvndksupport.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -48,6 +50,11 @@
             android:name=".BleConnectionService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice"
+            android:stopWithTask="false" />
+        <service
+            android:name=".GemmaCorrectionService"
+            android:exported="false"
+            android:process=":gemma"
             android:stopWithTask="false" />
         <receiver
             android:name=".KokoroTestAudioReceiver"

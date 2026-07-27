@@ -11,8 +11,31 @@ import 'nnapi_attestation.dart';
 import 'speech_model.dart';
 
 typedef TranscriptionStatusSink = void Function(String message, {bool isError});
-typedef TranscriptSink =
-    void Function(String segmentId, String text, String transcriptPath);
+typedef TranscriptSink = void Function(TranscriptionResult result);
+
+final class TranscriptionResult {
+  const TranscriptionResult({
+    required this.segmentId,
+    required this.text,
+    required this.transcriptPath,
+    required this.model,
+    required this.provider,
+    required this.audioMs,
+    required this.decodeMs,
+    required this.totalMs,
+    required this.queuedAt,
+  });
+
+  final String segmentId;
+  final String text;
+  final String transcriptPath;
+  final String model;
+  final String provider;
+  final int audioMs;
+  final int decodeMs;
+  final int totalMs;
+  final DateTime queuedAt;
+}
 
 final class TranscriptionSupervisor {
   TranscriptionSupervisor({
@@ -33,6 +56,7 @@ final class TranscriptionSupervisor {
       LinkedHashMap<String, String>();
   final Map<String, Timer> _jobRetryTimers = <String, Timer>{};
   final Map<String, int> _jobRetryAttempts = <String, int>{};
+  final Map<String, DateTime> _jobQueuedAt = <String, DateTime>{};
   ReceivePort? _events;
   ReceivePort? _errors;
   ReceivePort? _exit;
@@ -58,6 +82,7 @@ final class TranscriptionSupervisor {
       return;
     }
     _pending[segmentId] = wavPath;
+    _jobQueuedAt.putIfAbsent(segmentId, () => DateTime.now().toUtc());
     _persistPending();
     onStatus(
       '[WorkBench][Transcription] state=queued segment=$segmentId '
@@ -174,6 +199,11 @@ final class TranscriptionSupervisor {
       case 'result':
         final id = event['id']! as String;
         final text = event['text']! as String;
+        final queuedAt = _jobQueuedAt.remove(id) ?? DateTime.now().toUtc();
+        final totalMs = DateTime.now()
+            .toUtc()
+            .difference(queuedAt)
+            .inMilliseconds;
         _jobRetryTimers.remove(id)?.cancel();
         _jobRetryAttempts.remove(id);
         _pending.remove(id);
@@ -183,9 +213,21 @@ final class TranscriptionSupervisor {
           '[WorkBench][Transcription] state=completed segment=$id '
           'model=${event['model']} provider=${event['provider']} '
           'audio_ms=${event['audioMs']} '
-          'decode_ms=${event['decodeMs']}',
+          'decode_ms=${event['decodeMs']} total_ms=$totalMs',
         );
-        onTranscript(id, text, event['transcriptPath']! as String);
+        onTranscript(
+          TranscriptionResult(
+            segmentId: id,
+            text: text,
+            transcriptPath: event['transcriptPath']! as String,
+            model: event['model']! as String,
+            provider: event['provider']! as String,
+            audioMs: event['audioMs']! as int,
+            decodeMs: event['decodeMs']! as int,
+            totalMs: totalMs,
+            queuedAt: queuedAt,
+          ),
+        );
         return;
       case 'job_error':
         final id = event['id']! as String;
@@ -262,21 +304,19 @@ final class TranscriptionSupervisor {
       if (entity is! File || !entity.path.endsWith('.wav')) {
         continue;
       }
-      final transcriptPath = _transcriptPathForAudio(entity.path);
       final id = entity.uri.pathSegments.last.replaceFirst(
         RegExp(r'\.wav$'),
         '',
       );
-      if (File(transcriptPath).existsSync()) {
+      if (_hasTranscriptForAudio(entity.path)) {
         _pending.remove(id);
       } else {
         _pending[id] = entity.path;
+        _jobQueuedAt.putIfAbsent(id, () => entity.lastModifiedSync().toUtc());
       }
     }
     _pending.removeWhere(
-      (_, path) =>
-          !File(path).existsSync() ||
-          File(_transcriptPathForAudio(path)).existsSync(),
+      (_, path) => !File(path).existsSync() || _hasTranscriptForAudio(path),
     );
     _persistPending();
     if (_pending.isNotEmpty) {
@@ -370,7 +410,15 @@ final class TranscriptionSupervisor {
 }
 
 String _transcriptPathForAudio(String path) =>
-    path.replaceFirst(RegExp(r'\.(?:recovered\.)?wav$'), '.txt');
+    path.replaceFirst(RegExp(r'\.(?:recovered\.)?wav$'), '.raw.txt');
+
+bool _hasTranscriptForAudio(String path) {
+  if (File(_transcriptPathForAudio(path)).existsSync()) {
+    return true;
+  }
+  final legacy = path.replaceFirst(RegExp(r'\.(?:recovered\.)?wav$'), '.txt');
+  return File(legacy).existsSync();
+}
 
 void _transcriptionWorker(Map<String, Object> bootstrap) {
   final events = bootstrap['events']! as SendPort;

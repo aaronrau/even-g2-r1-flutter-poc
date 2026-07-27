@@ -293,13 +293,29 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: <Widget>[
+                            Text('Original', style: theme.textTheme.titleSmall),
+                            const SizedBox(height: 4),
                             Text(
-                              transcript.text,
+                              transcript.originalText,
                               style: theme.textTheme.bodyMedium,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Corrected',
+                              style: theme.textTheme.titleSmall,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              transcript.correctedText ??
+                                  'Correction pending or unavailable',
+                              style: transcript.hasCorrection
+                                  ? theme.textTheme.bodyMedium
+                                  : theme.textTheme.bodySmall,
                             ),
                             const SizedBox(height: 4),
                             Text(
                               '${transcript.hasAudio ? 'WAV + transcript' : 'Transcript only'}'
+                              ' · ${transcript.hasCorrection ? 'corrected' : 'original only'}'
                               ' · ${_savedLabel(context, transcript.updatedAt)}',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,

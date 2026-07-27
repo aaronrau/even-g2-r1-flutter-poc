@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import '../startup/startup_state.dart';
 import 'capture_journal.dart';
+import 'gemma_model.dart';
 import 'inference_capabilities.dart';
 import 'lc3_decoder.dart';
 import 'model_asset_store.dart';
@@ -13,6 +14,8 @@ import 'pcm_gain.dart';
 import 'shared_audio_export_store.dart';
 import 'speech_model.dart';
 import 'transcript_turn_state.dart';
+import 'transcript_correction_config.dart';
+import 'transcript_correction_supervisor.dart';
 import 'transcription_worker.dart';
 import 'vad_worker.dart';
 
@@ -26,10 +29,17 @@ final class AudioPipelineCoordinator {
     required this.onCaptureUnsafe,
     required SharedAudioExportStore sharedAudioExportStore,
     ModelAssetStore? modelStore,
+    GemmaModelStore? gemmaModelStore,
+    TranscriptCorrectionConfigStore? correctionConfigStore,
     Lc3Decoder? decoder,
   }) : _modelStore = modelStore ?? ModelAssetStore(),
+       _gemmaModelStore = gemmaModelStore ?? GemmaModelStore(),
+       _correctionConfigStore =
+           correctionConfigStore ?? TranscriptCorrectionConfigStore(),
        _decoder = decoder ?? Lc3Decoder(),
-       _sharedAudioExportStore = sharedAudioExportStore;
+       _sharedAudioExportStore = sharedAudioExportStore {
+    _correctionConfigStore.addListener(onChanged);
+  }
 
   static const int _maximumVadRecoveryBytes = 16000 * 2 * 30;
 
@@ -37,6 +47,8 @@ final class AudioPipelineCoordinator {
   final void Function() onChanged;
   final void Function() onCaptureUnsafe;
   final ModelAssetStore _modelStore;
+  final GemmaModelStore _gemmaModelStore;
+  final TranscriptCorrectionConfigStore _correctionConfigStore;
   final Lc3Decoder _decoder;
   final SharedAudioExportStore _sharedAudioExportStore;
   final Queue<Uint8List> _vadRecovery = Queue<Uint8List>();
@@ -45,6 +57,7 @@ final class AudioPipelineCoordinator {
   CaptureJournalSupervisor? _capture;
   VadSupervisor? _vad;
   TranscriptionSupervisor? _transcription;
+  TranscriptCorrectionSupervisor? _correction;
   Future<void> _decodeTail = Future<void>.value();
   bool _initialized = false;
   bool _initialStartupComplete = false;
@@ -69,16 +82,26 @@ final class AudioPipelineCoordinator {
   String? activeModelName;
   String? activeProvider;
   String? activeVadProvider;
+  String? activeCorrectionProvider;
   String? get lastTranscript => _transcriptTurn.visibleText;
+  String? lastCorrectedTranscript;
   String? lastTranscriptPath;
+  String? lastCorrectedTranscriptPath;
   String? sharedExportError;
   int sharedExportedFiles = 0;
   int completedTranscripts = 0;
+  int completedCorrections = 0;
 
   bool get canConnect => startup.isReady;
   bool get isSwitchingModel => _modelSwitching;
   bool get isExportingSharedAudio => _sharedExportOperations > 0;
   String get selectedModelId => _selectedModel.id;
+  TranscriptCorrectionConfig get correctionConfig =>
+      _correctionConfigStore.config;
+  String? get correctionConfigValidationError =>
+      _correctionConfigStore.validationError;
+  String get correctionState => _correction?.state ?? 'starting';
+  int get pendingCorrections => _correction?.pendingCount ?? 0;
 
   void setSharedTranscriptRefreshEnabled(bool enabled) {
     _refreshSharedTranscriptsAfterExport = enabled;
@@ -91,6 +114,16 @@ final class AudioPipelineCoordinator {
     final requestedModel = transcriptionModel ?? _selectedModel;
     _initialized = true;
     try {
+      try {
+        await _correctionConfigStore.initialize();
+      } catch (error) {
+        log(
+          'Pipeline',
+          '[WorkBench][CorrectionConfig] state=unavailable '
+              'error=${_oneLine(error)} correction=disabled',
+          isError: true,
+        );
+      }
       _setStartup(StartupPhase.storage, 'Preparing safe local audio storage…');
       final paths = await _modelStore.prepare(
         transcriptionModel: requestedModel,
@@ -155,6 +188,25 @@ final class AudioPipelineCoordinator {
       activeModelName = paths.transcription.definition.displayName;
       activeProvider = await _transcription!.start();
       _selectedModel = requestedModel;
+      final correction = TranscriptCorrectionSupervisor(
+        speechPath: _speechPath!,
+        configStore: _correctionConfigStore,
+        modelStore: _gemmaModelStore,
+        onCorrected: _onCorrectedTranscript,
+        onStatus: _correctionStatus,
+      );
+      try {
+        await correction.start();
+        _correction = correction;
+      } catch (error) {
+        await correction.dispose();
+        log(
+          'Pipeline',
+          '[WorkBench][Correction] state=unavailable '
+              'error=${_oneLine(error)} raw_transcription=available',
+          isError: true,
+        );
+      }
 
       _setStartup(
         StartupPhase.ready,
@@ -283,17 +335,18 @@ final class AudioPipelineCoordinator {
     _transcription?.transcribe(id, wavPath);
   }
 
-  void _onTranscript(String id, String text, String transcriptPath) {
-    lastTranscriptPath = transcriptPath;
+  void _onTranscript(TranscriptionResult result) {
+    final id = result.segmentId;
+    lastTranscriptPath = result.transcriptPath;
     unawaited(
       _exportSharedFiles(
-        <String>[transcriptPath],
+        <String>[result.transcriptPath],
         reason: 'transcript',
         segmentId: id,
       ),
     );
     completedTranscripts++;
-    final displayed = _transcriptTurn.completeTurn(id, text);
+    final displayed = _transcriptTurn.completeTurn(id, result.text);
     if (!displayed) {
       log(
         'Pipeline',
@@ -301,10 +354,42 @@ final class AudioPipelineCoordinator {
             'latest=${_transcriptTurn.currentSegmentId ?? 'none'}',
       );
     }
+    final correction = _correction;
+    if (correction != null) {
+      unawaited(
+        correction.queue(
+          TranscriptCorrectionJob(
+            segmentId: id,
+            rawPath: result.transcriptPath,
+            sttModel: result.model,
+            sttProvider: result.provider,
+            audioMs: result.audioMs,
+            sttDecodeMs: result.decodeMs,
+            sttTotalMs: result.totalMs,
+            queuedAt: result.queuedAt,
+          ),
+        ),
+      );
+    }
     startup = StartupSnapshot(
       phase: StartupPhase.ready,
       message: 'Local audio ready · $activeModelName · $activeProvider',
       provider: activeProvider,
+    );
+    onChanged();
+  }
+
+  void _onCorrectedTranscript(CorrectedTranscriptResult result) {
+    lastCorrectedTranscript = result.correctedText;
+    lastCorrectedTranscriptPath = result.correctedPath;
+    activeCorrectionProvider = result.provider;
+    completedCorrections++;
+    unawaited(
+      _exportSharedFiles(
+        <String>[result.correctedPath],
+        reason: 'correction',
+        segmentId: result.segmentId,
+      ),
     );
     onChanged();
   }
@@ -347,7 +432,9 @@ final class AudioPipelineCoordinator {
       sharedExportedFiles += count;
       refreshTranscriptions =
           _refreshSharedTranscriptsAfterExport &&
-          (reason == 'transcript' || reason == 'sync');
+          (reason == 'transcript' ||
+              reason == 'correction' ||
+              reason == 'sync');
       log(
         'Pipeline',
         '[WorkBench][SharedStorage] state=exported reason=$reason '
@@ -473,6 +560,28 @@ final class AudioPipelineCoordinator {
       );
       onChanged();
     }
+  }
+
+  void _correctionStatus(String message, {bool isError = false}) {
+    log('Pipeline', message, isError: isError);
+    final provider = RegExp(r'provider=(\S+)').firstMatch(message)?.group(1);
+    if (provider != null && message.contains('state=completed')) {
+      activeCorrectionProvider = provider;
+    }
+    onChanged();
+  }
+
+  Future<void> saveCorrectionInstructions(String instructions) =>
+      _correctionConfigStore.saveInstructions(instructions);
+
+  Future<void> resetCorrectionInstructions() =>
+      _correctionConfigStore.resetInstructions();
+
+  Future<void> setCorrectionEnabled(bool enabled) =>
+      _correctionConfigStore.setEnabled(enabled);
+
+  Future<void> handleMemoryPressure() async {
+    await _correction?.releaseIdleEngine();
   }
 
   void _setStartup(StartupPhase phase, String message, {String? provider}) {
@@ -712,10 +821,12 @@ final class AudioPipelineCoordinator {
     await _capture?.dispose();
     await _vad?.dispose();
     await _transcription?.dispose();
+    await _correction?.dispose();
     await _decoder.dispose();
     _capture = null;
     _vad = null;
     _transcription = null;
+    _correction = null;
     _transcriptionPaths = null;
     _speechPath = null;
     _inferenceProviders = null;
@@ -723,6 +834,7 @@ final class AudioPipelineCoordinator {
     activeModelName = null;
     activeProvider = null;
     activeVadProvider = null;
+    activeCorrectionProvider = null;
     _vadRecovery.clear();
     _vadRecoveryBytes = 0;
     _setStartup(StartupPhase.starting, 'Restarting local audio system…');
@@ -734,8 +846,10 @@ final class AudioPipelineCoordinator {
     await _capture?.dispose();
     await _vad?.dispose();
     await _transcription?.dispose();
+    await _correction?.dispose();
     await _decodeTail.catchError((Object _) {});
     await _decoder.dispose();
+    _correctionConfigStore.removeListener(onChanged);
   }
 
   String _oneLine(Object? value) =>

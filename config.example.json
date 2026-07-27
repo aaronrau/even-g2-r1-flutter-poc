@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "transcriptCorrection": {
+    "enabled": true,
+    "model": "gemma-4-e4b-it",
+    "backend": "gpu",
+    "timeoutMs": 30000,
+    "instructions": "You clean short automatic speech recognition transcripts from smart glasses. Correct obvious recognition errors, capitalization, punctuation, and light grammar only. Preserve the speaker's meaning, wording, order, names, numbers, commands, paths, flags, identifiers, and uncertainty. Do not summarize, remove requested actions, add facts, answer the transcript, or use markdown. If a correction is uncertain, retain the original wording. Return only the corrected transcript text."
+  }
+}
