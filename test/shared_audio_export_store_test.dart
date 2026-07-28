@@ -30,6 +30,7 @@ void main() {
     expect(store.folder?.displayName, 'Work Bench Audio');
     expect(store.hasSharedFolder, isTrue);
     expect(store.transcripts, isEmpty);
+    expect(store.messages, isEmpty);
   });
 
   test('keeps the current folder when the picker is cancelled', () async {
@@ -203,6 +204,52 @@ void main() {
     await store.toggleAudio(newest);
     expect(store.playingAudioFileName, isNull);
     expect(calls, containsAllInOrder(<String>['playAudio', 'stopAudio']));
+  });
+
+  test('loads sent and received WebSocket messages newest first', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      return switch (call.method) {
+        'currentDirectory' => <String, Object>{'displayName': 'Shared'},
+        'listMessages' => <Object?>[
+          <Object?, Object?>{
+            'id': 'older.sent.message.txt',
+            'direction': 'sent',
+            'text': 'Agent One: Start the task.',
+            'updatedAtMillis': 1000,
+          },
+          <Object?, Object?>{
+            'id': 'newer.received.message.txt',
+            'direction': 'received',
+            'text': 'Agent One: Task complete.',
+            'updatedAtMillis': 2000,
+          },
+          <Object?, Object?>{
+            'id': 'invalid.message.txt',
+            'direction': 'unknown',
+            'text': 'Ignore this record.',
+            'updatedAtMillis': 3000,
+          },
+        ],
+        _ => fail('Unexpected method ${call.method}'),
+      };
+    });
+    final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+    addTearDown(store.dispose);
+
+    await store.initialize();
+    await store.refreshMessages();
+
+    expect(store.messages.map((message) => message.text), <String>[
+      'Agent One: Task complete.',
+      'Agent One: Start the task.',
+    ]);
+    expect(
+      store.messages.map((message) => message.direction),
+      <SharedWebSocketMessageDirection>[
+        SharedWebSocketMessageDirection.received,
+        SharedWebSocketMessageDirection.sent,
+      ],
+    );
   });
 
   test(

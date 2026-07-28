@@ -117,6 +117,10 @@ final class GlassesStatusQueue {
         text: message,
       ),
     );
+    _log(
+      '[WorkBench][GlassesStatus] state=received_queued '
+      'pending=${_entries.length}',
+    );
     _startPump();
   }
 
@@ -175,6 +179,10 @@ final class GlassesStatusQueue {
           }
           entry.initialShown = true;
           if (entry.isTransient) {
+            _log(
+              '[WorkBench][GlassesStatus] state=received_displayed '
+              'pending=${_entries.length}',
+            );
             await _waitForTerminalDisplay();
             if (_disposed) {
               return;

@@ -151,18 +151,26 @@ value is loaded for the next correction and mirrored into app-private storage.
 Otherwise the app creates the prompt file from its last-known-good private
 value.
 
-Home's **Transcriptions** tab enumerates completed `.txt` files through the
-same Android document provider, pairs each with a same-name `.wav`, and reads
-or plays the files directly from the shared folder. Playback uses the content
-URI rather than copying audio back into private storage. The list refreshes
-only while **Transcriptions** is selected, presents the newest 20 entries
-first, and reveals the next 20 near the end of each scroll batch. **Events** is
-the default peer tab and retains only the 30 most recent in-app events. The
-native storage bridge also keeps an app-private filename-to-document-URI
-index. This preserves deterministic listing and playback on OEM document
-providers that accept writes but return an empty child-directory query; the
-indexed WAV/TXT content itself remains in the user-selected shared folder.
-The correction prompt is deliberately excluded from transcript enumeration.
+Acknowledged outbound WebSocket commands and readable inbound progress or
+completion summaries are saved atomically in app-private storage, then exported
+with `.sent.message.txt` or `.received.message.txt` direction suffixes.
+Existing message records are synchronized when the app starts or the shared
+folder changes. The reserved `.message.txt` suffix is excluded from transcript
+enumeration.
+
+Home's **Messages** tab combines those sent/received records with completed
+transcripts from the same Android document provider. It pairs each transcript
+with a same-name `.wav` and reads or plays files directly from the shared
+folder. Playback uses the content URI rather than copying audio back into
+private storage. The list refreshes only while **Messages** is selected,
+presents the newest 20 combined records first, and reveals the next 20 near
+the end of each scroll batch. **Events** is the default peer tab and retains
+only the 30 most recent in-app events. The native storage bridge also keeps an
+app-private filename-to-document-URI index. This preserves deterministic
+listing and playback on OEM document providers that accept writes but return
+an empty child-directory query; the indexed WAV/TXT content itself remains in
+the user-selected shared folder. The correction prompt is deliberately
+excluded from transcript enumeration.
 
 Shared export is downstream from durable capture: a revoked grant, unavailable
 document provider, or copy failure never blocks journaling, VAD, or local

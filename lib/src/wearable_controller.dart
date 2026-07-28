@@ -21,6 +21,7 @@ import 'util/hex.dart';
 import 'startup/startup_state.dart';
 import 'websocket/voice_websocket_client.dart';
 import 'websocket/voice_websocket_config.dart';
+import 'websocket/websocket_message_store.dart';
 
 final class WearableController extends ChangeNotifier
     with WidgetsBindingObserver {
@@ -29,11 +30,14 @@ final class WearableController extends ChangeNotifier
     SpeechModelPreferences speechModelPreferences =
         const SpeechModelPreferences(),
     SharedAudioExportStore? sharedAudioExportStore,
+    WebSocketMessageStore? webSocketMessageStore,
     VoiceWebSocketConfigStore? voiceWebSocketConfigStore,
   }) : _ble = ble ?? FlutterReactiveBle(),
        _speechModelPreferences = speechModelPreferences,
        _sharedAudioExportStore =
-           sharedAudioExportStore ?? SharedAudioExportStore() {
+           sharedAudioExportStore ?? SharedAudioExportStore(),
+       _webSocketMessageStore =
+           webSocketMessageStore ?? WebSocketMessageStore() {
     _sharedAudioExportStore.addListener(_sharedStorageChanged);
     _runtime = AppRuntimeCoordinator(log: addLog);
     _voiceWebSocket = VoiceWebSocketClient(
@@ -71,6 +75,7 @@ final class WearableController extends ChangeNotifier
   final FlutterReactiveBle _ble;
   final SpeechModelPreferences _speechModelPreferences;
   final SharedAudioExportStore _sharedAudioExportStore;
+  final WebSocketMessageStore _webSocketMessageStore;
   late final AppRuntimeCoordinator _runtime;
   late final VoiceWebSocketClient _voiceWebSocket;
   late final AudioPipelineCoordinator _audioPipeline;
@@ -86,6 +91,7 @@ final class WearableController extends ChangeNotifier
   bool _disposed = false;
   bool _g2UnexpectedlyDisconnected = false;
   bool _linkingController = false;
+  bool _sharedMessageViewActive = false;
   bool? _runtimeSessionActive;
   String? _lastControllerLinkKey;
   SpeechModelDefinition _selectedSpeechModel = defaultSpeechModel();
@@ -115,9 +121,13 @@ final class WearableController extends ChangeNotifier
   int get sharedExportedFiles => _audioPipeline.sharedExportedFiles;
   List<SharedTranscript> get sharedTranscripts =>
       _sharedAudioExportStore.transcripts;
-  bool get isLoadingSharedTranscripts =>
-      _sharedAudioExportStore.isLoadingTranscripts;
-  String? get sharedTranscriptError =>
+  List<SharedWebSocketMessage> get sharedWebSocketMessages =>
+      _sharedAudioExportStore.messages;
+  bool get isLoadingSharedMessages =>
+      _sharedAudioExportStore.isLoadingTranscripts ||
+      _sharedAudioExportStore.isLoadingMessages;
+  String? get sharedMessageError =>
+      _sharedAudioExportStore.messageLoadError ??
       _sharedAudioExportStore.transcriptLoadError;
   String? get lastTranscript => _audioPipeline.lastTranscript;
   int get completedTranscripts => _audioPipeline.completedTranscripts;
@@ -164,6 +174,26 @@ final class WearableController extends ChangeNotifier
     WidgetsBinding.instance.addObserver(this);
     await _runtime.initialize();
     try {
+      await _sharedAudioExportStore.initialize();
+    } catch (error) {
+      addLog(
+        'Storage',
+        '[WorkBench][SharedStorage] state=unavailable '
+            'action=choose_folder_again error=$error',
+        isError: true,
+      );
+    }
+    try {
+      await _webSocketMessageStore.initialize();
+    } on Object {
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=archive_unavailable '
+            'action=check_app_storage',
+        isError: true,
+      );
+    }
+    try {
       await _voiceWebSocket.initialize();
     } on Object {
       addLog(
@@ -173,15 +203,8 @@ final class WearableController extends ChangeNotifier
         isError: true,
       );
     }
-    try {
-      await _sharedAudioExportStore.initialize();
-    } catch (error) {
-      addLog(
-        'Storage',
-        '[WorkBench][SharedStorage] state=unavailable '
-            'action=choose_folder_again error=$error',
-        isError: true,
-      );
+    if (_sharedAudioExportStore.hasSharedFolder) {
+      unawaited(_syncWebSocketMessages());
     }
     _selectedSpeechModel = await _speechModelPreferences.load();
     try {
@@ -439,6 +462,7 @@ final class WearableController extends ChangeNotifier
     _safeNotify();
     await _audioPipeline.syncSharedCorrectionInstructions();
     await _audioPipeline.syncSharedAudioExport();
+    await _syncWebSocketMessages();
   }
 
   Future<void> clearSharedAudioFolder() async {
@@ -450,16 +474,31 @@ final class WearableController extends ChangeNotifier
     _safeNotify();
   }
 
-  Future<void> refreshSharedTranscripts() async {
-    await _sharedAudioExportStore.refreshTranscriptions();
+  Future<void> refreshSharedMessages() async {
+    Object? failure;
+    try {
+      await _sharedAudioExportStore.refreshMessages();
+    } on Object catch (error) {
+      failure = error;
+    }
+    try {
+      await _sharedAudioExportStore.refreshTranscriptions();
+    } on Object catch (error) {
+      failure ??= error;
+    }
     addLog(
       'Storage',
       '[WorkBench][SharedStorage] state=list_ready '
+          'messages=${sharedWebSocketMessages.length} '
           'transcriptions=${sharedTranscripts.length}',
     );
+    if (failure != null) {
+      throw StateError('Could not refresh the shared message history.');
+    }
   }
 
-  void setSharedTranscriptViewActive(bool active) {
+  void setSharedMessageViewActive(bool active) {
+    _sharedMessageViewActive = active;
     _audioPipeline.setSharedTranscriptRefreshEnabled(active);
   }
 
@@ -659,6 +698,13 @@ final class WearableController extends ChangeNotifier
       agent: route.agent,
       message: route.message,
     );
+    if (sent) {
+      await _archiveWebSocketMessage(
+        direction: WebSocketMessageDirection.sent,
+        message: '${route.agent}: ${route.message}',
+        failureState: 'sent_save_failed',
+      );
+    }
     await _glassesStatusQueue.completeTranscript(
       segmentId: segmentId,
       transcript: transcript,
@@ -679,15 +725,122 @@ final class WearableController extends ChangeNotifier
         transcript: transcript,
       );
 
-  void _handleInboundWebSocketMessage(String message) {
-    unawaited(
-      _glassesStatusQueue.queueTransient(prefix: 'Received', message: message),
+  Future<void> _handleInboundWebSocketMessage(String message) async {
+    Object? persistenceError;
+    try {
+      final saved = await _webSocketMessageStore.save(
+        direction: WebSocketMessageDirection.received,
+        message: message,
+      );
+      try {
+        final exported = await _sharedAudioExportStore.exportFiles(<String>[
+          saved.path,
+        ]);
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceWebSocket] state=received_saved '
+              'shared=${exported > 0}',
+        );
+        if (exported > 0 && _sharedMessageViewActive) {
+          unawaited(_refreshSharedWebSocketMessages());
+        }
+      } on Object {
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceWebSocket] state=received_export_failed '
+              'fallback=app_private',
+          isError: true,
+        );
+      }
+    } on Object catch (error) {
+      persistenceError = error;
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=received_save_failed '
+            'action=check_app_storage',
+        isError: true,
+      );
+    }
+    await _glassesStatusQueue.queueTransient(
+      prefix: 'Received',
+      message: message,
     );
     addLog(
       'WebSocket',
       '[WorkBench][VoiceWebSocket] state=received '
           'characters=${message.length}',
     );
+    if (persistenceError != null) {
+      throw StateError('Inbound message persistence failed.');
+    }
+  }
+
+  Future<void> _archiveWebSocketMessage({
+    required WebSocketMessageDirection direction,
+    required String message,
+    required String failureState,
+  }) async {
+    try {
+      final saved = await _webSocketMessageStore.save(
+        direction: direction,
+        message: message,
+      );
+      try {
+        final exported = await _sharedAudioExportStore.exportFiles(<String>[
+          saved.path,
+        ]);
+        if (exported > 0 && _sharedMessageViewActive) {
+          unawaited(_refreshSharedWebSocketMessages());
+        }
+      } on Object {
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceWebSocket] state=message_export_failed '
+              'fallback=app_private',
+          isError: true,
+        );
+      }
+    } on Object {
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=$failureState '
+            'action=check_app_storage',
+        isError: true,
+      );
+    }
+  }
+
+  Future<void> _syncWebSocketMessages() async {
+    if (!_sharedAudioExportStore.hasSharedFolder) {
+      return;
+    }
+    try {
+      final paths = await _webSocketMessageStore.savedPaths();
+      if (paths.isEmpty) {
+        return;
+      }
+      final exported = await _sharedAudioExportStore.exportFiles(paths);
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=message_sync '
+            'files=$exported',
+      );
+    } on Object {
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=message_sync_failed '
+            'action=choose_folder_again',
+        isError: true,
+      );
+    }
+  }
+
+  Future<void> _refreshSharedWebSocketMessages() async {
+    try {
+      await _sharedAudioExportStore.refreshMessages();
+    } on Object {
+      // The Messages view exposes the retained load error and a manual retry.
+    }
   }
 
   void _unexpectedG2Disconnect(String side) {

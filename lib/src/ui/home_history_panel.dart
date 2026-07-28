@@ -5,37 +5,39 @@ import 'package:flutter/material.dart';
 import '../audio/shared_audio_export_store.dart';
 import '../ble/ble_models.dart';
 
-enum HomeHistoryTab { events, transcriptions }
+enum HomeHistoryTab { events, messages }
 
 final class HomeHistoryPanel extends StatefulWidget {
   const HomeHistoryPanel({
     required this.events,
+    required this.messages,
     required this.transcriptions,
     required this.supportsSharedFolder,
-    required this.isLoadingTranscriptions,
+    required this.isLoadingMessages,
     required this.isStorageBusy,
     required this.isPlayingTranscript,
     this.sharedFolderName,
-    this.transcriptionError,
+    this.messageError,
     this.onClearEvents,
     this.onChooseFolder,
-    this.onRefreshTranscriptions,
+    this.onRefreshMessages,
     this.onTabChanged,
     this.onToggleTranscriptAudio,
     super.key,
   });
 
   final List<PooledLog> events;
+  final List<SharedWebSocketMessage> messages;
   final List<SharedTranscript> transcriptions;
   final bool supportsSharedFolder;
-  final bool isLoadingTranscriptions;
+  final bool isLoadingMessages;
   final bool isStorageBusy;
   final bool Function(SharedTranscript transcript) isPlayingTranscript;
   final String? sharedFolderName;
-  final String? transcriptionError;
+  final String? messageError;
   final VoidCallback? onClearEvents;
   final VoidCallback? onChooseFolder;
-  final VoidCallback? onRefreshTranscriptions;
+  final VoidCallback? onRefreshMessages;
   final ValueChanged<HomeHistoryTab>? onTabChanged;
   final ValueChanged<SharedTranscript>? onToggleTranscriptAudio;
 
@@ -45,10 +47,10 @@ final class HomeHistoryPanel extends StatefulWidget {
 
 final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     with SingleTickerProviderStateMixin {
-  static const int _transcriptPageSize = 20;
+  static const int _messagePageSize = 20;
 
   late final TabController _tabController;
-  int _visibleTranscriptCount = _transcriptPageSize;
+  int _visibleMessageCount = _messagePageSize;
   HomeHistoryTab _reportedTab = HomeHistoryTab.events;
 
   HomeHistoryTab get _selectedTab =>
@@ -66,14 +68,16 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
   @override
   void didUpdateWidget(HomeHistoryPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.sharedFolderName != widget.sharedFolderName) {
-      _visibleTranscriptCount = _transcriptPageSize;
+    if (oldWidget.sharedFolderName != widget.sharedFolderName ||
+        oldWidget.messages.length != widget.messages.length ||
+        oldWidget.transcriptions.length != widget.transcriptions.length) {
+      _visibleMessageCount = _messagePageSize;
     }
   }
 
   @override
   void dispose() {
-    if (_reportedTab == HomeHistoryTab.transcriptions) {
+    if (_reportedTab == HomeHistoryTab.messages) {
       widget.onTabChanged?.call(HomeHistoryTab.events);
     }
     _tabController
@@ -111,7 +115,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                 unselectedLabelStyle: Theme.of(context).textTheme.bodyMedium,
                 tabs: const <Tab>[
                   Tab(height: 48, text: 'Events'),
-                  Tab(height: 48, text: 'Transcriptions'),
+                  Tab(height: 48, text: 'Messages'),
                 ],
               ),
             ),
@@ -128,13 +132,13 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
               )
             else
               IconButton(
-                tooltip: 'Refresh transcriptions',
+                tooltip: 'Refresh messages',
                 onPressed:
                     widget.sharedFolderName == null ||
-                        widget.isLoadingTranscriptions ||
+                        widget.isLoadingMessages ||
                         widget.isStorageBusy
                     ? null
-                    : widget.onRefreshTranscriptions,
+                    : widget.onRefreshMessages,
                 icon: const Icon(Icons.refresh),
                 constraints: const BoxConstraints.tightFor(
                   width: 48,
@@ -147,10 +151,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         Expanded(
           child: TabBarView(
             controller: _tabController,
-            children: <Widget>[
-              _buildEvents(context),
-              _buildTranscriptions(context),
-            ],
+            children: <Widget>[_buildEvents(context), _buildMessages(context)],
           ),
         ),
       ],
@@ -189,7 +190,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     );
   }
 
-  Widget _buildTranscriptions(BuildContext context) {
+  Widget _buildMessages(BuildContext context) {
     final theme = Theme.of(context);
     final folderName = widget.sharedFolderName;
     if (folderName == null) {
@@ -201,9 +202,9 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
             children: <Widget>[
               Text(
                 widget.supportsSharedFolder
-                    ? 'Choose a shared folder to browse saved transcripts '
-                          'and play their WAV audio.'
-                    : 'Shared transcription folders are available on Android.',
+                    ? 'Choose a shared folder to browse sent and received '
+                          'messages, transcripts, and WAV audio.'
+                    : 'Shared message folders are available on Android.',
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodyMedium,
               ),
@@ -222,10 +223,10 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         ),
       );
     }
-    if (widget.isLoadingTranscriptions) {
+    if (widget.isLoadingMessages) {
       return const Center(child: CircularProgressIndicator());
     }
-    final error = widget.transcriptionError;
+    final error = widget.messageError;
     if (error != null) {
       return Center(
         child: ConstrainedBox(
@@ -242,7 +243,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
               OutlinedButton(
                 onPressed: widget.isStorageBusy
                     ? null
-                    : widget.onRefreshTranscriptions,
+                    : widget.onRefreshMessages,
                 child: const Text('Retry'),
               ),
             ],
@@ -250,24 +251,22 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         ),
       );
     }
-    if (widget.transcriptions.isEmpty) {
+    final history = _messageHistory();
+    if (history.isEmpty) {
       return Center(
         child: Text(
-          'No saved transcriptions in $folderName',
+          'No saved messages in $folderName',
           textAlign: TextAlign.center,
           style: theme.textTheme.bodyMedium,
         ),
       );
     }
-    final visibleCount = min(
-      _visibleTranscriptCount,
-      widget.transcriptions.length,
-    );
+    final visibleCount = min(_visibleMessageCount, history.length);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         Text(
-          'Files-visible in $folderName',
+          'Messages and transcripts in $folderName',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: theme.textTheme.bodySmall,
@@ -275,13 +274,19 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         const SizedBox(height: 8),
         Expanded(
           child: NotificationListener<ScrollNotification>(
-            onNotification: _loadMoreTranscripts,
+            onNotification: (notification) =>
+                _loadMoreMessages(notification, history.length),
             child: ListView.separated(
-              key: const ValueKey<String>('transcriptions-list'),
+              key: const ValueKey<String>('messages-list'),
               itemCount: visibleCount,
               separatorBuilder: (_, _) => const Divider(height: 1),
               itemBuilder: (context, index) {
-                final transcript = widget.transcriptions[index];
+                final entry = history[index];
+                final message = entry.message;
+                if (message != null) {
+                  return _buildWebSocketMessage(context, message);
+                }
+                final transcript = entry.transcript!;
                 final isPlaying = widget.isPlayingTranscript(transcript);
                 return Padding(
                   key: ValueKey<String>('transcript-${transcript.id}'),
@@ -353,16 +358,54 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     );
   }
 
-  bool _loadMoreTranscripts(ScrollNotification notification) {
+  List<_MessageHistoryEntry> _messageHistory() {
+    final history = <_MessageHistoryEntry>[
+      for (final message in widget.messages)
+        _MessageHistoryEntry.message(message),
+      for (final transcript in widget.transcriptions)
+        _MessageHistoryEntry.transcript(transcript),
+    ];
+    history.sort((left, right) {
+      final byTime = right.updatedAt.compareTo(left.updatedAt);
+      return byTime != 0 ? byTime : right.id.compareTo(left.id);
+    });
+    return history;
+  }
+
+  Widget _buildWebSocketMessage(
+    BuildContext context,
+    SharedWebSocketMessage message,
+  ) {
+    final theme = Theme.of(context);
+    return Padding(
+      key: ValueKey<String>('message-${message.id}'),
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(message.direction.label, style: theme.textTheme.titleSmall),
+          const SizedBox(height: 4),
+          Text(message.text, style: theme.textTheme.bodyMedium),
+          const SizedBox(height: 4),
+          Text(
+            _savedLabel(context, message.updatedAt),
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool _loadMoreMessages(ScrollNotification notification, int historyLength) {
     if (notification is! ScrollEndNotification ||
         notification.metrics.extentAfter > 160 ||
-        _visibleTranscriptCount >= widget.transcriptions.length) {
+        _visibleMessageCount >= historyLength) {
       return false;
     }
     setState(() {
-      _visibleTranscriptCount = min(
-        _visibleTranscriptCount + _transcriptPageSize,
-        widget.transcriptions.length,
+      _visibleMessageCount = min(
+        _visibleMessageCount + _messagePageSize,
+        historyLength,
       );
     });
     return false;
@@ -385,4 +428,32 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
 
   String _singleLine(String value) =>
       value.replaceAll(RegExp(r'\s+'), ' ').trim();
+}
+
+final class _MessageHistoryEntry {
+  const _MessageHistoryEntry._({
+    required this.id,
+    required this.updatedAt,
+    this.message,
+    this.transcript,
+  });
+
+  factory _MessageHistoryEntry.message(SharedWebSocketMessage value) =>
+      _MessageHistoryEntry._(
+        id: 'message-${value.id}',
+        updatedAt: value.updatedAt,
+        message: value,
+      );
+
+  factory _MessageHistoryEntry.transcript(SharedTranscript value) =>
+      _MessageHistoryEntry._(
+        id: 'transcript-${value.id}',
+        updatedAt: value.updatedAt,
+        transcript: value,
+      );
+
+  final String id;
+  final DateTime updatedAt;
+  final SharedWebSocketMessage? message;
+  final SharedTranscript? transcript;
 }

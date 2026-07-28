@@ -98,7 +98,7 @@ void main() {
       reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
       readyTimeout: const Duration(seconds: 1),
       acknowledgementTimeout: const Duration(seconds: 1),
-      onInboundMessage: inbound.add,
+      onInboundMessage: (message) async => inbound.add(message),
     );
     addTearDown(client.close);
     await client.initialize();
@@ -158,23 +158,112 @@ void main() {
 
     serverSockets.single.add(
       jsonEncode(<String, Object>{
-        'type': 'agent.output',
+        'type': 'message.progress',
         'event_id': 42,
         'agent': 'Agent One',
-        'message': 'Completed the requested task.',
+        'request_id': 'example-request',
+        'payload': <String, Object>{
+          'agent': 'Agent One',
+          'summary': 'The requested task is still running.',
+          'detail_lines': <String>['Private detail is not the summary.'],
+          'phase': 'in_progress',
+          'is_final': false,
+        },
       }),
     );
     await _waitUntil(() => inbound.isNotEmpty);
-    expect(inbound.single, 'Agent One: Completed the requested task.');
+    expect(inbound.single, 'Agent One: The requested task is still running.');
+
+    serverSockets.single.add(
+      jsonEncode(<String, Object>{
+        'type': 'message.completed',
+        'event_id': 43,
+        'agent': 'Agent One',
+        'request_id': 'example-request',
+        'payload': <String, Object>{
+          'agent': 'Agent One',
+          'completion_message': 'The requested task completed.',
+          'phase': 'final',
+          'is_final': true,
+        },
+      }),
+    );
+    await _waitUntil(() => inbound.length == 2);
+    expect(inbound.last, 'Agent One: The requested task completed.');
+    await _waitUntil(
+      () =>
+          received.where((payload) => payload['type'] == 'event.ack').length ==
+          2,
+    );
+    expect(
+      received
+          .where((payload) => payload['type'] == 'event.ack')
+          .map((payload) => payload['event_id']),
+      <int>[42, 43],
+    );
 
     await serverSockets.single.close();
     await _waitUntil(() => serverSockets.length == 2);
     final resume = await resumed.future.timeout(const Duration(seconds: 2));
     expect(resume, <String, dynamic>{
       'type': 'connection.resume',
-      'resume_after_event_id': 42,
+      'resume_after_event_id': 43,
     });
   });
+
+  test(
+    'does not acknowledge an inbound event when durable delivery fails',
+    () async {
+      final store = VoiceWebSocketConfigStore(
+        supportDirectory: () async => temp,
+      );
+      final client = VoiceWebSocketClient(
+        configStore: store,
+        reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
+        readyTimeout: const Duration(seconds: 1),
+        onInboundMessage: (_) async {
+          throw FileSystemException('Fixture persistence failure');
+        },
+      );
+      addTearDown(client.close);
+      await client.initialize();
+      await client.saveConfig(
+        VoiceWebSocketConfig.validate(
+          host: '127.0.0.1',
+          port: server.port,
+          secret: 'example-secret',
+          authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+          agentNames: const <String>['Agent One'],
+          useLegacyMessageShape: false,
+        ),
+      );
+      await _waitUntil(() => client.isReady);
+
+      serverSockets.single.add(
+        jsonEncode(<String, Object>{
+          'type': 'message.completed',
+          'event_id': 91,
+          'agent': 'Agent One',
+          'payload': <String, Object>{
+            'summary': 'A response that could not be stored.',
+          },
+        }),
+      );
+
+      await _waitUntil(() => serverSockets.length == 2);
+      expect(
+        received.where(
+          (payload) =>
+              payload['type'] == 'event.ack' && payload['event_id'] == 91,
+        ),
+        isEmpty,
+      );
+      expect(
+        received.where((payload) => payload['type'] == 'connection.resume'),
+        isEmpty,
+      );
+    },
+  );
 
   test(
     'sends the exact legacy agent and message shape when selected',

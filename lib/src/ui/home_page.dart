@@ -370,22 +370,22 @@ final class _HomePageState extends State<HomePage> {
     return Expanded(
       child: HomeHistoryPanel(
         events: controller.eventLogs,
+        messages: controller.sharedWebSocketMessages,
         transcriptions: controller.sharedTranscripts,
         supportsSharedFolder: controller.supportsSharedAudioFolder,
         sharedFolderName: controller.sharedAudioFolder?.displayName,
-        isLoadingTranscriptions: controller.isLoadingSharedTranscripts,
+        isLoadingMessages: controller.isLoadingSharedMessages,
         isStorageBusy: _busy || controller.isExportingSharedAudio,
-        transcriptionError: controller.sharedTranscriptError,
+        messageError: controller.sharedMessageError,
         isPlayingTranscript: controller.isPlayingTranscript,
         onClearEvents: controller.clearLogs,
         onChooseFolder: () => _run(controller.chooseSharedAudioFolder),
-        onRefreshTranscriptions: () =>
-            _run(controller.refreshSharedTranscripts),
+        onRefreshMessages: () => _run(controller.refreshSharedMessages),
         onTabChanged: (tab) {
-          final transcriptionsSelected = tab == HomeHistoryTab.transcriptions;
-          controller.setSharedTranscriptViewActive(transcriptionsSelected);
-          if (transcriptionsSelected) {
-            _run(controller.refreshSharedTranscripts);
+          final messagesSelected = tab == HomeHistoryTab.messages;
+          controller.setSharedMessageViewActive(messagesSelected);
+          if (messagesSelected) {
+            _run(controller.refreshSharedMessages);
           }
         },
         onToggleTranscriptAudio: (transcript) {
@@ -530,9 +530,10 @@ final class _HomePageState extends State<HomePage> {
             const SizedBox(height: 4),
             Text(
               'Choose a device folder for Files-visible WAV audio and text '
-              'transcripts plus the correction prompt. Home can read and play '
-              'the shared files; private durable capture and a last-known-good '
-              'prompt remain available if shared access is interrupted.',
+              'transcripts, sent and received agent messages, and the '
+              'correction prompt. Home can read and play transcript files; '
+              'private durable copies remain available if shared access is '
+              'interrupted.',
               style: theme.textTheme.bodyMedium,
             ),
             const SizedBox(height: 8),
@@ -802,7 +803,7 @@ final class _HomePageState extends State<HomePage> {
                   unselectedLabelStyle: theme.textTheme.bodyMedium,
                   tabs: const <Tab>[
                     Tab(height: 48, text: 'Events'),
-                    Tab(height: 48, text: 'Transcriptions'),
+                    Tab(height: 48, text: 'Messages'),
                   ],
                 ),
               ),

@@ -518,6 +518,7 @@ final class G2Connection {
         G2Ids.serviceEvenHub,
         _protocol.updateText(content),
         reserveFlag: true,
+        priority: AsyncWritePriority.high,
       );
     }
     _log(

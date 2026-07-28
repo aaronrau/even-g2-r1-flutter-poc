@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('switches between complete events and saved transcriptions', (
+  testWidgets('switches between events and saved message history', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
@@ -41,14 +41,28 @@ void main() {
               message: 'Raw event retained',
             ),
           ],
+          messages: <SharedWebSocketMessage>[
+            SharedWebSocketMessage(
+              id: 'received.received.message.txt',
+              direction: SharedWebSocketMessageDirection.received,
+              text: 'Agent One: Task complete.',
+              updatedAt: DateTime(2026, 1, 2, 3, 6),
+            ),
+            SharedWebSocketMessage(
+              id: 'sent.sent.message.txt',
+              direction: SharedWebSocketMessageDirection.sent,
+              text: 'Agent One: Start the task.',
+              updatedAt: DateTime(2026, 1, 2, 3, 5),
+            ),
+          ],
           transcriptions: <SharedTranscript>[transcript],
           supportsSharedFolder: true,
           sharedFolderName: 'Work Bench Audio',
-          isLoadingTranscriptions: false,
+          isLoadingMessages: false,
           isStorageBusy: false,
           isPlayingTranscript: (_) => false,
           onClearEvents: () => clearCount++,
-          onRefreshTranscriptions: () {},
+          onRefreshMessages: () {},
           onTabChanged: selectedTabs.add,
           onToggleTranscriptAudio: (value) => played = value,
         ),
@@ -62,15 +76,22 @@ void main() {
     await tester.tap(find.byTooltip('Clear events'));
     expect(clearCount, 1);
 
-    await tester.tap(find.text('Transcriptions'));
+    await tester.tap(find.text('Messages'));
     await tester.pumpAndSettle();
 
-    expect(selectedTabs, <HomeHistoryTab>[HomeHistoryTab.transcriptions]);
+    expect(selectedTabs, <HomeHistoryTab>[HomeHistoryTab.messages]);
+    expect(find.text('Received'), findsOneWidget);
+    expect(find.text('Agent One: Task complete.'), findsOneWidget);
+    expect(find.text('Sent'), findsOneWidget);
+    expect(find.text('Agent One: Start the task.'), findsOneWidget);
     expect(find.text(transcript.originalText), findsOneWidget);
     expect(find.text(transcript.correctedText!), findsOneWidget);
     expect(find.text('Original'), findsOneWidget);
     expect(find.text('Corrected'), findsOneWidget);
-    expect(find.text('Files-visible in Work Bench Audio'), findsOneWidget);
+    expect(
+      find.text('Messages and transcripts in Work Bench Audio'),
+      findsOneWidget,
+    );
     final playButton = find.byTooltip('Play audio');
     expect(playButton, findsOneWidget);
     expect(tester.getSize(playButton).height, greaterThanOrEqualTo(48));
@@ -79,7 +100,7 @@ void main() {
     await tester.tap(find.text('Events'));
     await tester.pumpAndSettle();
     expect(selectedTabs, <HomeHistoryTab>[
-      HomeHistoryTab.transcriptions,
+      HomeHistoryTab.messages,
       HomeHistoryTab.events,
     ]);
     expect(tester.takeException(), isNull);
@@ -93,9 +114,10 @@ void main() {
       _app(
         HomeHistoryPanel(
           events: const <PooledLog>[],
+          messages: const <SharedWebSocketMessage>[],
           transcriptions: const <SharedTranscript>[],
           supportsSharedFolder: true,
-          isLoadingTranscriptions: false,
+          isLoadingMessages: false,
           isStorageBusy: false,
           isPlayingTranscript: (_) => false,
           onChooseFolder: () => chooseCount++,
@@ -103,7 +125,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('Transcriptions'));
+    await tester.tap(find.text('Messages'));
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Choose a shared folder'), findsOneWidget);
@@ -129,9 +151,10 @@ void main() {
       _app(
         HomeHistoryPanel(
           events: events,
+          messages: const <SharedWebSocketMessage>[],
           transcriptions: const <SharedTranscript>[],
           supportsSharedFolder: true,
-          isLoadingTranscriptions: false,
+          isLoadingMessages: false,
           isStorageBusy: false,
           isPlayingTranscript: (_) => false,
         ),
@@ -165,23 +188,24 @@ void main() {
         _app(
           HomeHistoryPanel(
             events: const <PooledLog>[],
+            messages: const <SharedWebSocketMessage>[],
             transcriptions: transcriptions,
             supportsSharedFolder: true,
             sharedFolderName: 'Work Bench Audio',
-            isLoadingTranscriptions: false,
+            isLoadingMessages: false,
             isStorageBusy: false,
             isPlayingTranscript: (_) => false,
           ),
         ),
       );
-      await tester.tap(find.text('Transcriptions'));
+      await tester.tap(find.text('Messages'));
       await tester.pumpAndSettle();
 
-      expect(_visibleTranscriptItems(tester), 20);
-      await _jumpTranscriptListToEnd(tester);
-      expect(_visibleTranscriptItems(tester), 40);
-      await _jumpTranscriptListToEnd(tester);
-      expect(_visibleTranscriptItems(tester), 45);
+      expect(_visibleMessageItems(tester), 20);
+      await _jumpMessageListToEnd(tester);
+      expect(_visibleMessageItems(tester), 40);
+      await _jumpMessageListToEnd(tester);
+      expect(_visibleMessageItems(tester), 45);
       expect(tester.takeException(), isNull);
     },
   );
@@ -198,17 +222,17 @@ Widget _app(Widget child) {
   );
 }
 
-int _visibleTranscriptItems(WidgetTester tester) {
+int _visibleMessageItems(WidgetTester tester) {
   final list = tester.widget<ListView>(
-    find.byKey(const ValueKey<String>('transcriptions-list')),
+    find.byKey(const ValueKey<String>('messages-list')),
   );
   final delegate = list.childrenDelegate as SliverChildBuilderDelegate;
   final separatedChildCount = delegate.estimatedChildCount!;
   return (separatedChildCount + 1) ~/ 2;
 }
 
-Future<void> _jumpTranscriptListToEnd(WidgetTester tester) async {
-  final list = find.byKey(const ValueKey<String>('transcriptions-list'));
+Future<void> _jumpMessageListToEnd(WidgetTester tester) async {
+  final list = find.byKey(const ValueKey<String>('messages-list'));
   final scrollable = find.descendant(
     of: list,
     matching: find.byType(Scrollable),

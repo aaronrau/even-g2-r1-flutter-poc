@@ -77,12 +77,14 @@ Future<void> main(List<String> arguments) async {
           stdout.writeln('message_rejected reason=invalid_fields');
           return;
         }
+        String? requestId;
         if (modern) {
-          final requestId = decoded['request_id'];
-          if (requestId is! String || requestId.isEmpty) {
+          final decodedRequestId = decoded['request_id'];
+          if (decodedRequestId is! String || decodedRequestId.isEmpty) {
             stdout.writeln('message_rejected reason=missing_request_id');
             return;
           }
+          requestId = decodedRequestId;
           final previous = acceptedByRequestId[requestId];
           if (previous != null) {
             socket.add(jsonEncode(previous));
@@ -106,14 +108,21 @@ Future<void> main(List<String> arguments) async {
           socket.add(jsonEncode(response));
         }
         eventId++;
-        socket.add(
-          jsonEncode(<String, Object>{
-            'type': 'agent.output',
-            'event_id': eventId,
+        final event = <String, Object>{
+          'type': 'message.progress',
+          'event_id': eventId,
+          'agent': agent,
+          'payload': <String, Object>{
             'agent': agent,
-            'message': 'Fixture received the agent message.',
-          }),
-        );
+            'summary': 'Fixture received the agent message.',
+            'phase': 'in_progress',
+            'is_final': false,
+          },
+        };
+        if (requestId != null) {
+          event['request_id'] = requestId;
+        }
+        socket.add(jsonEncode(event));
         stdout.writeln(
           'message_received shape=${modern ? 'modern' : 'legacy'} '
           'characters=${message.length}',

@@ -141,7 +141,8 @@ void main() {
     tester,
   ) async {
     final display = <String>[];
-    final queue = _queue(display: display);
+    final logs = <String>[];
+    final queue = _queue(display: display, logs: logs);
 
     await queue.queueTranscript(segmentId: 'segment-1', transcript: 'Raw.');
     await queue.completeTranscript(
@@ -152,6 +153,10 @@ void main() {
     await queue.queueTransient(prefix: 'Received', message: 'Agent response.');
     await tester.pump();
     expect(display, <String>['Queued: Raw.', 'Sent: Corrected.']);
+    expect(
+      logs,
+      contains('[WorkBench][GlassesStatus] state=received_queued pending=2'),
+    );
 
     await tester.pump(const Duration(seconds: 2));
     await tester.pump();
@@ -161,6 +166,10 @@ void main() {
       '<clear>',
       'Received: Agent response.',
     ]);
+    expect(
+      logs,
+      contains('[WorkBench][GlassesStatus] state=received_displayed pending=1'),
+    );
 
     await tester.pump(const Duration(seconds: 2));
     await tester.pump();
@@ -213,9 +222,10 @@ void main() {
 GlassesStatusQueue _queue({
   required List<String> display,
   bool Function()? isConnected,
+  List<String>? logs,
 }) => GlassesStatusQueue(
   isConnected: isConnected ?? () => true,
   showText: (message) async => display.add(message),
   clearText: () async => display.add('<clear>'),
-  log: (message, {bool isError = false}) {},
+  log: (message, {bool isError = false}) => logs?.add(message),
 );

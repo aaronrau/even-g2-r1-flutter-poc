@@ -45,6 +45,22 @@ void main() {
       expect(nextWriteRan, isTrue);
     });
 
+    test('continues after a stalled BLE write times out', () async {
+      final queue = AsyncWriteQueue(
+        operationTimeout: const Duration(milliseconds: 10),
+      );
+      final stalled = Completer<void>();
+      var nextWriteRan = false;
+
+      await expectLater(
+        queue.add(() => stalled.future),
+        throwsA(isA<TimeoutException>()),
+      );
+      await queue.add(() async => nextWriteRan = true);
+
+      expect(nextWriteRan, isTrue);
+    });
+
     test('preempts a visual transfer between BLE packet fragments', () async {
       final queue = AsyncWriteQueue();
       final firstFragmentStarted = Completer<void>();

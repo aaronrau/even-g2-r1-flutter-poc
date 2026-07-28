@@ -20,7 +20,9 @@ G2 audio → durable capture → VAD → final raw transcript
                                                            ↓ 2 seconds
                                                         clear display
 
-WebSocket inbound event → FIFO → G2 "Received: …" → clear after 2 seconds
+Acknowledged send → durable `.sent.message.txt`
+WebSocket inbound event → durable `.received.message.txt`
+                        → FIFO → G2 "Received: …" → clear after 2 seconds
 ```
 
 ## Configuration
@@ -139,18 +141,32 @@ queue is independent of the durable transcription and correction ledgers, so
 a display backlog cannot block or discard audio, files, correction, or
 WebSocket routing.
 
-Inbound JSON objects use the first non-empty `message`, `text`, or `content`
-field, including a nested `data` object; non-JSON text frames are also
-accepted. Connection and acknowledgement frames are not echoed to the glasses.
-A top-level inbound agent name is shown before the message. Inbound `Received:`
-items share the display FIFO and clear after two seconds, so they cannot
-overwrite an active transcript status.
+The agent server's `message.progress` and `message.completed` events carry
+their concise user-facing text under `payload.summary` or
+`payload.completion_message`. Work Bench also accepts `summary.result` text
+under `result`, generic `message`, `text`, or `content` fields, nested `data`,
+and non-JSON text frames. Connection and acknowledgement frames are not echoed
+to the glasses. A top-level inbound agent name is shown before the message.
+Inbound `Received:` items share the display FIFO and clear after two seconds,
+so they cannot overwrite an active transcript status.
+
+Every acknowledged outgoing command and readable inbound message is written
+through a `.part` file and atomic rename in app-private support storage. The
+final filename ends in `.sent.message.txt` or `.received.message.txt`. When
+File storage is selected, completed records are exported to that shared
+folder. Existing records are synchronized at startup and when the folder
+changes. The **Messages** tab combines both directions with saved transcripts
+and their playable WAV files. A persistence or export failure never blocks
+the G2 display or WebSocket receive loop.
 
 If G2 is temporarily disconnected, Work Bench retains the FIFO. A terminal
 two-second hold starts only after that terminal state was written successfully.
 If the hold elapsed while disconnected, Work Bench clears the stale state
 before advancing after reconnection. Display and socket operations are
-serialized independently so neither can stall the audio pipeline.
+serialized independently so neither can stall the audio pipeline. Text states
+use the high-priority BLE queue, waveform updates remain low priority, and an
+individual BLE write times out after two seconds so a stalled visual transfer
+cannot block every later status indefinitely.
 
 ## Reliability and privacy boundaries
 

@@ -163,7 +163,7 @@ failure, timeout, process death, invalid configuration, or missing model must
 never block capture, VAD, STT, or access to the original transcript.
 
 - Keep `<segment>.raw.txt` and `<segment>.corrected.txt` separate. Show the
-  original first in the Transcriptions tab.
+  original first in the Messages tab.
 - Treat the complete runtime `config.json` as private, ignored configuration
   and commit only a generic `config.example.json`. When a shared folder is
   selected, keep the editable instructions in
@@ -219,6 +219,15 @@ STT, correction, file export, or access to the original transcript.
 - Keep reconnect timers, ready timers, acknowledgement timers, subscriptions,
   and pending completers bounded and cancel them during configuration changes
   and disposal.
+- Parse user-facing progress and completion text from the server's documented
+  `payload` envelope. Save every acknowledged outbound message and every
+  readable inbound message atomically in app-private storage, encode direction
+  with the reserved `.sent.message.txt` or `.received.message.txt` suffix, and
+  export both to the selected shared folder. Keep message persistence and G2
+  display independent so a failure in either consumer cannot block the other.
+- Keep every G2 BLE write bounded. Transcript and inbound-message text uses
+  high priority, visual waveform writes use low priority, and a stalled write
+  must time out so later FIFO statuses can still reach and clear from G2.
 - Plain `ws://` sends the secret and transcript without transport encryption.
   Document that it is restricted to a trusted local connection. On Android,
   `127.0.0.1` addresses the phone itself; use an explicit development bridge

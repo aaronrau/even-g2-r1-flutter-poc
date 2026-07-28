@@ -18,7 +18,7 @@ enum VoiceWebSocketStatus {
 typedef VoiceWebSocketConnector =
     Future<WebSocket> Function(Uri uri, Map<String, Object> headers);
 
-typedef VoiceWebSocketInboundMessage = void Function(String message);
+typedef VoiceWebSocketInboundMessage = Future<void> Function(String message);
 
 final class AgentTranscriptRoute {
   const AgentTranscriptRoute({required this.agent, required this.message});
@@ -70,6 +70,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   int _generation = 0;
   int _reconnectAttempt = 0;
   int? _lastEventId;
+  Future<void> _inboundTail = Future<void>.value();
 
   VoiceWebSocketStatus status = VoiceWebSocketStatus.unconfigured;
   String statusText = 'Not configured';
@@ -153,7 +154,14 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       _socket = socket;
       socket.pingInterval = const Duration(seconds: 20);
       _subscription = socket.listen(
-        (data) => _handleSocketData(data, generation),
+        (data) {
+          _inboundTail = _inboundTail
+              .then((_) => _handleSocketData(data, generation))
+              .catchError((_) {
+                // Delivery failures publish a generic status and reconnect
+                // without exposing private message content.
+              });
+        },
         onDone: () => _handleSocketClosed(generation),
         onError: (_) => _handleSocketClosed(generation),
         cancelOnError: true,
@@ -352,7 +360,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     return false;
   }
 
-  void _handleSocketData(Object? data, int generation) {
+  Future<void> _handleSocketData(Object? data, int generation) async {
     if (_disposed || generation != _generation || data is! String) {
       return;
     }
@@ -362,14 +370,13 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     } on FormatException {
       final message = data.trim();
       if (message.isNotEmpty) {
-        _onInboundMessage?.call(message);
+        await _deliverInbound(message, generation);
       }
       return;
     }
     if (decoded is! Map<String, dynamic>) {
       return;
     }
-    _captureEventId(decoded);
     final type = decoded['type'];
     if (type == 'connection.ready') {
       _handleReady(decoded, generation);
@@ -389,8 +396,12 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     }
     final message = _extractMessage(decoded);
     if (message != null) {
-      _onInboundMessage?.call(message);
+      final delivered = await _deliverInbound(message, generation);
+      if (!delivered || generation != _generation) {
+        return;
+      }
     }
+    _captureAndAcknowledgeEvent(decoded);
   }
 
   void _handleReady(Map<String, dynamic> payload, int generation) {
@@ -462,7 +473,27 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     }
   }
 
-  void _captureEventId(Map<String, dynamic> payload) {
+  Future<bool> _deliverInbound(String message, int generation) async {
+    final handler = _onInboundMessage;
+    if (handler == null) {
+      return true;
+    }
+    try {
+      await handler(message);
+      return true;
+    } on Object {
+      if (!_disposed && generation == _generation) {
+        _setStatus(
+          VoiceWebSocketStatus.error,
+          'Could not save server message · retrying',
+        );
+        unawaited(_closeSocket(reconnect: true));
+      }
+      return false;
+    }
+  }
+
+  void _captureAndAcknowledgeEvent(Map<String, dynamic> payload) {
     final eventId = payload['event_id'];
     final parsed = switch (eventId) {
       int value => value,
@@ -471,21 +502,60 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     };
     if (parsed != null && parsed >= 0) {
       _lastEventId = parsed;
+      final socket = _socket;
+      if (socket != null && socket.readyState == WebSocket.open) {
+        try {
+          socket.add(
+            jsonEncode(<String, Object>{
+              'type': 'event.ack',
+              'event_id': parsed,
+            }),
+          );
+        } on Object {
+          // The durable cursor is retained for connection.resume if this ACK
+          // was lost with the socket.
+        }
+      }
     }
   }
 
   String? _extractMessage(Map<String, dynamic> payload) {
     String? message;
-    for (final key in const <String>['message', 'text', 'content']) {
+    for (final key in const <String>[
+      'summary',
+      'completion_message',
+      'message',
+      'text',
+      'content',
+      'detail',
+    ]) {
       final value = payload[key];
       if (value is String && value.trim().isNotEmpty) {
         message = value.trim();
         break;
       }
     }
-    final data = payload['data'];
-    if (message == null && data is Map<String, dynamic>) {
-      message = _extractMessage(data);
+    if (message == null) {
+      final detailLines = payload['detail_lines'];
+      if (detailLines is List<dynamic>) {
+        final lines = detailLines
+            .whereType<String>()
+            .map((line) => line.trim())
+            .where((line) => line.isNotEmpty)
+            .toList(growable: false);
+        if (lines.isNotEmpty) {
+          message = lines.join('\n');
+        }
+      }
+    }
+    for (final key in const <String>['payload', 'result', 'data']) {
+      if (message != null) {
+        break;
+      }
+      final nested = payload[key];
+      if (nested is Map<String, dynamic>) {
+        message = _extractMessage(nested);
+      }
     }
     if (message == null) {
       return null;

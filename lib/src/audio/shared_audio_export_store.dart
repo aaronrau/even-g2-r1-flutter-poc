@@ -30,6 +30,30 @@ final class SharedTranscript {
   String get text => correctedText ?? originalText;
 }
 
+enum SharedWebSocketMessageDirection {
+  sent,
+  received;
+
+  String get label => switch (this) {
+    sent => 'Sent',
+    received => 'Received',
+  };
+}
+
+final class SharedWebSocketMessage {
+  const SharedWebSocketMessage({
+    required this.id,
+    required this.direction,
+    required this.text,
+    required this.updatedAt,
+  });
+
+  final String id;
+  final SharedWebSocketMessageDirection direction;
+  final String text;
+  final DateTime updatedAt;
+}
+
 final class SharedAudioExportStore extends ChangeNotifier {
   static const String correctionPromptFileName =
       'workbench-correction-prompt.txt';
@@ -51,8 +75,11 @@ final class SharedAudioExportStore extends ChangeNotifier {
 
   SharedAudioFolder? folder;
   List<SharedTranscript> transcripts = const <SharedTranscript>[];
+  List<SharedWebSocketMessage> messages = const <SharedWebSocketMessage>[];
   bool isLoadingTranscripts = false;
+  bool isLoadingMessages = false;
   String? transcriptLoadError;
+  String? messageLoadError;
   String? playingAudioFileName;
 
   bool get isSupported => _isAndroid;
@@ -79,7 +106,9 @@ final class SharedAudioExportStore extends ChangeNotifier {
     if (selected != null) {
       folder = selected;
       transcripts = const <SharedTranscript>[];
+      messages = const <SharedWebSocketMessage>[];
       transcriptLoadError = null;
+      messageLoadError = null;
       notifyListeners();
     }
     return selected;
@@ -93,7 +122,9 @@ final class SharedAudioExportStore extends ChangeNotifier {
     await _channel.invokeMethod<void>('clearDirectory');
     folder = null;
     transcripts = const <SharedTranscript>[];
+    messages = const <SharedWebSocketMessage>[];
     transcriptLoadError = null;
+    messageLoadError = null;
     notifyListeners();
   }
 
@@ -166,6 +197,40 @@ final class SharedAudioExportStore extends ChangeNotifier {
     }
   }
 
+  Future<void> refreshMessages() async {
+    if (!_isAndroid || folder == null) {
+      messages = const <SharedWebSocketMessage>[];
+      messageLoadError = null;
+      notifyListeners();
+      return;
+    }
+    isLoadingMessages = true;
+    messageLoadError = null;
+    notifyListeners();
+    try {
+      final records =
+          await _channel.invokeMethod<List<Object?>>('listMessages') ??
+          const <Object?>[];
+      final loaded = records
+          .whereType<Map<Object?, Object?>>()
+          .map(_messageFromRecord)
+          .whereType<SharedWebSocketMessage>()
+          .toList(growable: false);
+      loaded.sort((left, right) {
+        final byTime = right.updatedAt.compareTo(left.updatedAt);
+        return byTime != 0 ? byTime : right.id.compareTo(left.id);
+      });
+      messages = loaded;
+    } catch (_) {
+      messageLoadError =
+          'Could not read saved messages. Choose the folder again or retry.';
+      rethrow;
+    } finally {
+      isLoadingMessages = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> toggleAudio(SharedTranscript transcript) async {
     final audioFileName = transcript.audioFileName;
     if (!_isAndroid || audioFileName == null) {
@@ -230,6 +295,32 @@ final class SharedAudioExportStore extends ChangeNotifier {
       audioFileName: audioFileName is String && audioFileName.trim().isNotEmpty
           ? audioFileName.trim()
           : null,
+    );
+  }
+
+  SharedWebSocketMessage? _messageFromRecord(Map<Object?, Object?> message) {
+    final id = message['id'];
+    final directionName = message['direction'];
+    final text = message['text'];
+    final updatedAtMillis = message['updatedAtMillis'];
+    final direction = switch (directionName) {
+      'sent' => SharedWebSocketMessageDirection.sent,
+      'received' => SharedWebSocketMessageDirection.received,
+      _ => null,
+    };
+    if (id is! String ||
+        id.trim().isEmpty ||
+        direction == null ||
+        text is! String ||
+        text.trim().isEmpty ||
+        updatedAtMillis is! int) {
+      return null;
+    }
+    return SharedWebSocketMessage(
+      id: id.trim(),
+      direction: direction,
+      text: text.trim(),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(updatedAtMillis),
     );
   }
 

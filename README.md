@@ -116,10 +116,10 @@ expose for a true locked Hub mode.
   default; Parakeet 110M and Tiny Whisper remain available.
 - Lets Android users choose a shared device folder for Files-visible speech
   WAVs plus separate `.raw.txt` and `.corrected.txt` transcripts. Home's
-  **Transcriptions** tab shows the original first and corrected text second,
-  and plays the paired WAV directly from that folder while retaining the
-  app-private durable capture path for recovery. It loads the newest 20 first
-  and reveals more while scrolling.
+  **Messages** tab combines those transcripts with sent and received agent
+  messages. It shows original text first and corrected text second, plays the
+  paired WAV directly from that folder, loads the newest 20 records first, and
+  reveals more while scrolling.
 - Runs Gemma 4 E4B correction through pinned LiteRT-LM in a dedicated Android
   process after Parakeet commits the raw transcript. The correction queue is
   durable and never blocks capture, VAD, or STT.
@@ -129,7 +129,8 @@ expose for a true locked Hub mode.
   and sent after `connection.ready`. Each G2 status follows one FIFO lifecycle:
   `Queued:` while correction/routing is pending, then `Saved:` or acknowledged
   `Sent:` for two seconds before clearing. Inbound server messages appear as
-  serialized `Received:` items and also clear after two seconds.
+  serialized `Received:` items, are saved to the selected Files folder, and
+  clear from the glasses after two seconds.
 - Draws a thin waveform in the upper-left using LC3 global gain and an adaptive
   silence floor.
 - Displays `Tap`, `Double tap`, `Swipe up`, `Swipe down`, and
@@ -171,6 +172,16 @@ complete configured agent-name match with `message.send`, correlates the
 server's `message.accepted` using `request_id`, and resumes from the last
 observed event ID after an unexpected reconnect. The optional legacy setting
 sends exactly `agent` and `message`.
+
+Agent progress and completion replies arrive as `message.progress` and
+`message.completed`. Work Bench reads their concise text from
+`payload.summary` or `payload.completion_message`, queues it on the G2 with a
+  `Received:` prefix, and saves an atomic app-private
+  `workbench-websocket-<timestamp>-<sequence>.received.message.txt` record.
+Acknowledged outgoing commands are saved with the matching
+`.sent.message.txt` suffix. When a shared File storage folder is selected,
+both directions are copied there for access by Files and other apps and appear
+with transcripts in the **Messages** tab.
 
 [`voice_websocket.example.json`](voice_websocket.example.json) documents the
 validated app-private schema. Agent names are matched case-insensitively as
@@ -460,10 +471,11 @@ Then:
    approve the device folder that should receive WAV audio and text
    transcripts. Existing completed speech files are copied there, and future
    files are exported as they finish.
-3. Return to Home and select **Transcriptions** to read the original followed
-   by the corrected text, or play its paired WAV. The list refreshes when this
-   tab is selected and loads 20 entries at a time as you scroll. Select
-   **Events** to see the 30 most recent in-app events.
+3. Return to Home and select **Messages** to browse sent and received agent
+   messages, read each original transcript followed by its corrected text, or
+   play the paired WAV. The list refreshes only when this tab is selected and
+   loads 20 entries at a time as you scroll. Select **Events** to see the 30
+   most recent in-app events.
 4. Tap **Connect devices**. Work Bench scans for the G2 pair and R1, connects
    them, and releases the temporary R1 setup link after Tri-Sync handoff.
 5. Speak to move the waveform and use the ring to display gestures.

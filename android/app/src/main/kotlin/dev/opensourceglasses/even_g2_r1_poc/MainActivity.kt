@@ -209,6 +209,7 @@ class MainActivity : FlutterActivity() {
                     writeCorrectionInstructions(instructions, result)
                 }
                 "listTranscriptions" -> listTranscriptions(result)
+                "listMessages" -> listMessages(result)
                 "playAudio" -> {
                     val fileName = call.argument<String>("fileName")
                     if (fileName == null) {
@@ -669,6 +670,7 @@ class MainActivity : FlutterActivity() {
             val lower = name.lowercase()
             if (name.isEmpty() ||
                 lower == CORRECTION_PROMPT_FILE_NAME ||
+                lower.endsWith(".message.txt") ||
                 lower.endsWith(".part.wav") ||
                 lower.endsWith(".part.txt")
             ) {
@@ -819,6 +821,147 @@ class MainActivity : FlutterActivity() {
                     "updatedAtMillis" to entry.updatedAtMillis,
                 )
             }.toList()
+    }
+
+    private fun listMessages(result: MethodChannel.Result) {
+        val directory = storedDirectoryUri()
+        if (directory == null) {
+            result.error(
+                "directory_unavailable",
+                "Choose the shared save folder again.",
+                null,
+            )
+            return
+        }
+        storageExecutor.execute {
+            try {
+                val entries = readSharedMessages(directory)
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][SharedStorage] state=message_list_ready " +
+                        "messages=${entries.size}",
+                )
+                runOnUiThread { result.success(entries) }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    result.error(
+                        "message_list_failed",
+                        "Could not read messages from the selected folder.",
+                        null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun readSharedMessages(
+        directory: Uri,
+    ): List<Map<String, Any?>> {
+        data class Entry(
+            val id: String,
+            val direction: String,
+            val text: String,
+            val updatedAtMillis: Long,
+        )
+
+        fun direction(name: String): String? {
+            val lower = name.lowercase()
+            return when {
+                lower.endsWith(".sent.message.txt") -> "sent"
+                lower.endsWith(".received.message.txt") -> "received"
+                else -> null
+            }
+        }
+
+        val byName = mutableMapOf<String, Entry>()
+        for ((name, document) in documentIndex()) {
+            val messageDirection = direction(name) ?: continue
+            if (!documentBelongsToTree(directory, document) ||
+                !documentExists(document)
+            ) {
+                continue
+            }
+            val text =
+                try {
+                    readTranscriptText(document)
+                } catch (_: Exception) {
+                    ""
+                }
+            if (text.isNotEmpty()) {
+                byName[name] =
+                    Entry(
+                        id = name,
+                        direction = messageDirection,
+                        text = text,
+                        updatedAtMillis = documentLastModified(document),
+                    )
+            }
+        }
+
+        val children =
+            DocumentsContract.buildChildDocumentsUriUsingTree(
+                directory,
+                DocumentsContract.getTreeDocumentId(directory),
+            )
+        val projection =
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+            )
+        contentResolver.query(children, projection, null, null, null)?.use { cursor ->
+            val idColumn =
+                cursor.getColumnIndexOrThrow(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                )
+            val nameColumn =
+                cursor.getColumnIndexOrThrow(
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                )
+            val modifiedColumn =
+                cursor.getColumnIndex(
+                    DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+                )
+            while (cursor.moveToNext()) {
+                val name = cursor.getString(nameColumn)?.trim().orEmpty()
+                val messageDirection = direction(name) ?: continue
+                val document =
+                    DocumentsContract.buildDocumentUriUsingTree(
+                        directory,
+                        cursor.getString(idColumn),
+                    )
+                val text = readTranscriptText(document)
+                if (text.isEmpty()) {
+                    continue
+                }
+                val modified =
+                    if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn)) {
+                        cursor.getLong(modifiedColumn)
+                    } else {
+                        documentLastModified(document)
+                    }
+                byName[name] =
+                    Entry(
+                        id = name,
+                        direction = messageDirection,
+                        text = text,
+                        updatedAtMillis = modified,
+                    )
+            }
+        }
+        return byName.values
+            .sortedWith(
+                compareByDescending<Entry> { it.updatedAtMillis }
+                    .thenByDescending { it.id },
+            )
+            .map { entry ->
+                mapOf(
+                    "id" to entry.id,
+                    "direction" to entry.direction,
+                    "text" to entry.text,
+                    "updatedAtMillis" to entry.updatedAtMillis,
+                )
+            }
     }
 
     private fun playAudio(

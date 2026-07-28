@@ -999,9 +999,13 @@ enum AsyncWritePriority { high, normal, low }
 /// Keeps async BLE writes ordered while allowing latency-sensitive control
 /// messages to pass queued, nonessential visual updates.
 final class AsyncWriteQueue {
+  AsyncWriteQueue({Duration operationTimeout = const Duration(seconds: 2)})
+    : _operationTimeout = operationTimeout;
+
   final Queue<_QueuedAsyncWrite> _high = Queue<_QueuedAsyncWrite>();
   final Queue<_QueuedAsyncWrite> _normal = Queue<_QueuedAsyncWrite>();
   final Queue<_QueuedAsyncWrite> _low = Queue<_QueuedAsyncWrite>();
+  final Duration _operationTimeout;
   bool _draining = false;
 
   Future<void> add(
@@ -1056,7 +1060,7 @@ final class AsyncWriteQueue {
           ? _normal.removeFirst()
           : _low.removeFirst();
       try {
-        await queued.operation();
+        await queued.operation().timeout(_operationTimeout);
         queued.completer.complete();
       } catch (error, stackTrace) {
         queued.completer.completeError(error, stackTrace);

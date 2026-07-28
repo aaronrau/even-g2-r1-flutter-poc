@@ -164,7 +164,7 @@ batches and refreshes only while that text tab is selected.
   logs, and application state.
 - `lib/src/ui/home_page.dart` — simplified Home status UI and separate manual
   Tools screen.
-- `lib/src/ui/home_history_panel.dart` — peer Events/Transcriptions views,
+- `lib/src/ui/home_history_panel.dart` — peer Events/Messages views,
   complete saved transcript text, and shared WAV playback controls.
 - `android/.../MainActivity.kt` — scoped Android document-tree access,
   transcript enumeration, and content-URI media playback.

@@ -39,7 +39,7 @@ an atomic rename. The raw transcript exists before correction starts. The
 private metadata records stage timings and providers but does not duplicate
 transcript text. When a shared folder is selected, final WAV and transcript
 files plus `workbench-correction-prompt.txt` are stored there through Android's
-document provider. The prompt file is excluded from the Transcriptions list.
+document provider. The prompt file is excluded from the Messages list.
 Legacy `<segment>.txt` files remain readable as original-only transcripts.
 
 ## Configuration
@@ -138,7 +138,7 @@ Acceptance requires:
 - memory remains bounded after warm-up rather than increasing per turn;
 - Settings changes affect the next transcript;
 - original and corrected files remain separate and appear in that order in
-  the Transcriptions tab.
+  the Messages tab.
 
 GPU qualification is a separate gate. `Backend.GPU()`, successful model load,
 and faster timing are not sufficient by themselves. The packaged
