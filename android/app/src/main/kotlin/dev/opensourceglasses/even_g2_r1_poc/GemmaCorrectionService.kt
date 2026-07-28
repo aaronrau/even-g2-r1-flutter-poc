@@ -1,6 +1,8 @@
 package dev.opensourceglasses.even_g2_r1_poc
 
+import android.app.ActivityManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
@@ -59,6 +61,8 @@ class GemmaCorrectionService : Service() {
 
     private var engine: Engine? = null
     private var loadedModelPath: String? = null
+    private var engineGeneration = 0L
+    private var idleEngineRelease: ScheduledFuture<*>? = null
     @Volatile
     private var activeConversation: Conversation? = null
 
@@ -77,12 +81,21 @@ class GemmaCorrectionService : Service() {
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         if (level >= RUNNING_LOW_MEMORY_LEVEL) {
+            if (level >= RUNNING_CRITICAL_MEMORY_LEVEL) {
+                activeConversation?.runCatching { cancelProcess() }
+            }
             worker.execute {
                 if (activeConversation == null) {
                     releaseEngine("memory_pressure_$level")
                 }
             }
         }
+    }
+
+    override fun onLowMemory() {
+        activeConversation?.runCatching { cancelProcess() }
+        worker.execute { releaseEngine("low_memory") }
+        super.onLowMemory()
     }
 
     override fun onDestroy() {
@@ -125,6 +138,10 @@ class GemmaCorrectionService : Service() {
         }
 
         try {
+            ensureMemoryAvailable()
+            engineGeneration++
+            idleEngineRelease?.cancel(false)
+            idleEngineRelease = null
             val canonicalModel = validateModelPath(modelPath)
             val engineLoadMs = ensureEngine(canonicalModel)
             val conversation =
@@ -244,11 +261,13 @@ class GemmaCorrectionService : Service() {
                 timeoutTask?.cancel(false)
                 activeConversation = null
                 conversation.close()
+                scheduleIdleEngineRelease()
             }
         } catch (error: Throwable) {
             val code =
                 when (error) {
                     is CorrectionTimeoutException -> "timeout"
+                    is CorrectionMemoryPressureException -> "memory_pressure"
                     is SecurityException -> "model_path"
                     else -> "inference_failed"
                 }
@@ -306,7 +325,39 @@ class GemmaCorrectionService : Service() {
         return elapsed
     }
 
+    private fun ensureMemoryAvailable() {
+        val manager =
+            getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val memory = ActivityManager.MemoryInfo()
+        manager.getMemoryInfo(memory)
+        if (memory.lowMemory) {
+            throw CorrectionMemoryPressureException()
+        }
+    }
+
+    private fun scheduleIdleEngineRelease() {
+        idleEngineRelease?.cancel(false)
+        val scheduledGeneration = engineGeneration
+        idleEngineRelease =
+            watchdog.schedule(
+                {
+                    worker.execute {
+                        if (engineGeneration == scheduledGeneration &&
+                            activeConversation == null
+                        ) {
+                            releaseEngine("idle_timeout")
+                        }
+                    }
+                },
+                ENGINE_IDLE_TIMEOUT_SECONDS,
+                TimeUnit.SECONDS,
+            )
+    }
+
     private fun releaseEngine(reason: String) {
+        engineGeneration++
+        idleEngineRelease?.cancel(false)
+        idleEngineRelease = null
         activeConversation?.runCatching { cancelProcess() }
         activeConversation = null
         engine?.runCatching { close() }
@@ -349,6 +400,9 @@ class GemmaCorrectionService : Service() {
     private class CorrectionTimeoutException(timeoutMs: Long) :
         RuntimeException("Correction timed out after ${timeoutMs}ms.")
 
+    private class CorrectionMemoryPressureException :
+        RuntimeException("Correction deferred because Android reported low memory.")
+
     companion object {
         private const val MAX_NUM_TOKENS = 2048
         // The editable base prompt is capped at 10,000 characters. Flutter
@@ -356,6 +410,8 @@ class GemmaCorrectionService : Service() {
         private const val MAX_INSTRUCTION_CHARACTERS = 16_000
         private const val MAX_TRANSCRIPT_CHARACTERS = 6_000
         private const val RUNNING_LOW_MEMORY_LEVEL = 10
+        private const val RUNNING_CRITICAL_MEMORY_LEVEL = 15
+        private const val ENGINE_IDLE_TIMEOUT_SECONDS = 30L
         private const val DEFAULT_TIMEOUT_MS = 30_000L
         private const val MIN_TIMEOUT_MS = 5_000L
         private const val MAX_TIMEOUT_MS = 120_000L

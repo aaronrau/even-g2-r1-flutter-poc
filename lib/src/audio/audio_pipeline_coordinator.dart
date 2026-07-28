@@ -59,6 +59,7 @@ final class AudioPipelineCoordinator {
   }
 
   static const int _maximumVadRecoveryBytes = 16000 * 2 * 30;
+  static const int _maximumPendingDecodePackets = 600;
 
   final AudioPipelineLog log;
   final void Function() onChanged;
@@ -72,6 +73,7 @@ final class AudioPipelineCoordinator {
   final TranscriptCorrectionConfigStore _correctionConfigStore;
   final Lc3Decoder _decoder;
   final SharedAudioExportStore _sharedAudioExportStore;
+  final Queue<_CapturedLc3Packet> _decodeQueue = Queue<_CapturedLc3Packet>();
   final Queue<Uint8List> _vadRecovery = Queue<Uint8List>();
   final TranscriptTurnState _transcriptTurn = TranscriptTurnState();
 
@@ -79,13 +81,14 @@ final class AudioPipelineCoordinator {
   VadSupervisor? _vad;
   TranscriptionSupervisor? _transcription;
   TranscriptCorrectionSupervisor? _correction;
-  Future<void> _decodeTail = Future<void>.value();
+  Future<void>? _decodePump;
   bool _initialized = false;
   bool _initialStartupComplete = false;
   bool _disposed = false;
   bool _vadWasReady = false;
   bool _modelSwitching = false;
   bool _refreshSharedTranscriptsAfterExport = false;
+  bool _decodeBackpressureReported = false;
   int _vadRecoveryBytes = 0;
   int _meterSamples = 0;
   double _meterSquareSum = 0;
@@ -269,29 +272,68 @@ final class AudioPipelineCoordinator {
   }
 
   void _decodeCaptured(int sequence, Uint8List packet) {
-    _decodeTail = _decodeTail.then((_) async {
-      if (_disposed) {
-        return;
-      }
+    if (_disposed || _decodeBackpressureReported) {
+      return;
+    }
+    if (_decodeQueue.length >= _maximumPendingDecodePackets) {
+      _decodeBackpressureReported = true;
+      log(
+        'Pipeline',
+        '[WorkBench][Decoder] state=failed reason=pending_overflow '
+            'pending=${_decodeQueue.length}',
+        isError: true,
+      );
+      onCaptureUnsafe();
+      return;
+    }
+    _decodeQueue.addLast(_CapturedLc3Packet(sequence: sequence, bytes: packet));
+    _startDecodePump();
+  }
+
+  void _startDecodePump() {
+    if (_disposed || _decodePump != null || _decodeQueue.isEmpty) {
+      return;
+    }
+    final pump = _pumpDecodeQueue();
+    _decodePump = pump;
+    unawaited(
+      pump.whenComplete(() {
+        _decodePump = null;
+        if (!_disposed && _decodeQueue.isNotEmpty) {
+          _startDecodePump();
+        }
+      }),
+    );
+  }
+
+  Future<void> _pumpDecodeQueue() async {
+    while (!_disposed && _decodeQueue.isNotEmpty) {
+      final captured = _decodeQueue.removeFirst();
       try {
-        final decoded = await _decoder.decode(packet);
+        final decoded = await _decoder.decode(captured.bytes);
         final pcm = applyG2PcmGain(decoded);
         _meterPcm(pcm);
         final vad = _vad;
         if (vad?.isReady ?? false) {
           vad!.acceptPcm(pcm);
-          return;
+        } else {
+          _queueVadRecovery(pcm);
         }
-        _queueVadRecovery(pcm);
       } catch (error) {
         log(
           'Pipeline',
-          '[WorkBench][Decoder] state=failed sequence=$sequence '
+          '[WorkBench][Decoder] state=failed sequence=${captured.sequence} '
               'error=${_oneLine(error)}',
           isError: true,
         );
       }
-    });
+    }
+  }
+
+  Future<void> _drainDecodeQueue() async {
+    while (_decodePump != null) {
+      await _decodePump!.catchError((Object _) {});
+    }
   }
 
   void _meterPcm(Uint8List pcm) {
@@ -969,6 +1011,7 @@ final class AudioPipelineCoordinator {
     _initialized = false;
     _initialStartupComplete = false;
     await _capture?.dispose();
+    await _drainDecodeQueue();
     await _vad?.dispose();
     await _transcription?.dispose();
     await _correction?.dispose();
@@ -987,6 +1030,8 @@ final class AudioPipelineCoordinator {
     activeCorrectionProvider = null;
     _vadRecovery.clear();
     _vadRecoveryBytes = 0;
+    _decodeQueue.clear();
+    _decodeBackpressureReported = false;
     _setStartup(StartupPhase.starting, 'Restarting local audio system…');
     await initialize(transcriptionModel: transcriptionModel);
   }
@@ -994,14 +1039,22 @@ final class AudioPipelineCoordinator {
   Future<void> dispose() async {
     _disposed = true;
     await _capture?.dispose();
+    await _drainDecodeQueue();
     await _vad?.dispose();
     await _transcription?.dispose();
     await _correction?.dispose();
-    await _decodeTail.catchError((Object _) {});
+    _decodeQueue.clear();
     await _decoder.dispose();
     _correctionConfigStore.removeListener(onChanged);
   }
 
   String _oneLine(Object? value) =>
       '$value'.replaceAll(RegExp(r'\s+'), ' ').trim();
+}
+
+final class _CapturedLc3Packet {
+  const _CapturedLc3Packet({required this.sequence, required this.bytes});
+
+  final int sequence;
+  final Uint8List bytes;
 }

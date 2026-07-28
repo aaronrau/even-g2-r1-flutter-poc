@@ -413,7 +413,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
       final byTime = right.updatedAt.compareTo(left.updatedAt);
       return byTime != 0 ? byTime : right.id.compareTo(left.id);
     });
-    return history;
+    return history.take(_messagePageSize).toList(growable: false);
   }
 
   Widget _buildWebSocketMessage(
@@ -442,11 +442,16 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
 
   Widget _buildConversations(BuildContext context) {
     final theme = Theme.of(context);
-    final chronological = widget.conversations.toList(growable: false)
+    final allChronological = widget.conversations.toList(growable: false)
       ..sort((left, right) {
         final byTime = left.updatedAt.compareTo(right.updatedAt);
         return byTime != 0 ? byTime : left.id.compareTo(right.id);
       });
+    final chronological = allChronological.length <= _conversationPageSize
+        ? allChronological
+        : allChronological.sublist(
+            allChronological.length - _conversationPageSize,
+          );
     if (widget.isLoadingConversations && chronological.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }

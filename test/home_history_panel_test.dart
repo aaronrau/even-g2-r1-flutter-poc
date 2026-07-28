@@ -306,7 +306,9 @@ void main() {
     expect(delegate.estimatedChildCount, 30);
   });
 
-  testWidgets('retains Messages paging in batches of twenty', (tester) async {
+  testWidgets('retains only the twenty most recent Messages items', (
+    tester,
+  ) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final transcriptions = List<SharedTranscript>.generate(
@@ -346,13 +348,11 @@ void main() {
 
     expect(_visibleMessageItems(tester), 20);
     await _jumpListToEnd(tester, 'messages-list');
-    expect(_visibleMessageItems(tester), 40);
-    await _jumpListToEnd(tester, 'messages-list');
-    expect(_visibleMessageItems(tester), 45);
+    expect(_visibleMessageItems(tester), 20);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('reveals saved conversation turns in bounded batches', (
+  testWidgets('retains only the hundred most recent conversation turns', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
@@ -387,10 +387,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(_visibleConversationItems(tester), 100);
+    expect(find.text('Conversation turn 224'), findsWidgets);
     await _jumpListToEnd(tester, 'conversation-list');
-    expect(_visibleConversationItems(tester), 200);
-    await _jumpListToEnd(tester, 'conversation-list');
-    expect(_visibleConversationItems(tester), 225);
+    expect(_visibleConversationItems(tester), 100);
+    expect(find.text('Conversation turn 0'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

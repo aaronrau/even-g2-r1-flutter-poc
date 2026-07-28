@@ -2,6 +2,7 @@ package dev.opensourceglasses.even_g2_r1_poc
 
 import android.app.Activity
 import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
@@ -35,6 +36,10 @@ class MainActivity : FlutterActivity() {
         private const val STORAGE_PREFERENCES = "workbench_storage"
         private const val STORAGE_DIRECTORY_URI = "shared_audio_directory_uri"
         private const val STORAGE_DOCUMENT_INDEX = "shared_audio_document_index"
+        private const val RUNTIME_DIAGNOSTIC_PREFERENCES =
+            "workbench_runtime_diagnostics"
+        private const val LAST_REPORTED_EXIT_TIMESTAMP =
+            "last_reported_exit_timestamp"
         internal const val CORRECTION_PROMPT_FILE_NAME =
             "workbench-correction-prompt.txt"
         private const val MAX_CORRECTION_PROMPT_CHARACTERS = 10_000
@@ -54,6 +59,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        reportPreviousProcessExits()
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             BACKGROUND_CHANNEL,
@@ -263,6 +269,74 @@ class MainActivity : FlutterActivity() {
             GEMMA_CHANNEL,
         ).setMethodCallHandler(gemmaBridge::handle)
     }
+
+    private fun reportPreviousProcessExits() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return
+        }
+        historyExecutor.execute {
+            runCatching {
+                val preferences =
+                    getSharedPreferences(
+                        RUNTIME_DIAGNOSTIC_PREFERENCES,
+                        Context.MODE_PRIVATE,
+                    )
+                val lastReported =
+                    preferences.getLong(LAST_REPORTED_EXIT_TIMESTAMP, 0L)
+                val manager = getSystemService(ActivityManager::class.java)
+                val exits =
+                    manager
+                        .getHistoricalProcessExitReasons(packageName, 0, 8)
+                        .filter { it.timestamp > lastReported }
+                        .sortedBy { it.timestamp }
+                for (exit in exits) {
+                    val process =
+                        if (exit.processName.endsWith(":gemma")) {
+                            "gemma"
+                        } else {
+                            "app"
+                        }
+                    Log.i(
+                        "WorkBench",
+                        "[WorkBench][Runtime] state=previous_exit " +
+                            "process=$process reason=${exitReason(exit.reason)} " +
+                            "importance=${exit.importance} " +
+                            "pss_kb=${exit.pss} rss_kb=${exit.rss}",
+                    )
+                }
+                val newest = exits.maxOfOrNull { it.timestamp }
+                if (newest != null) {
+                    preferences
+                        .edit()
+                        .putLong(LAST_REPORTED_EXIT_TIMESTAMP, newest)
+                        .apply()
+                }
+            }.onFailure {
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][Runtime] state=previous_exit_unavailable",
+                )
+            }
+        }
+    }
+
+    private fun exitReason(reason: Int): String =
+        when (reason) {
+            ApplicationExitInfo.REASON_LOW_MEMORY -> "low_memory"
+            ApplicationExitInfo.REASON_CRASH_NATIVE -> "native_crash"
+            ApplicationExitInfo.REASON_CRASH -> "crash"
+            ApplicationExitInfo.REASON_ANR -> "anr"
+            ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE ->
+                "excessive_resource_usage"
+            ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "dependency_died"
+            ApplicationExitInfo.REASON_INITIALIZATION_FAILURE ->
+                "initialization_failure"
+            ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "permission_change"
+            ApplicationExitInfo.REASON_SIGNALED -> "signaled"
+            ApplicationExitInfo.REASON_USER_REQUESTED -> "user_requested"
+            ApplicationExitInfo.REASON_USER_STOPPED -> "user_stopped"
+            else -> "other"
+        }
 
     private fun chooseDirectory(result: MethodChannel.Result) {
         if (pendingDirectoryResult != null) {
@@ -758,9 +832,9 @@ class MainActivity : FlutterActivity() {
         directory: Uri,
     ): List<Map<String, Any?>> {
         data class Entry(
-            var originalText: String? = null,
-            var legacyText: String? = null,
-            var correctedText: String? = null,
+            var originalDocument: Uri? = null,
+            var legacyDocument: Uri? = null,
+            var correctedDocument: Uri? = null,
             var audioFileName: String? = null,
             var updatedAtMillis: Long = 0,
         )
@@ -812,38 +886,44 @@ class MainActivity : FlutterActivity() {
         val byId = mutableMapOf<String, Entry>()
         var documentCount = 0
         var indexedDocumentCount = 0
-        val wavNames = mutableSetOf<String>()
-        val transcriptNames = mutableSetOf<String>()
-        val readableTranscriptNames = mutableSetOf<String>()
+        var wavFileCount = 0
+        var transcriptFileCount = 0
+
+        fun indexDocument(
+            name: String,
+            document: Uri,
+            modifiedAtMillis: Long,
+        ) {
+            val sharedFile = classify(name) ?: return
+            val entry = byId.getOrPut(sharedFile.transcriptId) { Entry() }
+            entry.updatedAtMillis =
+                maxOf(entry.updatedAtMillis, modifiedAtMillis)
+            when (sharedFile.kind) {
+                "audio" -> {
+                    wavFileCount++
+                    entry.audioFileName = name
+                }
+                "original" -> {
+                    transcriptFileCount++
+                    entry.originalDocument = document
+                }
+                "corrected" -> {
+                    transcriptFileCount++
+                    entry.correctedDocument = document
+                }
+                else -> {
+                    transcriptFileCount++
+                    entry.legacyDocument = document
+                }
+            }
+        }
+
         for ((name, document) in documentIndex()) {
             if (!documentBelongsToTree(directory, document) || !documentExists(document)) {
                 continue
             }
             indexedDocumentCount++
-            val sharedFile = classify(name) ?: continue
-            val entry = byId.getOrPut(sharedFile.transcriptId) { Entry() }
-            entry.updatedAtMillis =
-                maxOf(entry.updatedAtMillis, documentLastModified(document))
-            if (sharedFile.kind == "audio") {
-                wavNames.add(name)
-                entry.audioFileName = name
-                continue
-            }
-            transcriptNames.add(name)
-            val text =
-                try {
-                    readTranscriptText(document)
-                } catch (_: Exception) {
-                    ""
-                }
-            if (text.isNotEmpty()) {
-                readableTranscriptNames.add(name)
-                when (sharedFile.kind) {
-                    "original" -> entry.originalText = text
-                    "corrected" -> entry.correctedText = text
-                    else -> entry.legacyText = text
-                }
-            }
+            indexDocument(name, document, documentLastModified(document))
         }
         contentResolver.query(children, projection, null, null, null)?.use { cursor ->
             val idColumn =
@@ -861,35 +941,60 @@ class MainActivity : FlutterActivity() {
             while (cursor.moveToNext()) {
                 documentCount++
                 val name = cursor.getString(nameColumn)?.trim().orEmpty()
-                val sharedFile = classify(name) ?: continue
                 val modified =
                     if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn)) {
                         cursor.getLong(modifiedColumn)
                     } else {
                         0L
                     }
-                val entry = byId.getOrPut(sharedFile.transcriptId) { Entry() }
-                entry.updatedAtMillis = maxOf(entry.updatedAtMillis, modified)
-                if (sharedFile.kind == "audio") {
-                    wavNames.add(name)
-                    entry.audioFileName = name
-                    continue
-                }
-                transcriptNames.add(name)
                 val document =
                     DocumentsContract.buildDocumentUriUsingTree(
                         directory,
                         cursor.getString(idColumn),
                     )
-                val text = readTranscriptText(document)
-                if (text.isNotEmpty()) {
-                    readableTranscriptNames.add(name)
-                    when (sharedFile.kind) {
-                        "original" -> entry.originalText = text
-                        "corrected" -> entry.correctedText = text
-                        else -> entry.legacyText = text
+                indexDocument(name, document, modified)
+            }
+        }
+        val results = mutableListOf<Map<String, Any?>>()
+        var readableTranscriptCount = 0
+        val sortedEntries =
+            byId.entries.sortedWith(
+                compareByDescending<Map.Entry<String, Entry>> {
+                    it.value.updatedAtMillis
+                }.thenByDescending { it.key },
+            )
+        for ((id, entry) in sortedEntries) {
+            val originalDocument =
+                entry.originalDocument ?: entry.legacyDocument ?: continue
+            val originalText =
+                try {
+                    readTranscriptText(originalDocument)
+                } catch (_: Exception) {
+                    ""
+                }
+            if (originalText.isEmpty()) {
+                continue
+            }
+            readableTranscriptCount++
+            val correctedText =
+                entry.correctedDocument?.let { document ->
+                    try {
+                        readTranscriptText(document).ifEmpty { null }
+                    } catch (_: Exception) {
+                        null
                     }
                 }
+            results.add(
+                mapOf(
+                    "id" to id,
+                    "originalText" to originalText,
+                    "correctedText" to correctedText,
+                    "audioFileName" to entry.audioFileName,
+                    "updatedAtMillis" to entry.updatedAtMillis,
+                ),
+            )
+            if (results.size == SharedHistoryCache.MAX_VISIBLE_TRANSCRIPTS) {
+                break
             }
         }
         Log.i(
@@ -897,30 +1002,11 @@ class MainActivity : FlutterActivity() {
             "[WorkBench][SharedStorage] state=list_scan " +
                 "provider_documents=$documentCount " +
                 "indexed_documents=$indexedDocumentCount " +
-                "wav_files=${wavNames.size} " +
-                "transcript_files=${transcriptNames.size} " +
-                "readable_transcripts=${readableTranscriptNames.size}",
+                "wav_files=$wavFileCount " +
+                "transcript_files=$transcriptFileCount " +
+                "readable_transcripts=$readableTranscriptCount",
         )
-        return byId.entries
-            .asSequence()
-            .filter {
-                it.value.originalText != null || it.value.legacyText != null
-            }
-            .sortedWith(
-                compareByDescending<Map.Entry<String, Entry>> {
-                    it.value.updatedAtMillis
-                }.thenByDescending { it.key },
-            )
-            .map { (id, entry) ->
-                mapOf(
-                    "id" to id,
-                    "originalText" to
-                        (entry.originalText ?: entry.legacyText),
-                    "correctedText" to entry.correctedText,
-                    "audioFileName" to entry.audioFileName,
-                    "updatedAtMillis" to entry.updatedAtMillis,
-                )
-            }.toList()
+        return results
     }
 
     private fun listMessages(
@@ -1031,7 +1117,7 @@ class MainActivity : FlutterActivity() {
         data class Entry(
             val id: String,
             val direction: String,
-            val text: String,
+            val document: Uri,
             val updatedAtMillis: Long,
         )
 
@@ -1052,21 +1138,13 @@ class MainActivity : FlutterActivity() {
             ) {
                 continue
             }
-            val text =
-                try {
-                    readTranscriptText(document)
-                } catch (_: Exception) {
-                    ""
-                }
-            if (text.isNotEmpty()) {
-                byName[name] =
-                    Entry(
-                        id = name,
-                        direction = messageDirection,
-                        text = text,
-                        updatedAtMillis = documentLastModified(document),
-                    )
-            }
+            byName[name] =
+                Entry(
+                    id = name,
+                    direction = messageDirection,
+                    document = document,
+                    updatedAtMillis = documentLastModified(document),
+                )
         }
 
         val children =
@@ -1101,10 +1179,6 @@ class MainActivity : FlutterActivity() {
                         directory,
                         cursor.getString(idColumn),
                     )
-                val text = readTranscriptText(document)
-                if (text.isEmpty()) {
-                    continue
-                }
                 val modified =
                     if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn)) {
                         cursor.getLong(modifiedColumn)
@@ -1115,24 +1189,40 @@ class MainActivity : FlutterActivity() {
                     Entry(
                         id = name,
                         direction = messageDirection,
-                        text = text,
+                        document = document,
                         updatedAtMillis = modified,
                     )
             }
         }
-        return byName.values
-            .sortedWith(
+        val results = mutableListOf<Map<String, Any?>>()
+        val sortedEntries =
+            byName.values.sortedWith(
                 compareByDescending<Entry> { it.updatedAtMillis }
                     .thenByDescending { it.id },
             )
-            .map { entry ->
+        for (entry in sortedEntries) {
+            val text =
+                try {
+                    readTranscriptText(entry.document)
+                } catch (_: Exception) {
+                    ""
+                }
+            if (text.isEmpty()) {
+                continue
+            }
+            results.add(
                 mapOf(
                     "id" to entry.id,
                     "direction" to entry.direction,
-                    "text" to entry.text,
+                    "text" to text,
                     "updatedAtMillis" to entry.updatedAtMillis,
-                )
+                ),
+            )
+            if (results.size == SharedHistoryCache.MAX_VISIBLE_MESSAGES) {
+                break
             }
+        }
+        return results
     }
 
     private fun playAudio(

@@ -87,6 +87,9 @@ final class SharedConversationTurn {
 final class SharedAudioExportStore extends ChangeNotifier {
   static const String correctionPromptFileName =
       'workbench-correction-prompt.txt';
+  static const int maximumVisibleTranscripts = 20;
+  static const int maximumVisibleMessages = 20;
+  static const int maximumVisibleConversationTurns = 100;
 
   SharedAudioExportStore({
     MethodChannel channel = const MethodChannel(
@@ -184,10 +187,11 @@ final class SharedAudioExportStore extends ChangeNotifier {
       return;
     }
     if (!_isAndroid) {
-      conversations = <SharedConversationTurn>[
+      final updated = <SharedConversationTurn>[
         ...conversations.where((turn) => turn.conversationId != record.id),
         ...record.utterances.map(_conversationFromUtterance),
       ]..sort(_compareConversationTurns);
+      conversations = _latestConversationTurns(updated);
       notifyListeners();
       return;
     }
@@ -225,13 +229,14 @@ final class SharedAudioExportStore extends ChangeNotifier {
       final records =
           await _channel.invokeMethod<List<Object?>>('listConversations') ??
           const <Object?>[];
-      conversations =
+      final loaded =
           records
               .whereType<Map<Object?, Object?>>()
               .map(_conversationFromRecord)
               .whereType<SharedConversationTurn>()
               .toList(growable: false)
             ..sort(_compareConversationTurns);
+      conversations = _latestConversationTurns(loaded);
     } catch (_) {
       conversationLoadError =
           'Could not read saved conversations. Retry or keep recording.';
@@ -285,7 +290,9 @@ final class SharedAudioExportStore extends ChangeNotifier {
         final byTime = right.updatedAt.compareTo(left.updatedAt);
         return byTime != 0 ? byTime : right.id.compareTo(left.id);
       });
-      transcripts = loaded;
+      transcripts = loaded
+          .take(maximumVisibleTranscripts)
+          .toList(growable: false);
     } catch (_) {
       transcriptLoadError =
           'Could not read the selected folder. Choose it again or retry.';
@@ -322,7 +329,7 @@ final class SharedAudioExportStore extends ChangeNotifier {
         final byTime = right.updatedAt.compareTo(left.updatedAt);
         return byTime != 0 ? byTime : right.id.compareTo(left.id);
       });
-      messages = loaded;
+      messages = loaded.take(maximumVisibleMessages).toList(growable: false);
     } catch (_) {
       messageLoadError =
           'Could not read saved messages. Choose the folder again or retry.';
@@ -515,6 +522,17 @@ final class SharedAudioExportStore extends ChangeNotifier {
     return byConversation != 0
         ? byConversation
         : left.startMs.compareTo(right.startMs);
+  }
+
+  static List<SharedConversationTurn> _latestConversationTurns(
+    List<SharedConversationTurn> turns,
+  ) {
+    if (turns.length <= maximumVisibleConversationTurns) {
+      return List<SharedConversationTurn>.unmodifiable(turns);
+    }
+    return List<SharedConversationTurn>.unmodifiable(
+      turns.sublist(turns.length - maximumVisibleConversationTurns),
+    );
   }
 
   Future<void> _stopAudioForDispose() async {

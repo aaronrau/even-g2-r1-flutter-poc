@@ -109,6 +109,7 @@ final class VadSupervisor {
   SendPort? _commands;
   Isolate? _isolate;
   Completer<String>? _ready;
+  Completer<void>? _closed;
   Timer? _restartTimer;
   bool _disposed = false;
   bool _restarting = false;
@@ -148,6 +149,7 @@ final class VadSupervisor {
     _commands = null;
     activeProvider = null;
     _ready = Completer<String>();
+    _closed = Completer<void>();
     _events = ReceivePort();
     _errors = ReceivePort();
     _exit = ReceivePort();
@@ -161,6 +163,10 @@ final class VadSupervisor {
     _exitSubscription = _exit!.listen((_) {
       _commands = null;
       _isolate = null;
+      final closed = _closed;
+      if (closed != null && !closed.isCompleted) {
+        closed.complete();
+      }
       if (!_disposed) {
         _scheduleRestart();
       }
@@ -260,6 +266,12 @@ final class VadSupervisor {
           _ready!.completeError(error);
         }
         return;
+      case 'closed':
+        final closed = _closed;
+        if (closed != null && !closed.isCompleted) {
+          closed.complete();
+        }
+        return;
     }
   }
 
@@ -302,8 +314,19 @@ final class VadSupervisor {
   Future<void> dispose() async {
     _disposed = true;
     _restartTimer?.cancel();
-    _commands?.send(<String, Object>{'type': 'close'});
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    final commands = _commands;
+    final closed = _closed;
+    commands?.send(<String, Object>{'type': 'close'});
+    if (commands != null && closed != null && !closed.isCompleted) {
+      try {
+        await closed.future.timeout(const Duration(seconds: 30));
+      } on TimeoutException {
+        onStatus(
+          '[WorkBench][VAD] state=close_timeout native_cleanup=forced',
+          isError: true,
+        );
+      }
+    }
     _isolate?.kill(priority: Isolate.immediate);
     _isolate = null;
     _commands = null;
@@ -596,6 +619,7 @@ void _vadWorker(Map<String, Object> bootstrap) {
           detector.flush();
           finishSegment();
           detector.free();
+          events.send(<String, Object>{'type': 'closed'});
           commands.close();
           return;
       }

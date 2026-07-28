@@ -33,6 +33,9 @@ internal class SharedHistoryCache(
         private const val META_TRANSCRIPTS_SNAPSHOT = "transcripts_snapshot"
         private const val META_MESSAGES_SNAPSHOT = "messages_snapshot"
         private const val MAX_TEXT_CHARACTERS = 65_536
+        internal const val MAX_VISIBLE_TRANSCRIPTS = 20
+        internal const val MAX_VISIBLE_MESSAGES = 20
+        internal const val MAX_VISIBLE_CONVERSATION_TURNS = 100
     }
 
     override fun onCreate(database: SQLiteDatabase) {
@@ -215,6 +218,7 @@ internal class SharedHistoryCache(
             null,
             null,
             "updated_at_millis DESC, transcript_id DESC",
+            MAX_VISIBLE_TRANSCRIPTS.toString(),
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 val rawText = cursor.nullableString(1)
@@ -248,6 +252,7 @@ internal class SharedHistoryCache(
             null,
             null,
             "updated_at_millis DESC, message_id DESC",
+            MAX_VISIBLE_MESSAGES.toString(),
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 entries.add(
@@ -358,7 +363,8 @@ internal class SharedHistoryCache(
             null,
             null,
             null,
-            "updated_at_millis ASC, conversation_id ASC, start_ms ASC",
+            "updated_at_millis DESC, conversation_id DESC, start_ms DESC",
+            MAX_VISIBLE_CONVERSATION_TURNS.toString(),
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 entries.add(
@@ -378,6 +384,7 @@ internal class SharedHistoryCache(
                 )
             }
         }
+        entries.reverse()
         return entries
     }
 

@@ -59,7 +59,7 @@ void main() {
     queue.dispose();
   });
 
-  testWidgets('keeps close transcript turns in FIFO order', (tester) async {
+  testWidgets('keeps only the latest close transcript turn', (tester) async {
     final display = <String>[];
     final queue = _queue(display: display);
 
@@ -83,17 +83,12 @@ void main() {
     );
     await tester.pump();
 
-    expect(display, <String>['Queued: First raw.', 'Saved: First corrected.']);
-
-    await tester.pump(const Duration(seconds: 2));
-    await tester.pump();
     expect(display, <String>[
       'Queued: First raw.',
-      'Saved: First corrected.',
-      '<clear>',
-      'Queued: Second corrected.',
+      'Queued: Second raw.',
       'Sent: Second corrected.',
     ]);
+    expect(queue.pendingCount, 1);
 
     await tester.pump(const Duration(seconds: 2));
     await tester.pump();
@@ -137,7 +132,7 @@ void main() {
     queue.dispose();
   });
 
-  testWidgets('serializes received messages behind transcript status', (
+  testWidgets('a received message supersedes stale transcript status', (
     tester,
   ) async {
     final display = <String>[];
@@ -152,10 +147,14 @@ void main() {
     );
     await queue.queueTransient(prefix: 'Received', message: 'Agent response.');
     await tester.pump();
-    expect(display, <String>['Queued: Raw.', 'Sent: Corrected.']);
+    expect(display, <String>[
+      'Queued: Raw.',
+      'Sent: Corrected.',
+      'Received: Agent response.',
+    ]);
     expect(
       logs,
-      contains('[WorkBench][GlassesStatus] state=received_queued pending=2'),
+      contains('[WorkBench][GlassesStatus] state=received_queued pending=1'),
     );
 
     await tester.pump(const Duration(seconds: 2));
@@ -163,16 +162,14 @@ void main() {
     expect(display, <String>[
       'Queued: Raw.',
       'Sent: Corrected.',
-      '<clear>',
       'Received: Agent response.',
+      '<clear>',
     ]);
     expect(
       logs,
       contains('[WorkBench][GlassesStatus] state=received_displayed pending=1'),
     );
 
-    await tester.pump(const Duration(seconds: 2));
-    await tester.pump();
     expect(display.last, '<clear>');
 
     queue.dispose();
@@ -195,6 +192,57 @@ void main() {
     await tester.pump();
     expect(display, <String>['Queued: Raw.', 'Saved: Corrected.']);
     expect(queue.pendingCount, 0);
+  });
+
+  testWidgets('a superseded hold never clears newer glasses content', (
+    tester,
+  ) async {
+    final display = <String>[];
+    final queue = _queue(display: display);
+
+    await queue.queueTranscript(segmentId: 'segment-1', transcript: 'First.');
+    await queue.completeTranscript(
+      segmentId: 'segment-1',
+      transcript: 'First final.',
+      outcome: GlassesTranscriptOutcome.saved,
+    );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    await queue.queueTranscript(segmentId: 'segment-2', transcript: 'Second.');
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(display.last, 'Queued: Second.');
+    expect(display, isNot(contains('<clear>')));
+
+    await queue.completeTranscript(
+      segmentId: 'segment-2',
+      transcript: 'Second final.',
+      outcome: GlassesTranscriptOutcome.sent,
+    );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump();
+    expect(display.last, '<clear>');
+
+    queue.dispose();
+  });
+
+  testWidgets('rapid statuses retain one pending display entry', (
+    tester,
+  ) async {
+    final display = <String>[];
+    final queue = _queue(display: display);
+
+    for (var index = 0; index < 100; index++) {
+      await queue.queueTransient(prefix: 'Received', message: 'Item $index');
+    }
+    await tester.pump();
+
+    expect(queue.pendingCount, 1);
+    expect(display.last, 'Received: Item 99');
+
+    queue.dispose();
   });
 
   testWidgets('normalizes and bounds private glasses text', (tester) async {

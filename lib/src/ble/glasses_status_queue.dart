@@ -1,10 +1,14 @@
 import 'dart:async';
-import 'dart:collection';
 
 typedef GlassesStatusLog = void Function(String message, {bool isError});
 
 enum GlassesTranscriptOutcome { saved, sent }
 
+/// A latest-wins status channel for the small G2 display.
+///
+/// Durable transcripts and messages are stored before they reach this class.
+/// The glasses are only a live projection, so retaining a FIFO of stale text
+/// wastes memory and can let an old clear overwrite newer content.
 final class GlassesStatusQueue {
   GlassesStatusQueue({
     required bool Function() isConnected,
@@ -19,52 +23,39 @@ final class GlassesStatusQueue {
        _terminalDisplayDuration = terminalDisplayDuration;
 
   static const int maximumMessageCharacters = 512;
-  static const int _maximumPendingEntries = 64;
 
   final bool Function() _isConnected;
   final Future<void> Function(String message) _showText;
   final Future<void> Function() _clearText;
   final GlassesStatusLog _log;
   final Duration _terminalDisplayDuration;
-  final Queue<_GlassesStatusEntry> _entries = Queue<_GlassesStatusEntry>();
-  final Map<String, _GlassesStatusEntry> _transcripts =
-      <String, _GlassesStatusEntry>{};
 
+  _GlassesStatusEntry? _current;
   bool _pumping = false;
   bool _pumpRequested = false;
   bool _disposed = false;
+  int _revision = 0;
   int _transientSequence = 0;
   Timer? _holdTimer;
   Completer<void>? _holdCompleter;
 
-  int get pendingCount => _entries.length;
+  int get pendingCount => _current == null ? 0 : 1;
 
   Future<void> queueTranscript({
     required String segmentId,
     required String transcript,
   }) async {
-    if (_disposed || _transcripts.containsKey(segmentId)) {
+    if (_disposed) {
       return;
     }
-    if (!_hasCapacity()) {
-      _log(
-        '[WorkBench][GlassesStatus] state=queue_full '
-        'pending=${_entries.length}',
-        isError: true,
-      );
+    final current = _current;
+    if (current?.isTransient == false && current?.id == segmentId) {
       return;
     }
-    final entry = _GlassesStatusEntry.transcript(
-      id: segmentId,
-      text: transcript,
+    _replaceCurrent(
+      _GlassesStatusEntry.transcript(id: segmentId, text: transcript),
     );
-    _entries.add(entry);
-    _transcripts[segmentId] = entry;
-    _log(
-      '[WorkBench][GlassesStatus] state=queued '
-      'pending=${_entries.length}',
-    );
-    _startPump();
+    _log('[WorkBench][GlassesStatus] state=queued pending=1');
   }
 
   Future<void> completeTranscript({
@@ -75,22 +66,20 @@ final class GlassesStatusQueue {
     if (_disposed) {
       return;
     }
-    final entry = _transcripts[segmentId];
-    if (entry == null) {
+    final current = _current;
+    if (current == null || current.isTransient || current.id != segmentId) {
       _log(
-        '[WorkBench][GlassesStatus] state=completion_missing '
+        '[WorkBench][GlassesStatus] state=completion_superseded '
         'outcome=${outcome.name}',
-        isError: true,
       );
       return;
     }
-    entry
+    current
       ..text = transcript
       ..outcome = outcome;
-    _log(
-      '[WorkBench][GlassesStatus] state=${outcome.name} '
-      'pending=${_entries.length}',
-    );
+    _revision++;
+    _cancelHold();
+    _log('[WorkBench][GlassesStatus] state=${outcome.name} pending=1');
     _startPump();
   }
 
@@ -101,27 +90,15 @@ final class GlassesStatusQueue {
     if (_disposed) {
       return;
     }
-    if (!_hasCapacity()) {
-      _log(
-        '[WorkBench][GlassesStatus] state=queue_full '
-        'pending=${_entries.length}',
-        isError: true,
-      );
-      return;
-    }
     _transientSequence++;
-    _entries.add(
+    _replaceCurrent(
       _GlassesStatusEntry.transient(
         id: 'transient-$_transientSequence',
         initialPrefix: prefix,
         text: message,
       ),
     );
-    _log(
-      '[WorkBench][GlassesStatus] state=received_queued '
-      'pending=${_entries.length}',
-    );
-    _startPump();
+    _log('[WorkBench][GlassesStatus] state=received_queued pending=1');
   }
 
   void connectionChanged() {
@@ -135,18 +112,20 @@ final class GlassesStatusQueue {
       return;
     }
     _disposed = true;
-    _holdTimer?.cancel();
-    _holdTimer = null;
-    final completer = _holdCompleter;
-    _holdCompleter = null;
-    if (completer != null && !completer.isCompleted) {
-      completer.complete();
-    }
-    _entries.clear();
-    _transcripts.clear();
+    _cancelHold();
+    _current = null;
   }
 
-  bool _hasCapacity() => _entries.length < _maximumPendingEntries;
+  void _replaceCurrent(_GlassesStatusEntry entry) {
+    final superseded = _current;
+    _current = entry;
+    _revision++;
+    _cancelHold();
+    if (superseded != null) {
+      _log('[WorkBench][GlassesStatus] state=superseded pending=1');
+    }
+    _startPump();
+  }
 
   void _startPump() {
     if (_disposed) {
@@ -165,11 +144,13 @@ final class GlassesStatusQueue {
     }
     _pumping = true;
     try {
-      while (!_disposed && _entries.isNotEmpty) {
-        if (!_isConnected()) {
+      while (!_disposed) {
+        final entry = _current;
+        if (entry == null || !_isConnected()) {
           return;
         }
-        final entry = _entries.first;
+        final revision = _revision;
+
         if (!entry.initialShown) {
           final shown = await _tryShow(
             _format(entry.initialPrefix, entry.text),
@@ -177,15 +158,20 @@ final class GlassesStatusQueue {
           if (!shown || _disposed) {
             return;
           }
+          if (!_isCurrent(entry, revision)) {
+            continue;
+          }
           entry.initialShown = true;
           if (entry.isTransient) {
             _log(
-              '[WorkBench][GlassesStatus] state=received_displayed '
-              'pending=${_entries.length}',
+              '[WorkBench][GlassesStatus] state=received_displayed pending=1',
             );
             await _waitForTerminalDisplay();
             if (_disposed) {
               return;
+            }
+            if (!_isCurrent(entry, revision)) {
+              continue;
             }
             entry.readyToClear = true;
           }
@@ -199,16 +185,23 @@ final class GlassesStatusQueue {
           if (!_isConnected()) {
             return;
           }
+          final finalRevision = _revision;
           final shown = await _tryShow(
             _format(_outcomePrefix(outcome), entry.text),
           );
           if (!shown || _disposed) {
             return;
           }
+          if (!_isCurrent(entry, finalRevision)) {
+            continue;
+          }
           entry.finalShown = true;
           await _waitForTerminalDisplay();
           if (_disposed) {
             return;
+          }
+          if (!_isCurrent(entry, finalRevision)) {
+            continue;
           }
           entry.readyToClear = true;
         }
@@ -216,18 +209,17 @@ final class GlassesStatusQueue {
         if (!entry.readyToClear || !_isConnected()) {
           return;
         }
+        final clearRevision = _revision;
         final cleared = await _tryClear();
         if (!cleared || _disposed) {
           return;
         }
-        _entries.removeFirst();
-        if (!entry.isTransient) {
-          _transcripts.remove(entry.id);
+        if (!_isCurrent(entry, clearRevision)) {
+          continue;
         }
-        _log(
-          '[WorkBench][GlassesStatus] state=cleared '
-          'pending=${_entries.length}',
-        );
+        _current = null;
+        _revision++;
+        _log('[WorkBench][GlassesStatus] state=cleared pending=0');
       }
     } finally {
       _pumping = false;
@@ -237,6 +229,9 @@ final class GlassesStatusQueue {
       }
     }
   }
+
+  bool _isCurrent(_GlassesStatusEntry entry, int revision) =>
+      identical(_current, entry) && _revision == revision;
 
   Future<bool> _tryShow(String message) async {
     try {
@@ -274,9 +269,21 @@ final class GlassesStatusQueue {
         _holdCompleter = null;
         _holdTimer = null;
       }
-      completer.complete();
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
     });
     return completer.future;
+  }
+
+  void _cancelHold() {
+    _holdTimer?.cancel();
+    _holdTimer = null;
+    final completer = _holdCompleter;
+    _holdCompleter = null;
+    if (completer != null && !completer.isCompleted) {
+      completer.complete();
+    }
   }
 
   static String _outcomePrefix(GlassesTranscriptOutcome outcome) =>

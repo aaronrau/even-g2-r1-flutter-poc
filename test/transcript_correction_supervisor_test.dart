@@ -255,6 +255,155 @@ void main() {
       expect(result.$3, 'correction_disabled');
     },
   );
+
+  test(
+    'oversize correction input is terminal without routing invalid raw text',
+    () async {
+      final statuses = <String>[];
+      final supervisor = TranscriptCorrectionSupervisor(
+        speechPath: speech.path,
+        configStore: configStore,
+        modelStore: modelStore,
+        client: client,
+        onCorrected: (_) {},
+        onUncorrected: (_, _, _) {
+          fail('Enabled correction must not route uncorrected text.');
+        },
+        onStatus: (message, {isError = false}) {
+          statuses.add(message);
+        },
+      );
+      addTearDown(supervisor.dispose);
+      await supervisor.start();
+      final text =
+          'a' *
+          (TranscriptCorrectionSupervisor.maximumTranscriptCharacters + 1);
+      final raw = File('${speech.path}/oversize.raw.txt')
+        ..writeAsStringSync('$text\n');
+
+      await supervisor.queue(
+        TranscriptCorrectionJob(
+          segmentId: 'oversize',
+          rawPath: raw.path,
+          sttModel: 'parakeet-0.6b',
+          sttProvider: 'nnapi',
+          audioMs: 5000,
+          sttDecodeMs: 500,
+          sttTotalMs: 550,
+          queuedAt: DateTime.now().toUtc(),
+          routeWhenCorrected: true,
+        ),
+      );
+      await _waitFor(() => supervisor.pendingCount == 0);
+
+      expect(client.instructions, isEmpty);
+      expect(supervisor.pendingCount, 0);
+      expect(statuses, contains(contains('state=skipped_oversize')));
+      expect(
+        File(
+          '${speech.path}/oversize.correction-skipped.json',
+        ).readAsStringSync(),
+        contains('"reason":"input_too_long"'),
+      );
+      expect(
+        File('${speech.path}/pending-corrections.json').readAsStringSync(),
+        '{}',
+      );
+    },
+  );
+
+  test('abandons invalid model output after the retry ceiling', () async {
+    final statuses = <String>[];
+    final invalidClient = _InvalidGemmaClient();
+    final supervisor = TranscriptCorrectionSupervisor(
+      speechPath: speech.path,
+      configStore: configStore,
+      modelStore: modelStore,
+      client: invalidClient,
+      onCorrected: (_) {
+        fail('Invalid correction output must not complete.');
+      },
+      onUncorrected: (_, _, _) {
+        fail('Enabled correction must not route uncorrected text.');
+      },
+      onStatus: (message, {isError = false}) {
+        statuses.add(message);
+      },
+    );
+    addTearDown(supervisor.dispose);
+    await supervisor.start();
+    final raw = File('${speech.path}/invalid.raw.txt')
+      ..writeAsStringSync('Keep protected value 15.\n');
+
+    await supervisor.queue(
+      TranscriptCorrectionJob(
+        segmentId: 'invalid',
+        rawPath: raw.path,
+        sttModel: 'parakeet-0.6b',
+        sttProvider: 'nnapi',
+        audioMs: 5000,
+        sttDecodeMs: 500,
+        sttTotalMs: 550,
+        queuedAt: DateTime.now().toUtc(),
+        routeWhenCorrected: true,
+        attempts: TranscriptCorrectionSupervisor.maximumCorrectionAttempts - 1,
+      ),
+    );
+    await _waitFor(() => supervisor.pendingCount == 0);
+
+    expect(invalidClient.calls, 1);
+    expect(statuses, contains(contains('state=abandoned')));
+    expect(statuses, contains(contains('error_code=invalid_output')));
+    expect(
+      File('${speech.path}/invalid.correction-skipped.json').readAsStringSync(),
+      contains('"reason":"retry_exhausted"'),
+    );
+    expect(
+      File('${speech.path}/pending-corrections.json').readAsStringSync(),
+      '{}',
+    );
+  });
+
+  test('does not restore a transcript with a durable skip marker', () async {
+    File(
+      '${speech.path}/terminal.raw.txt',
+    ).writeAsStringSync('Keep the durable raw transcript.\n');
+    File(
+      '${speech.path}/terminal.correction-skipped.json',
+    ).writeAsStringSync('{"version":1,"reason":"retry_exhausted"}');
+    final supervisor = TranscriptCorrectionSupervisor(
+      speechPath: speech.path,
+      configStore: configStore,
+      modelStore: modelStore,
+      client: client,
+      onCorrected: (_) {
+        fail('A terminal correction must not be restored.');
+      },
+      onUncorrected: (_, _, _) {},
+      onStatus: (_, {isError = false}) {},
+    );
+    addTearDown(supervisor.dispose);
+
+    await supervisor.start();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(supervisor.pendingCount, 0);
+    expect(client.instructions, isEmpty);
+    expect(
+      File('${speech.path}/pending-corrections.json').readAsStringSync(),
+      '{}',
+    );
+  });
+}
+
+Future<void> _waitFor(bool Function() condition) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('Timed out waiting for asynchronous correction state.');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
 }
 
 Future<void> _queue(
@@ -294,6 +443,28 @@ final class _FakeGemmaClient implements GemmaCorrectionClient {
     };
     return GemmaCorrectionResult(
       correctedText: corrected,
+      provider: 'gpu',
+      engineLoadMs: 500,
+      inferenceMs: 40,
+      totalMs: 550,
+      timeToFirstTokenMs: 20,
+      prefillTokensPerSecond: 100,
+      decodeTokensPerSecond: 20,
+    );
+  }
+
+  @override
+  Future<void> releaseEngine() async {}
+}
+
+final class _InvalidGemmaClient implements GemmaCorrectionClient {
+  int calls = 0;
+
+  @override
+  Future<GemmaCorrectionResult> correct(GemmaCorrectionRequest request) async {
+    calls++;
+    return const GemmaCorrectionResult(
+      correctedText: 'Protected value was removed.',
       provider: 'gpu',
       engineLoadMs: 500,
       inferenceMs: 40,

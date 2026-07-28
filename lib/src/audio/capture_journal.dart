@@ -34,6 +34,7 @@ final class CaptureJournalSupervisor {
   SendPort? _commands;
   Isolate? _isolate;
   Completer<void>? _ready;
+  Completer<void>? _closed;
   Timer? _restartTimer;
   bool _disposed = false;
   bool _restarting = false;
@@ -87,6 +88,7 @@ final class CaptureJournalSupervisor {
   Future<void> _spawn() async {
     _commands = null;
     _ready = Completer<void>();
+    _closed = Completer<void>();
     _events = ReceivePort();
     _errors = ReceivePort();
     _exit = ReceivePort();
@@ -100,6 +102,10 @@ final class CaptureJournalSupervisor {
     _exitSubscription = _exit!.listen((_) {
       _commands = null;
       _isolate = null;
+      final closed = _closed;
+      if (closed != null && !closed.isCompleted) {
+        closed.complete();
+      }
       if (!_disposed) {
         _scheduleRestart();
       }
@@ -156,6 +162,11 @@ final class CaptureJournalSupervisor {
           'error=${_oneLine(event['message'])}',
           isError: true,
         );
+      case 'closed':
+        final closed = _closed;
+        if (closed != null && !closed.isCompleted) {
+          closed.complete();
+        }
     }
   }
 
@@ -201,8 +212,19 @@ final class CaptureJournalSupervisor {
     _disposed = true;
     _restartTimer?.cancel();
     _restartTimer = null;
-    _commands?.send(<String, Object>{'type': 'close'});
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    final commands = _commands;
+    final closed = _closed;
+    commands?.send(<String, Object>{'type': 'close'});
+    if (commands != null && closed != null && !closed.isCompleted) {
+      try {
+        await closed.future.timeout(const Duration(seconds: 10));
+      } on TimeoutException {
+        onStatus(
+          '[WorkBench][Capture] state=close_timeout cleanup=forced',
+          isError: true,
+        );
+      }
+    }
     _isolate?.kill(priority: Isolate.immediate);
     _isolate = null;
     _commands = null;
@@ -276,7 +298,10 @@ void _captureJournalWorker(Map<String, Object> bootstrap) {
     }
   }
 
-  Timer.periodic(const Duration(milliseconds: 250), (_) => flush());
+  final flushTimer = Timer.periodic(
+    const Duration(milliseconds: 250),
+    (_) => flush(),
+  );
   commands.listen((Object? message) {
     if (message is! Map<Object?, Object?>) {
       return;
@@ -295,8 +320,10 @@ void _captureJournalWorker(Map<String, Object> bootstrap) {
           flush();
         }
       case 'close':
+        flushTimer.cancel();
         flush();
         closeOutput();
+        events.send(<String, Object>{'type': 'closed'});
         commands.close();
     }
   });

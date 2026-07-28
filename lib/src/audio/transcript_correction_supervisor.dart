@@ -131,6 +131,9 @@ final class CorrectedTranscriptResult {
 }
 
 final class TranscriptCorrectionSupervisor {
+  static const int maximumTranscriptCharacters = 6000;
+  static const int maximumCorrectionAttempts = 3;
+
   TranscriptCorrectionSupervisor({
     required this.speechPath,
     required this.configStore,
@@ -241,32 +244,53 @@ final class TranscriptCorrectionSupervisor {
     }
     final rawText = (await rawFile.readAsString()).trim();
     if (rawText.isEmpty) {
-      _pending.remove(job.segmentId);
-      await _persistPending();
-      onStatus(
-        '[WorkBench][Correction] state=skipped_empty segment=${job.segmentId}',
+      await _finishWithoutCorrection(
+        job,
+        stateName: 'skipped_empty',
+        reason: 'empty_transcript',
       );
+      return;
+    }
+    if (rawText.length > maximumTranscriptCharacters) {
+      await _finishWithoutCorrection(
+        job,
+        stateName: 'skipped_oversize',
+        reason: 'input_too_long',
+        detail: 'chars=${rawText.length}',
+        isError: true,
+      );
+      return;
+    }
+    if (job.attempts >= maximumCorrectionAttempts) {
+      await _finishWithoutCorrection(
+        job,
+        stateName: 'abandoned',
+        reason: 'retry_exhausted',
+        detail: 'attempts=${job.attempts}',
+        attempts: job.attempts,
+        isError: true,
+      );
+      state = 'degraded';
       return;
     }
 
     final config = await configStore.reloadForNextTranscript();
     if (!config.enabled) {
-      _pending.remove(job.segmentId);
-      await _persistPending();
-      onStatus(
-        '[WorkBench][Correction] state=disabled segment=${job.segmentId}',
+      await _finishWithoutCorrection(
+        job,
+        stateName: 'disabled',
+        reason: 'correction_disabled',
       );
       onUncorrected(job, rawText, 'correction_disabled');
       return;
     }
     final modelPath = await modelStore.installedModelPath();
     if (modelPath == null) {
-      await _retry(
+      await _finishWithoutCorrection(
         job,
-        StateError(
-          '${gemma4E4bModel.displayName} is not installed or verified.',
-        ),
-        minimumDelay: const Duration(minutes: 1),
+        stateName: 'skipped_model_missing',
+        reason: 'model_missing',
+        isError: true,
       );
       return;
     }
@@ -369,33 +393,63 @@ final class TranscriptCorrectionSupervisor {
     }
   }
 
-  Future<void> _retry(
-    TranscriptCorrectionJob job,
-    Object error, {
-    Duration? minimumDelay,
-  }) async {
+  Future<void> _retry(TranscriptCorrectionJob job, Object error) async {
     if (_disposed) {
       return;
     }
     final attempt = job.attempts + 1;
+    if (attempt >= maximumCorrectionAttempts) {
+      await _finishWithoutCorrection(
+        job,
+        stateName: 'abandoned',
+        reason: 'retry_exhausted',
+        detail: 'attempts=$attempt error_code=${_errorCode(error)}',
+        attempts: attempt,
+        isError: true,
+      );
+      state = 'degraded';
+      return;
+    }
     final backoff = switch (attempt) {
       1 => const Duration(seconds: 1),
       2 => const Duration(seconds: 5),
       3 => const Duration(seconds: 30),
       _ => const Duration(minutes: 5),
     };
-    final delay = minimumDelay != null && minimumDelay > backoff
-        ? minimumDelay
-        : backoff;
-    final retried = job.retryAfter(delay);
+    final retried = job.retryAfter(backoff);
     _pending[job.segmentId] = retried;
     await _persistPending();
     state = 'degraded';
     onStatus(
       '[WorkBench][Correction] state=failed segment=${job.segmentId} '
-      'attempt=$attempt retry_ms=${delay.inMilliseconds} '
-      'error=${_oneLine(error)} raw=preserved',
+      'attempt=$attempt retry_ms=${backoff.inMilliseconds} '
+      'error_code=${_errorCode(error)} raw=preserved',
       isError: true,
+    );
+  }
+
+  Future<void> _finishWithoutCorrection(
+    TranscriptCorrectionJob job, {
+    required String stateName,
+    required String reason,
+    String? detail,
+    int? attempts,
+    bool isError = false,
+  }) async {
+    await _atomicWriteJson(_skippedPathForRaw(job.rawPath), <String, Object>{
+      'version': 1,
+      'segment': job.segmentId,
+      'reason': reason,
+      'attempts': attempts ?? job.attempts,
+      'skippedAt': DateTime.now().toUtc().toIso8601String(),
+    });
+    _pending.remove(job.segmentId);
+    await _persistPending();
+    onStatus(
+      '[WorkBench][Correction] state=$stateName segment=${job.segmentId} '
+      '${detail == null ? '' : '$detail '}raw=preserved '
+      'pending=${_pending.length}',
+      isError: isError,
     );
   }
 
@@ -420,13 +474,16 @@ final class TranscriptCorrectionSupervisor {
       } on Object catch (error) {
         onStatus(
           '[WorkBench][Correction] state=ledger_rebuild '
-          'error=${_oneLine(error)}',
+          'error_code=${_errorCode(error)}',
           isError: true,
         );
       }
     }
     await for (final entity in directory.list()) {
       if (entity is! File || !entity.path.endsWith('.raw.txt')) {
+        continue;
+      }
+      if (await File(_skippedPathForRaw(entity.path)).exists()) {
         continue;
       }
       final id = entity.path
@@ -455,6 +512,7 @@ final class TranscriptCorrectionSupervisor {
     _pending.removeWhere(
       (_, job) =>
           !File(job.rawPath).existsSync() ||
+          File(_skippedPathForRaw(job.rawPath)).existsSync() ||
           File(_correctedPathForRaw(job.rawPath)).existsSync(),
     );
     await _persistPending();
@@ -594,11 +652,18 @@ final class TranscriptCorrectionSupervisor {
   static String _correctedPathForRaw(String rawPath) =>
       rawPath.replaceFirst(RegExp(r'\.raw\.txt$'), '.corrected.txt');
 
+  static String _skippedPathForRaw(String rawPath) =>
+      rawPath.replaceFirst(RegExp(r'\.raw\.txt$'), '.correction-skipped.json');
+
   static String _metadataPathForRaw(String rawPath) =>
       rawPath.replaceFirst(RegExp(r'\.raw\.txt$'), '.transcript.json');
 
-  static String _oneLine(Object value) {
-    final line = '$value'.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return line.length <= 500 ? line : line.substring(0, 500);
-  }
+  static String _errorCode(Object error) => switch (error) {
+    FormatException _ => 'invalid_output',
+    TimeoutException _ => 'timeout',
+    FileSystemException _ => 'storage',
+    StateError _ => 'invalid_state',
+    UnsupportedError _ => 'unsupported',
+    _ => 'runtime_failure',
+  };
 }

@@ -9,6 +9,7 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
 import 'nnapi_attestation.dart';
 import 'speech_model.dart';
+import 'transcription_chunking.dart';
 
 typedef TranscriptionStatusSink = void Function(String message, {bool isError});
 typedef TranscriptSink = void Function(TranscriptionResult result);
@@ -86,9 +87,11 @@ final class TranscriptionSupervisor {
   SendPort? _commands;
   Isolate? _isolate;
   Completer<String>? _ready;
+  Completer<void>? _closed;
   Timer? _restartTimer;
   bool _disposed = false;
   bool _restarting = false;
+  String? _activeJobId;
   String? activeProvider;
 
   Future<String> start() async {
@@ -109,7 +112,7 @@ final class TranscriptionSupervisor {
       '[WorkBench][Transcription] state=queued segment=$segmentId '
       'pending=${_pending.length}',
     );
-    _sendJob(segmentId, wavPath);
+    _dispatchNext();
   }
 
   Future<void> restartForTest() async {
@@ -121,11 +124,26 @@ final class TranscriptionSupervisor {
     _isolate!.kill(priority: Isolate.immediate);
   }
 
-  void _sendJob(String segmentId, String wavPath) {
-    _commands?.send(<String, Object>{
+  void _dispatchNext() {
+    final commands = _commands;
+    if (_disposed || commands == null || _activeJobId != null) {
+      return;
+    }
+    MapEntry<String, String>? next;
+    for (final entry in _pending.entries) {
+      if (!_jobRetryTimers.containsKey(entry.key)) {
+        next = entry;
+        break;
+      }
+    }
+    if (next == null) {
+      return;
+    }
+    _activeJobId = next.key;
+    commands.send(<String, Object>{
       'type': 'transcribe',
-      'id': segmentId,
-      'path': wavPath,
+      'id': next.key,
+      'path': next.value,
     });
   }
 
@@ -133,6 +151,7 @@ final class TranscriptionSupervisor {
     _commands = null;
     activeProvider = null;
     _ready = Completer<String>();
+    _closed = Completer<void>();
     _events = ReceivePort();
     _errors = ReceivePort();
     _exit = ReceivePort();
@@ -146,6 +165,11 @@ final class TranscriptionSupervisor {
     _exitSubscription = _exit!.listen((_) {
       _commands = null;
       _isolate = null;
+      _activeJobId = null;
+      final closed = _closed;
+      if (closed != null && !closed.isCompleted) {
+        closed.complete();
+      }
       if (!_disposed) {
         _scheduleRestart();
       }
@@ -208,9 +232,7 @@ final class TranscriptionSupervisor {
         if (!(_ready?.isCompleted ?? true)) {
           _ready!.complete(activeProvider);
         }
-        for (final entry in _pending.entries) {
-          _sendJob(entry.key, entry.value);
-        }
+        _dispatchNext();
         return;
       case 'processing':
         onStatus(
@@ -219,6 +241,9 @@ final class TranscriptionSupervisor {
         return;
       case 'result':
         final id = event['id']! as String;
+        if (_activeJobId == id) {
+          _activeJobId = null;
+        }
         final text = event['text']! as String;
         final routeEligible = _recoveryTracker.takeRouteEligibility(id);
         final queuedAt = _jobQueuedAt.remove(id) ?? DateTime.now().toUtc();
@@ -235,7 +260,8 @@ final class TranscriptionSupervisor {
           '[WorkBench][Transcription] state=completed segment=$id '
           'model=${event['model']} provider=${event['provider']} '
           'audio_ms=${event['audioMs']} '
-          'decode_ms=${event['decodeMs']} total_ms=$totalMs',
+          'decode_ms=${event['decodeMs']} windows=${event['windows']} '
+          'total_ms=$totalMs',
         );
         onTranscript(
           TranscriptionResult(
@@ -251,15 +277,26 @@ final class TranscriptionSupervisor {
             routeEligible: routeEligible,
           ),
         );
+        _dispatchNext();
         return;
       case 'job_error':
         final id = event['id']! as String;
+        if (_activeJobId == id) {
+          _activeJobId = null;
+        }
         onStatus(
           '[WorkBench][Transcription] state=job_failed '
           'segment=$id error=${_oneLine(event['error'])}',
           isError: true,
         );
         _scheduleJobRetry(id);
+        _dispatchNext();
+        return;
+      case 'closed':
+        final closed = _closed;
+        if (closed != null && !closed.isCompleted) {
+          closed.complete();
+        }
         return;
       case 'fatal':
         final error = StateError('${event['error']}');
@@ -394,7 +431,7 @@ final class TranscriptionSupervisor {
           '[WorkBench][Transcription] state=job_retry '
           'segment=$id attempt=$attempt',
         );
-        _sendJob(id, pendingPath);
+        _dispatchNext();
       }
     });
   }
@@ -421,11 +458,24 @@ final class TranscriptionSupervisor {
       timer.cancel();
     }
     _jobRetryTimers.clear();
-    _commands?.send(<String, Object>{'type': 'close'});
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    final commands = _commands;
+    final closed = _closed;
+    commands?.send(<String, Object>{'type': 'close'});
+    if (commands != null && closed != null && !closed.isCompleted) {
+      try {
+        await closed.future.timeout(const Duration(seconds: 30));
+      } on TimeoutException {
+        onStatus(
+          '[WorkBench][Transcription] state=close_timeout '
+          'native_cleanup=forced',
+          isError: true,
+        );
+      }
+    }
     _isolate?.kill(priority: Isolate.immediate);
     _isolate = null;
     _commands = null;
+    _activeJobId = null;
     await _closePorts();
   }
 
@@ -591,20 +641,33 @@ void _transcriptionWorker(Map<String, Object> bootstrap) {
                 '${wave.samples.length} samples at ${wave.sampleRate} Hz.',
               );
             }
-            final stream = recognizer!.createStream();
-            String text;
             final stopwatch = Stopwatch()..start();
-            try {
-              stream.acceptWaveform(
-                samples: wave.samples,
-                sampleRate: wave.sampleRate,
-              );
-              recognizer.decode(stream);
-              text = recognizer.getResult(stream).text.trim();
-            } finally {
-              stopwatch.stop();
-              stream.free();
+            final windows = planTranscriptionWindows(
+              totalSamples: wave.samples.length,
+              sampleRate: wave.sampleRate,
+            );
+            final windowTranscripts = <String>[];
+            for (final window in windows) {
+              final stream = recognizer!.createStream();
+              try {
+                stream.acceptWaveform(
+                  samples: Float32List.sublistView(
+                    wave.samples,
+                    window.start,
+                    window.end,
+                  ),
+                  sampleRate: wave.sampleRate,
+                );
+                recognizer!.decode(stream);
+                windowTranscripts.add(
+                  recognizer!.getResult(stream).text.trim(),
+                );
+              } finally {
+                stream.free();
+              }
             }
+            stopwatch.stop();
+            final text = mergeTranscriptionWindows(windowTranscripts);
             final audioMs = wave.samples.length * 1000 ~/ wave.sampleRate;
             final transcriptPath = _transcriptPathForAudio(path);
             final partial = File('$transcriptPath.part');
@@ -628,6 +691,7 @@ void _transcriptionWorker(Map<String, Object> bootstrap) {
               'provider': selectedProvider,
               'audioMs': audioMs,
               'decodeMs': stopwatch.elapsedMilliseconds,
+              'windows': windows.length,
               'transcriptPath': transcriptPath,
             });
           } catch (error) {
@@ -640,6 +704,8 @@ void _transcriptionWorker(Map<String, Object> bootstrap) {
           return;
         case 'close':
           recognizer?.free();
+          recognizer = null;
+          events.send(<String, Object>{'type': 'closed'});
           commands.close();
           return;
       }

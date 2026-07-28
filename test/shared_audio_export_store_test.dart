@@ -271,6 +271,72 @@ void main() {
     expect(messageReconciliations, <bool>[false, true]);
   });
 
+  test('bounds all in-memory history collections to recent content', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      return switch (call.method) {
+        'currentDirectory' => <String, Object>{'displayName': 'Shared'},
+        'listTranscriptions' => List<Object?>.generate(
+          25,
+          (index) => <Object?, Object?>{
+            'id': 'transcript-$index',
+            'originalText': 'Transcript $index',
+            'updatedAtMillis': index,
+          },
+        ),
+        'listMessages' => List<Object?>.generate(
+          25,
+          (index) => <Object?, Object?>{
+            'id': 'message-$index',
+            'direction': 'received',
+            'text': 'Message $index',
+            'updatedAtMillis': index,
+          },
+        ),
+        'listConversations' => List<Object?>.generate(
+          125,
+          (index) => <Object?, Object?>{
+            'id': 'turn-$index',
+            'conversationId': 'sample',
+            'speakerId': 'speaker',
+            'speakerLabel': 'Speaker',
+            'text': 'Turn $index',
+            'startMs': index * 1000,
+            'endMs': (index + 1) * 1000,
+            'confidence': 0.9,
+            'updatedAtMillis': index,
+            'isPrimary': false,
+            'isOverlap': false,
+          },
+        ),
+        _ => fail('Unexpected method ${call.method}'),
+      };
+    });
+    final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+    addTearDown(store.dispose);
+
+    await store.initialize();
+    await store.refreshTranscriptions();
+    await store.refreshMessages();
+    await store.refreshConversations();
+
+    expect(
+      store.transcripts,
+      hasLength(SharedAudioExportStore.maximumVisibleTranscripts),
+    );
+    expect(store.transcripts.first.id, 'transcript-24');
+    expect(
+      store.messages,
+      hasLength(SharedAudioExportStore.maximumVisibleMessages),
+    );
+    expect(store.messages.first.id, 'message-24');
+    expect(
+      store.conversations,
+      hasLength(SharedAudioExportStore.maximumVisibleConversationTurns),
+    );
+    expect(store.conversations.first.id, 'turn-25');
+    expect(store.conversations.last.id, 'turn-124');
+  });
+
   test('indexes and loads speaker conversation turns from SQLite', () async {
     List<Object?>? indexedTurns;
     messenger.setMockMethodCallHandler(channel, (call) async {

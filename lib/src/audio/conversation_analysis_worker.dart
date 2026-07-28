@@ -9,6 +9,7 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
 import 'conversation_models.dart';
 import 'speech_model.dart';
+import 'transcription_chunking.dart';
 
 typedef ConversationAnalysisStatusSink =
     void Function(String message, {bool isError});
@@ -64,6 +65,7 @@ final class ConversationAnalysisSupervisor {
   SendPort? _commands;
   Isolate? _isolate;
   Completer<void>? _ready;
+  Completer<void>? _closed;
   Timer? _restartTimer;
   bool _disposed = false;
   bool _closing = false;
@@ -119,6 +121,7 @@ final class ConversationAnalysisSupervisor {
   Future<void> _spawn() async {
     _closing = false;
     _ready = Completer<void>();
+    _closed = Completer<void>();
     _events = ReceivePort();
     _errors = ReceivePort();
     _exit = ReceivePort();
@@ -135,6 +138,10 @@ final class ConversationAnalysisSupervisor {
     _exitSubscription = _exit!.listen((Object? _) {
       _isolate = null;
       _commands = null;
+      final closed = _closed;
+      if (closed != null && !closed.isCompleted) {
+        closed.complete();
+      }
       final ready = _ready;
       if (ready != null && !ready.isCompleted) {
         ready.completeError(
@@ -244,6 +251,11 @@ final class ConversationAnalysisSupervisor {
           'raw_transcription=available error=${_oneLine(error)}',
           isError: true,
         );
+      case 'closed':
+        final closed = _closed;
+        if (closed != null && !closed.isCompleted) {
+          closed.complete();
+        }
     }
   }
 
@@ -296,7 +308,20 @@ final class ConversationAnalysisSupervisor {
     _closing = true;
     _restartTimer?.cancel();
     _restartTimer = null;
-    _commands?.send(<String, Object>{'type': 'close'});
+    final commands = _commands;
+    final closed = _closed;
+    commands?.send(<String, Object>{'type': 'close'});
+    if (commands != null && closed != null && !closed.isCompleted) {
+      try {
+        await closed.future.timeout(const Duration(seconds: 45));
+      } on TimeoutException {
+        onStatus(
+          '[WorkBench][Conversation] state=close_timeout '
+          'native_cleanup=forced',
+          isError: true,
+        );
+      }
+    }
     _commands = null;
     _isolate?.kill(priority: Isolate.immediate);
     _isolate = null;
@@ -424,6 +449,7 @@ void _conversationWorker(Map<String, Object> bootstrap) {
         embeddingExtractor = null;
         diarizer?.free();
         diarizer = null;
+        events.send(<String, Object>{'type': 'closed'});
         commands.close();
     }
   });
@@ -803,14 +829,25 @@ String _transcribeConversationAudio(
   Float32List samples,
   int sampleRate,
 ) {
-  final stream = recognizer.createStream();
-  try {
-    stream.acceptWaveform(samples: samples, sampleRate: sampleRate);
-    recognizer.decode(stream);
-    return recognizer.getResult(stream).text.trim();
-  } finally {
-    stream.free();
+  final transcripts = <String>[];
+  final windows = planTranscriptionWindows(
+    totalSamples: samples.length,
+    sampleRate: sampleRate,
+  );
+  for (final window in windows) {
+    final stream = recognizer.createStream();
+    try {
+      stream.acceptWaveform(
+        samples: Float32List.sublistView(samples, window.start, window.end),
+        sampleRate: sampleRate,
+      );
+      recognizer.decode(stream);
+      transcripts.add(recognizer.getResult(stream).text.trim());
+    } finally {
+      stream.free();
+    }
   }
+  return mergeTranscriptionWindows(transcripts);
 }
 
 void _atomicWriteText(String path, String value) {

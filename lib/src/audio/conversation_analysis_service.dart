@@ -56,6 +56,7 @@ final class ConversationAnalysisService {
   bool _starting = false;
   bool _jobActive = false;
   bool _enrollmentRequested = false;
+  Future<void>? _memoryPressureRelease;
 
   bool enabled = false;
   String state = 'disabled';
@@ -375,20 +376,41 @@ final class ConversationAnalysisService {
     if (!enabled || _disposed) {
       return;
     }
+    final existing = _memoryPressureRelease;
+    if (existing != null) {
+      await existing;
+      return;
+    }
+    final release = _releaseWorkerForMemoryPressure();
+    _memoryPressureRelease = release;
+    try {
+      await release;
+    } finally {
+      if (identical(_memoryPressureRelease, release)) {
+        _memoryPressureRelease = null;
+      }
+    }
+  }
+
+  Future<void> _releaseWorkerForMemoryPressure() async {
     final supervisor = _supervisor;
     _supervisor = null;
     _jobActive = false;
     await supervisor?.dispose();
-    state = 'paused_for_memory';
+    if (_disposed) {
+      return;
+    }
+    state = enabled ? 'paused_for_memory' : 'disabled';
     log(
       'Conversation',
-      '[WorkBench][Conversation] state=paused_for_memory '
+      '[WorkBench][Conversation] state=$state '
           'capture=unaffected transcription=unaffected',
     );
     onChanged();
   }
 
   Future<void> resumeAfterMemoryPressure() async {
+    await _memoryPressureRelease;
     if (enabled && _supervisor == null) {
       await _start();
     }
@@ -396,6 +418,7 @@ final class ConversationAnalysisService {
 
   Future<void> dispose() async {
     _disposed = true;
+    await _memoryPressureRelease;
     await _persistJobs();
     await _supervisor?.dispose();
     _supervisor = null;
