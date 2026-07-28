@@ -51,3 +51,15 @@ included beside the vendored package.
 Sherpa-ONNX dynamically links
 [ONNX Runtime](https://github.com/microsoft/onnxruntime) `1.27.0`, licensed
 under the MIT License. Its license is included beside the vendored package.
+
+## Speaker diarization models
+
+Optional speaker segmentation uses the Sherpa-ONNX conversion of
+[pyannote segmentation 3.0](https://huggingface.co/pyannote/segmentation-3.0),
+licensed under MIT, copyright 2022 CNRS. The complete notice is retained in
+`models/diarization/LICENSE.pyannote-mit`.
+
+Speaker signatures use the Sherpa-ONNX export of NVIDIA NeMo
+[TitaNet Small](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/titanet_small).
+NeMo is licensed under Apache 2.0. The license is retained in
+`models/diarization/LICENSE.nemo-apache-2.0`.

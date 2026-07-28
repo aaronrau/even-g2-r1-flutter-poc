@@ -107,7 +107,7 @@ git -C "$BUILD_ROOT/sherpa-onnx" apply "$PATCH_FILE"
   SHERPA_ONNX_ENABLE_BINARY=OFF \
   SHERPA_ONNX_ENABLE_C_API=ON \
   SHERPA_ONNX_ENABLE_JNI=OFF \
-  SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=OFF \
+  SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=ON \
   SHERPA_ONNX_ENABLE_TTS=OFF \
     ./build-android-arm64-v8a.sh
 )
@@ -115,6 +115,10 @@ git -C "$BUILD_ROOT/sherpa-onnx" apply "$PATCH_FILE"
 RUNTIME_BUILD_LIB="$BUILD_ROOT/sherpa-onnx/build-android-arm64-v8a/install/lib"
 nm -D "$RUNTIME_BUILD_LIB/libonnxruntime.so" |
   rg --quiet 'OrtSessionOptionsAppendExecutionProvider_Nnapi'
+nm -D "$RUNTIME_BUILD_LIB/libsherpa-onnx-c-api.so" |
+  rg --quiet 'SherpaOnnxCreateOfflineSpeakerDiarization'
+nm -D "$RUNTIME_BUILD_LIB/libsherpa-onnx-c-api.so" |
+  rg --quiet 'SherpaOnnxCreateSpeakerEmbeddingExtractor'
 if strings "$RUNTIME_BUILD_LIB/libonnxruntime.so" \
     "$RUNTIME_BUILD_LIB/libsherpa-onnx-c-api.so" |
     rg --fixed-strings --quiet "$BUILD_ROOT"; then

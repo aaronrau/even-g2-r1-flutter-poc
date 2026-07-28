@@ -8,18 +8,6 @@
   Work Bench
 </h1>
 
-<p align="center">
-  <img
-    src="docs/images/workbench-home-demo.png"
-    alt="Sanitized Work Bench mock showing the Events and Messages tabs side by side with generic sample data"
-    width="840"
-  >
-</p>
-
-<p align="center">
-  <em>Sanitized mock data: Events on the left and saved WebSocket messages plus original/corrected transcript history on the right.</em>
-</p>
-
 Work Bench is a local-first wearable work agent built around the Even
 Realities G2 glasses and R1 ring.
 
@@ -100,6 +88,7 @@ expose for a true locked Hub mode.
 | Continuous LC3 stream, waveform, gestures, and Hub recovery | Implemented |
 | Android foreground operation and iOS background-central support | Implemented within platform limits |
 | Durable LC3 capture, VAD, and selectable local Whisper/Parakeet STT | Implemented on Android |
+| Optional independent speaker diarization and conversation history | Implemented on Android; disabled by default |
 | Gemma 4 post-STT correction with separate original/corrected files | Implemented on Android; GPU-qualified on the representative RedMagic phone |
 | On-device intent, task context, and approval policy | Planned |
 | Authenticated WebSocket bridge to the user's computer | Implemented; local `ws://` transport |
@@ -115,13 +104,17 @@ expose for a true locked Hub mode.
   locally with a Tools-selectable local model. Parakeet 0.6B is the current
   default; Parakeet 110M and Tiny Whisper remain available.
 - Lets Android users choose a shared device folder for Files-visible speech
-  WAVs plus separate `.raw.txt` and `.corrected.txt` transcripts. Home's
-  **Messages** tab combines those transcripts with sent and received agent
-  messages. It shows original text first and corrected text second, plays the
-  paired WAV directly from that folder, loads the newest 20 records first, and
-  reveals more while scrolling. An app-private SQLite index makes ordinary tab
-  loads fast; the refresh action explicitly reconciles changes made by other
-  apps in the shared folder.
+  WAVs plus separate `.raw.txt`, `.corrected.txt`, and optional
+  `.conversation.txt` transcripts. The existing **Messages** tab continues to
+  show agent messages, original/corrected transcripts, and WAV playback.
+- Offers disabled-by-default speaker diarization under **Tools → Conversation
+  analysis**. The first clear sentence enrolls `You`; new voices receive saved
+  labels. A supervised isolate reuses the finalized VAD WAV and runs its own
+  CPU speaker models and Parakeet 110M recognizer. Home's **Conversation** tab
+  is separate from Messages; it reads only speaker turns from an app-private
+  SQLite index and displays aligned turns with grayscale speaker markers. This
+  optional path cannot delay or route through the ordinary STT, Gemma, glasses,
+  or agent WebSocket path.
 - Runs Gemma 4 E4B correction through pinned LiteRT-LM in a dedicated Android
   process after Parakeet commits the raw transcript. The correction queue is
   durable and never blocks capture, VAD, or STT.
@@ -182,8 +175,8 @@ Agent progress and completion replies arrive as `message.progress` and
   `workbench-websocket-<timestamp>-<sequence>.received.message.txt` record.
 Acknowledged outgoing commands are saved with the matching
 `.sent.message.txt` suffix. When a shared File storage folder is selected,
-both directions are copied there for access by Files and other apps and appear
-with transcripts in the **Messages** tab.
+both directions are copied there for access by Files and other apps and remain
+available with transcripts in the **Messages** tab.
 
 [`voice_websocket.example.json`](voice_websocket.example.json) documents the
 validated app-private schema. Agent names are matched case-insensitively as
@@ -214,17 +207,17 @@ Use a physical phone with Bluetooth enabled:
 
 ```sh
 git lfs install
-git lfs pull --include='models/stt/**,models/llm/**'
+git lfs pull --include='models/stt/**,models/diarization/**,models/llm/**'
 ./tool/fetch_speech_models.sh
 ./tool/install_android_workbench.sh --device <android-serial>
 ```
 
 The unified installer builds the arm64 APK, installs it only on the explicitly
-selected phone, copies both Parakeet variants and Gemma into app-private
-storage, verifies every model, and launches Work Bench. It uses Android
+selected phone, copies both Parakeet variants, the speaker models, and Gemma
+into app-private storage, verifies every model, and launches Work Bench. It uses Android
 `run-as`; phone root is neither used nor required. Tiny Whisper and VAD are APK
-assets, while the larger Parakeet and Gemma weights are versioned in Git LFS
-and copied as part of the same installation workflow.
+assets, while Parakeet, diarization, and Gemma weights are versioned in Git
+LFS and copied as part of the same installation workflow.
 
 ### Copy Gemma 4 E4B to Android
 
@@ -346,7 +339,7 @@ Install Git LFS and materialize the model files after cloning:
 
 ```sh
 git lfs install
-git lfs pull --include='models/stt/**,models/llm/**'
+git lfs pull --include='models/stt/**,models/diarization/**,models/llm/**'
 git lfs ls-files
 ```
 
@@ -398,6 +391,12 @@ Use `parakeet-110m` instead of `parakeet-0.6b` to copy the lower-memory model:
 
 ```sh
 ./tool/stage_android_stt_model.sh --device <android-serial> parakeet-110m
+```
+
+Copy the independent speaker segmentation and embedding models with:
+
+```sh
+./tool/stage_android_diarization_models.sh --device <android-serial>
 ```
 
 The script first uses the selected LFS model under `models/stt/`, checks every
@@ -475,10 +474,9 @@ Then:
    files are exported as they finish.
 3. Return to Home and select **Messages** to browse sent and received agent
    messages, read each original transcript followed by its corrected text, or
-   play the paired WAV. The tab loads its app-private SQLite index and reveals
-   20 entries at a time as you scroll. Use **Refresh messages** to reconcile
-   files added, edited, or removed by another app. Select **Events** to see the
-   30 most recent in-app events.
+   play the paired WAV. Use **Refresh messages** to reconcile files added,
+   edited, or removed by another app. Select **Conversation** separately for
+   diarized speaker turns, or **Events** for the 30 most recent in-app events.
 4. Tap **Connect devices**. Work Bench scans for the G2 pair and R1, connects
    them, and releases the temporary R1 setup link after Tri-Sync handoff.
 5. Speak to move the waveform and use the ring to display gestures.
@@ -507,6 +505,8 @@ shared folder.
 - [Voice WebSocket bridge](docs/VOICE_WEBSOCKET.md) — authentication,
   transcript routing, acknowledgements, reconnect resume, G2 status, and
   privacy boundaries.
+- [Independent conversation analysis](docs/CONVERSATION_ANALYSIS.md) —
+  speaker enrollment, worker isolation, persistence, UI, and validation.
 - [Transcription and model test plan](docs/TRANSCRIPTION_TURN_TEST_PLAN.md) —
   physical Kokoro tests and matched-input STT comparison rules.
 - [Hub/Terminal long-press analysis](docs/G2_R1_HUB_LONG_PRESS.md) — physical

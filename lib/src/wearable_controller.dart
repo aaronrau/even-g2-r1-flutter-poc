@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'audio/audio_pipeline_coordinator.dart';
+import 'audio/conversation_analysis_service.dart';
 import 'audio/shared_audio_export_store.dart';
 import 'audio/speech_model.dart';
 import 'audio/speech_model_preferences.dart';
@@ -45,12 +46,18 @@ final class WearableController extends ChangeNotifier
       onInboundMessage: _handleInboundWebSocketMessage,
     );
     _voiceWebSocket.addListener(_voiceWebSocketChanged);
+    _conversationAnalysis = ConversationAnalysisService(
+      log: addLog,
+      onChanged: _safeNotify,
+      sharedAudioExportStore: _sharedAudioExportStore,
+    );
     _audioPipeline = AudioPipelineCoordinator(
       log: addLog,
       onChanged: _safeNotify,
       onCaptureUnsafe: _handleUnsafeCapture,
       onQueuedTranscript: _handleQueuedTranscript,
       onFinalTranscript: _handleFinalTranscript,
+      onFinalizedSpeechSegment: _conversationAnalysis.acceptFinalizedSegment,
       correctionTermsProvider: () => _voiceWebSocket.config.agentNames,
       sharedAudioExportStore: _sharedAudioExportStore,
     );
@@ -78,6 +85,7 @@ final class WearableController extends ChangeNotifier
   final WebSocketMessageStore _webSocketMessageStore;
   late final AppRuntimeCoordinator _runtime;
   late final VoiceWebSocketClient _voiceWebSocket;
+  late final ConversationAnalysisService _conversationAnalysis;
   late final AudioPipelineCoordinator _audioPipeline;
   late final G2Connection g2;
   late final GlassesStatusQueue _glassesStatusQueue;
@@ -150,6 +158,24 @@ final class WearableController extends ChangeNotifier
   VoiceWebSocketStatus get voiceWebSocketStatus => _voiceWebSocket.status;
   String get voiceWebSocketStatusText => _voiceWebSocket.statusText;
   String? get voiceWebSocketValidationError => _voiceWebSocket.validationError;
+  List<SharedConversationTurn> get conversations =>
+      _sharedAudioExportStore.conversations;
+  bool get isLoadingConversations =>
+      _sharedAudioExportStore.isLoadingConversations;
+  String? get conversationLoadError =>
+      _sharedAudioExportStore.conversationLoadError;
+  bool get conversationAnalysisEnabled => _conversationAnalysis.enabled;
+  bool get conversationAnalysisStarting => _conversationAnalysis.isStarting;
+  bool get conversationAnalysisReady => _conversationAnalysis.isReady;
+  bool get conversationNeedsEnrollment => _conversationAnalysis.needsEnrollment;
+  bool get conversationEnrollmentPending =>
+      _conversationAnalysis.isEnrollmentPending;
+  String get conversationAnalysisState => _conversationAnalysis.state;
+  String? get conversationAnalysisError => _conversationAnalysis.error;
+  int get knownSpeakerCount => _conversationAnalysis.knownSpeakerCount;
+  int get pendingConversationCount => _conversationAnalysis.pendingCount;
+  int get completedConversations =>
+      _conversationAnalysis.completedConversations;
 
   List<G2PairCandidate> get g2Candidates {
     final values = _g2ByKey.values.toList(growable: false);
@@ -214,6 +240,7 @@ final class WearableController extends ChangeNotifier
       // gated because connecting without durable capture would violate the
       // audio-safety contract.
     }
+    unawaited(_conversationAnalysis.initialize());
     final preferences = await SharedPreferences.getInstance();
     rememberedG2Serial = preferences.getString('remembered_g2_serial');
     rememberedR1Id = preferences.getString('remembered_r1_id');
@@ -433,6 +460,32 @@ final class WearableController extends ChangeNotifier
     );
     _safeNotify();
   }
+
+  Future<void> setConversationAnalysisEnabled(bool enabled) async {
+    await _conversationAnalysis.setEnabled(enabled);
+    _safeNotify();
+  }
+
+  void requestConversationEnrollment() {
+    _conversationAnalysis.requestEnrollment();
+    _safeNotify();
+  }
+
+  Future<void> clearConversationSpeakerProfiles() async {
+    await _conversationAnalysis.clearSpeakerProfiles();
+    _safeNotify();
+  }
+
+  Future<void> resetConversationPrimarySpeaker() async {
+    await _conversationAnalysis.resetPrimarySpeakerProfile();
+    _safeNotify();
+  }
+
+  Future<void> refreshConversations() =>
+      _sharedAudioExportStore.refreshConversations();
+
+  Future<void> restartConversationWorkerForTest() =>
+      _conversationAnalysis.restartWorkerForTest();
 
   Future<void> saveVoiceWebSocketConfig(VoiceWebSocketConfig config) async {
     await _voiceWebSocket.saveConfig(config);
@@ -924,6 +977,7 @@ final class WearableController extends ChangeNotifier
     if (state == AppLifecycleState.resumed) {
       _backgroundNotifyTimer?.cancel();
       _backgroundNotifyTimer = null;
+      unawaited(_conversationAnalysis.resumeAfterMemoryPressure());
       _safeNotify();
     }
     unawaited(
@@ -951,6 +1005,7 @@ final class WearableController extends ChangeNotifier
       'Released nonessential diagnostic history after memory pressure',
     );
     unawaited(_audioPipeline.handleMemoryPressure());
+    unawaited(_conversationAnalysis.handleMemoryPressure());
   }
 
   @override
@@ -969,6 +1024,7 @@ final class WearableController extends ChangeNotifier
     unawaited(_statusSubscription?.cancel());
     unawaited(g2.dispose());
     unawaited(r1.dispose());
+    unawaited(_conversationAnalysis.dispose());
     unawaited(_audioPipeline.dispose());
     unawaited(_voiceWebSocket.close());
     unawaited(_runtime.dispose());

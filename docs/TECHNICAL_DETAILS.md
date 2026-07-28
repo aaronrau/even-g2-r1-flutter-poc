@@ -145,6 +145,10 @@ batches and refreshes only while that text tab is selected.
 - `lib/src/audio/speech_model_preferences.dart` — persisted Tools selection.
 - `lib/src/audio/transcription_worker.dart` — selected STT isolate and durable
   transcription job ledger.
+- `lib/src/audio/conversation_analysis_service.dart` — optional path-only WAV
+  consumer, enrollment, durable queue, and supervisor lifecycle.
+- `lib/src/audio/conversation_analysis_worker.dart` — independent pyannote,
+  TitaNet, and Parakeet 110M conversation isolate.
 - `lib/src/audio/shared_audio_export_store.dart` — persisted Android
   document-tree selection, shared transcript listing, and file-backed playback
   state.
@@ -164,13 +168,13 @@ batches and refreshes only while that text tab is selected.
   logs, and application state.
 - `lib/src/ui/home_page.dart` — simplified Home status UI and separate manual
   Tools screen.
-- `lib/src/ui/home_history_panel.dart` — peer Events/Messages views,
-  complete saved transcript text, and shared WAV playback controls.
+- `lib/src/ui/home_history_panel.dart` — separate Events, Messages, and
+  Conversation views with aligned speaker-labeled turns and color markers only
+  in Conversation.
 - `android/.../MainActivity.kt` — scoped Android document-tree access,
   transcript enumeration, and content-URI media playback.
-- `android/.../SharedHistoryCache.kt` — app-private SQLite index for fast
-  Messages loads, incremental export updates, and explicit shared-folder
-  reconciliation.
+- `android/.../SharedHistoryCache.kt` — app-private SQLite index for shared
+  files and speaker-attributed conversation turns.
 - `android/.../BleConnectionService.kt` — Android foreground service and wake
   lock.
 - `android/.../WorkBenchApplication.kt` — native BLE cancellation safety.

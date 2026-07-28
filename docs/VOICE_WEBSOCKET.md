@@ -155,9 +155,10 @@ through a `.part` file and atomic rename in app-private support storage. The
 final filename ends in `.sent.message.txt` or `.received.message.txt`. When
 File storage is selected, completed records are exported to that shared
 folder. Existing records are synchronized at startup and when the folder
-changes. The **Messages** tab combines both directions with saved transcripts
-and their playable WAV files. Normal tab loads use the app-private SQLite
-history index; the explicit refresh action reconciles external shared-folder
+changes. The **Messages** tab retains both directions with saved transcripts
+and their playable WAV files. The separate **Conversation** tab contains only
+optional speaker-attributed turns. Normal tab loads use the app-private SQLite
+history indexes; the explicit refresh action reconciles external shared-folder
 edits. A persistence or export failure never blocks the G2 display or
 WebSocket receive loop.
 

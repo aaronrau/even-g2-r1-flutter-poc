@@ -1,4 +1,5 @@
 import 'package:even_g2_r1_poc/src/audio/shared_audio_export_store.dart';
+import 'package:even_g2_r1_poc/src/audio/conversation_models.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -268,6 +269,88 @@ void main() {
       ],
     );
     expect(messageReconciliations, <bool>[false, true]);
+  });
+
+  test('indexes and loads speaker conversation turns from SQLite', () async {
+    List<Object?>? indexedTurns;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      return switch (call.method) {
+        'currentDirectory' => null,
+        'indexConversation' => () {
+          indexedTurns =
+              (call.arguments as Map<Object?, Object?>)['turns']!
+                  as List<Object?>;
+          return null;
+        }(),
+        'listConversations' => <Object?>[
+          <Object?, Object?>{
+            'id': 'turn-2',
+            'conversationId': 'sample',
+            'speakerId': 'speaker-2',
+            'speakerLabel': 'Speaker 2',
+            'text': 'Second synthetic turn.',
+            'startMs': 1200,
+            'endMs': 2400,
+            'confidence': 0.8,
+            'updatedAtMillis': 2000,
+            'isPrimary': false,
+            'isOverlap': false,
+          },
+          <Object?, Object?>{
+            'id': 'turn-1',
+            'conversationId': 'sample',
+            'speakerId': 'primary-user',
+            'speakerLabel': 'You',
+            'text': 'First synthetic turn.',
+            'startMs': 0,
+            'endMs': 1000,
+            'confidence': 0.9,
+            'updatedAtMillis': 1000,
+            'isPrimary': true,
+            'isOverlap': false,
+          },
+        ],
+        _ => fail('Unexpected method ${call.method}'),
+      };
+    });
+    final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+    addTearDown(store.dispose);
+    await store.initialize();
+    final now = DateTime.fromMillisecondsSinceEpoch(1000);
+    await store.indexConversation(
+      ConversationRecord(
+        id: 'sample',
+        audioPath: '/private/sample.wav',
+        textPath: '/private/sample.conversation.txt',
+        metadataPath: '/private/sample.conversation.json',
+        updatedAt: now,
+        utterances: <ConversationUtterance>[
+          ConversationUtterance(
+            id: 'turn-1',
+            conversationId: 'sample',
+            speakerId: 'primary-user',
+            speakerLabel: 'You',
+            text: 'First synthetic turn.',
+            startMs: 0,
+            endMs: 1000,
+            confidence: 0.9,
+            updatedAt: now,
+            isPrimary: true,
+          ),
+        ],
+      ),
+    );
+
+    expect(indexedTurns, hasLength(1));
+    expect(
+      (indexedTurns!.single as Map<Object?, Object?>)['speakerLabel'],
+      'You',
+    );
+    expect(store.conversations.map((turn) => turn.speakerLabel), <String>[
+      'You',
+      'Speaker 2',
+    ]);
+    expect(store.conversations.first.isPrimary, isTrue);
   });
 
   test(

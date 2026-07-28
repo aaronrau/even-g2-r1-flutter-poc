@@ -24,6 +24,8 @@ typedef AudioPipelineLog =
 typedef TranscriptHandler =
     Future<void> Function(String segmentId, String transcript);
 typedef CorrectionTermsProvider = Iterable<String> Function();
+typedef FinalizedSpeechSegmentHandler =
+    void Function(String segmentId, String wavPath);
 
 final class AudioPipelineCoordinator {
   AudioPipelineCoordinator({
@@ -33,6 +35,7 @@ final class AudioPipelineCoordinator {
     required SharedAudioExportStore sharedAudioExportStore,
     this.onQueuedTranscript,
     this.onFinalTranscript,
+    this.onFinalizedSpeechSegment,
     this.correctionTermsProvider,
     ModelAssetStore? modelStore,
     GemmaModelStore? gemmaModelStore,
@@ -62,6 +65,7 @@ final class AudioPipelineCoordinator {
   final void Function() onCaptureUnsafe;
   final TranscriptHandler? onQueuedTranscript;
   final TranscriptHandler? onFinalTranscript;
+  final FinalizedSpeechSegmentHandler? onFinalizedSpeechSegment;
   final CorrectionTermsProvider? correctionTermsProvider;
   final ModelAssetStore _modelStore;
   final GemmaModelStore _gemmaModelStore;
@@ -351,6 +355,17 @@ final class AudioPipelineCoordinator {
       _exportSharedFiles(<String>[wavPath], reason: 'audio', segmentId: id),
     );
     _transcription?.transcribe(id, wavPath);
+    try {
+      onFinalizedSpeechSegment?.call(id, wavPath);
+    } catch (error) {
+      log(
+        'Conversation',
+        '[WorkBench][Conversation] state=handoff_failed segment=$id '
+            'capture=unaffected transcription=unaffected '
+            'error=${_oneLine(error)}',
+        isError: true,
+      );
+    }
   }
 
   void _onTranscript(TranscriptionResult result) {

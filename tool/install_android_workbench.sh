@@ -69,9 +69,13 @@ if [ "$state" != "device" ]; then
   exit 1
 fi
 
-echo "Verifying packaged Parakeet and Gemma Git LFS models."
+echo "Verifying packaged Parakeet, diarization, and Gemma Git LFS models."
 (
   cd "$REPOSITORY_ROOT/models/stt"
+  sha256sum --check SHA256SUMS
+)
+(
+  cd "$REPOSITORY_ROOT/models/diarization"
   sha256sum --check SHA256SUMS
 )
 (
@@ -99,9 +103,11 @@ ADB=$ADB_BIN "$SCRIPT_DIR/stage_android_stt_model.sh" \
   --device "$DEVICE_SERIAL" parakeet-0.6b
 ADB=$ADB_BIN "$SCRIPT_DIR/stage_android_stt_model.sh" \
   --device "$DEVICE_SERIAL" parakeet-110m
+ADB=$ADB_BIN "$SCRIPT_DIR/stage_android_diarization_models.sh" \
+  --device "$DEVICE_SERIAL"
 ADB=$ADB_BIN "$SCRIPT_DIR/stage_android_gemma_model.sh" \
   --device "$DEVICE_SERIAL"
 
 adb_target shell am start -W -n "$PACKAGE/.MainActivity" >/dev/null
-echo "Work Bench installed with Parakeet 0.6B, Parakeet 110M, and Gemma 4 E4B."
+echo "Work Bench installed with Parakeet, diarization, and Gemma models."
 echo "All model files are app-owned; Android root was not used."

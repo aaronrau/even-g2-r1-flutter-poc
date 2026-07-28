@@ -17,6 +17,10 @@ The Sherpa session factory is patched to register the ONNX Runtime NNAPI
 execution provider with `NNAPI_FLAG_CPU_DISABLED`. This excludes NNAPI's
 reference-CPU device. ONNX Runtime's own CPU execution provider remains
 available for unsupported graph nodes and as the application-level fallback.
+The Sherpa C API is compiled with speaker diarization enabled so the optional
+CPU pyannote and TitaNet conversation worker can use the same pinned runtime.
+The rebuild gate requires both the diarization and speaker-embedding creation
+symbols.
 
 The application does not claim NNAPI merely because a session initializes.
 Each VAD and transcription model is warmed up with ONNX Runtime profiling, and

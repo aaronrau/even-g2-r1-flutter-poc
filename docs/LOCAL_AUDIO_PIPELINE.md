@@ -158,12 +158,12 @@ Existing message records are synchronized when the app starts or the shared
 folder changes. The reserved `.message.txt` suffix is excluded from transcript
 enumeration.
 
-Home's **Messages** tab combines those sent/received records with completed
-transcripts from the same Android document provider. It pairs each transcript
-with a same-name `.wav` and reads or plays files directly from the shared
-folder. Playback uses the content URI rather than copying audio back into
-private storage. The native bridge maintains an app-private SQLite index of
-message and transcript metadata plus text. A normal **Messages** selection
+Home's **Messages** tab retains those sent/received records with completed
+transcripts from the same Android document provider. It pairs each transcript with a same-name
+`.wav` and reads or plays files directly from the shared folder. Playback uses
+the content URI rather than copying audio back into private storage. The native
+bridge maintains app-private SQLite indexes of agent messages, ordinary
+transcripts, and conversation turns. A normal **Messages** selection
 queries SQLite instead of reopening every shared text document. Every
 successful app export updates the index incrementally. The first selection
 after upgrading or changing folders performs a one-time shared-folder import;
@@ -176,9 +176,10 @@ recovery sync skips unchanged files that are still present in the native
 document index, so opening Messages is not queued behind redundant copies of
 the complete capture archive.
 
-The list presents the newest 20 combined records first and reveals the next 20
-near the end of each scroll batch. **Events** is the default peer tab and
-retains only the 30 most recent in-app events. The native storage bridge also
+The list presents the newest combined records first in bounded batches.
+The separate **Conversation** tab displays only optional speaker-attributed
+turns. **Events** is the default peer tab and retains only the 30 most recent
+in-app events. The native storage bridge also
 keeps an app-private filename-to-document-URI index. This preserves
 deterministic listing and playback on OEM document providers that accept
 writes but return an empty child-directory query. The correction prompt is
@@ -243,6 +244,22 @@ more memory. The 0.6B model remains the default by product choice. All STT
 variants remain behind the same
 transcription-worker boundary and cannot own the journal, BLE callbacks, or VAD
 recovery buffer.
+
+## Optional conversation worker
+
+Speaker diarization is disabled by default and branches only after VAD has
+atomically finalized the ordinary speech WAV. The primary STT starts first;
+then a non-awaited callback gives the optional service the same WAV path. No
+second live LC3/PCM buffer is retained.
+
+The optional service owns pyannote segmentation, TitaNet Small embeddings, and
+a separate CPU Parakeet 110M recognizer in a supervised Dart isolate. It has a
+separate durable queue and output files. Model, worker, transcription, speaker
+matching, export, and database failures leave capture, VAD, primary STT, Gemma,
+BLE, and the voice WebSocket unchanged.
+
+See [Independent conversation analysis](CONVERSATION_ANALYSIS.md) for the
+enrollment, matching, storage, and validation contracts.
 
 See [Transcription turn test plan](TRANSCRIPTION_TURN_TEST_PLAN.md) for the
 computer-speaker Kokoro cases and turn-level acceptance criteria.

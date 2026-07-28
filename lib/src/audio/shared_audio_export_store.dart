@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'conversation_models.dart';
+
 final class SharedAudioFolder {
   const SharedAudioFolder({required this.displayName});
 
@@ -54,6 +56,34 @@ final class SharedWebSocketMessage {
   final DateTime updatedAt;
 }
 
+final class SharedConversationTurn {
+  const SharedConversationTurn({
+    required this.id,
+    required this.conversationId,
+    required this.speakerId,
+    required this.speakerLabel,
+    required this.text,
+    required this.startMs,
+    required this.endMs,
+    required this.confidence,
+    required this.updatedAt,
+    required this.isPrimary,
+    required this.isOverlap,
+  });
+
+  final String id;
+  final String conversationId;
+  final String speakerId;
+  final String speakerLabel;
+  final String text;
+  final int startMs;
+  final int endMs;
+  final double confidence;
+  final DateTime updatedAt;
+  final bool isPrimary;
+  final bool isOverlap;
+}
+
 final class SharedAudioExportStore extends ChangeNotifier {
   static const String correctionPromptFileName =
       'workbench-correction-prompt.txt';
@@ -76,10 +106,13 @@ final class SharedAudioExportStore extends ChangeNotifier {
   SharedAudioFolder? folder;
   List<SharedTranscript> transcripts = const <SharedTranscript>[];
   List<SharedWebSocketMessage> messages = const <SharedWebSocketMessage>[];
+  List<SharedConversationTurn> conversations = const <SharedConversationTurn>[];
   bool isLoadingTranscripts = false;
   bool isLoadingMessages = false;
+  bool isLoadingConversations = false;
   String? transcriptLoadError;
   String? messageLoadError;
+  String? conversationLoadError;
   String? playingAudioFileName;
 
   bool get isSupported => _isAndroid;
@@ -144,6 +177,69 @@ final class SharedAudioExportStore extends ChangeNotifier {
       <String, Object>{'paths': stablePaths},
     );
     return exported ?? 0;
+  }
+
+  Future<void> indexConversation(ConversationRecord record) async {
+    if (record.utterances.isEmpty) {
+      return;
+    }
+    if (!_isAndroid) {
+      conversations = <SharedConversationTurn>[
+        ...conversations.where((turn) => turn.conversationId != record.id),
+        ...record.utterances.map(_conversationFromUtterance),
+      ]..sort(_compareConversationTurns);
+      notifyListeners();
+      return;
+    }
+    await _channel.invokeMethod<void>('indexConversation', <String, Object>{
+      'turns': record.utterances
+          .map(
+            (utterance) => <String, Object>{
+              'id': utterance.id,
+              'conversationId': utterance.conversationId,
+              'speakerId': utterance.speakerId,
+              'speakerLabel': utterance.speakerLabel,
+              'text': utterance.text,
+              'startMs': utterance.startMs,
+              'endMs': utterance.endMs,
+              'confidence': utterance.confidence,
+              'updatedAtMillis': utterance.updatedAt.millisecondsSinceEpoch,
+              'isPrimary': utterance.isPrimary,
+              'isOverlap': utterance.isOverlap,
+            },
+          )
+          .toList(growable: false),
+    });
+    await refreshConversations();
+  }
+
+  Future<void> refreshConversations() async {
+    if (!_isAndroid) {
+      conversationLoadError = null;
+      return;
+    }
+    isLoadingConversations = true;
+    conversationLoadError = null;
+    notifyListeners();
+    try {
+      final records =
+          await _channel.invokeMethod<List<Object?>>('listConversations') ??
+          const <Object?>[];
+      conversations =
+          records
+              .whereType<Map<Object?, Object?>>()
+              .map(_conversationFromRecord)
+              .whereType<SharedConversationTurn>()
+              .toList(growable: false)
+            ..sort(_compareConversationTurns);
+    } catch (_) {
+      conversationLoadError =
+          'Could not read saved conversations. Retry or keep recording.';
+      rethrow;
+    } finally {
+      isLoadingConversations = false;
+      notifyListeners();
+    }
   }
 
   Future<String?> readCorrectionInstructions() async {
@@ -330,6 +426,62 @@ final class SharedAudioExportStore extends ChangeNotifier {
     );
   }
 
+  SharedConversationTurn? _conversationFromRecord(
+    Map<Object?, Object?> message,
+  ) {
+    final id = message['id'];
+    final conversationId = message['conversationId'];
+    final speakerId = message['speakerId'];
+    final speakerLabel = message['speakerLabel'];
+    final text = message['text'];
+    final startMs = message['startMs'];
+    final endMs = message['endMs'];
+    final confidence = message['confidence'];
+    final updatedAtMillis = message['updatedAtMillis'];
+    if (id is! String ||
+        conversationId is! String ||
+        speakerId is! String ||
+        speakerLabel is! String ||
+        text is! String ||
+        text.trim().isEmpty ||
+        startMs is! int ||
+        endMs is! int ||
+        endMs <= startMs ||
+        confidence is! num ||
+        updatedAtMillis is! int) {
+      return null;
+    }
+    return SharedConversationTurn(
+      id: id,
+      conversationId: conversationId,
+      speakerId: speakerId,
+      speakerLabel: speakerLabel,
+      text: text.trim(),
+      startMs: startMs,
+      endMs: endMs,
+      confidence: confidence.toDouble().clamp(0, 1),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(updatedAtMillis),
+      isPrimary: message['isPrimary'] == true,
+      isOverlap: message['isOverlap'] == true,
+    );
+  }
+
+  SharedConversationTurn _conversationFromUtterance(
+    ConversationUtterance utterance,
+  ) => SharedConversationTurn(
+    id: utterance.id,
+    conversationId: utterance.conversationId,
+    speakerId: utterance.speakerId,
+    speakerLabel: utterance.speakerLabel,
+    text: utterance.text,
+    startMs: utterance.startMs,
+    endMs: utterance.endMs,
+    confidence: utterance.confidence,
+    updatedAt: utterance.updatedAt,
+    isPrimary: utterance.isPrimary,
+    isOverlap: utterance.isOverlap,
+  );
+
   Future<void> _handlePlatformCall(MethodCall call) async {
     if (call.method != 'playbackCompleted') {
       return;
@@ -349,6 +501,20 @@ final class SharedAudioExportStore extends ChangeNotifier {
     return (lower.endsWith('.wav') || lower.endsWith('.txt')) &&
         !lower.endsWith('.part.wav') &&
         !lower.endsWith('.part.txt');
+  }
+
+  static int _compareConversationTurns(
+    SharedConversationTurn left,
+    SharedConversationTurn right,
+  ) {
+    final byTime = left.updatedAt.compareTo(right.updatedAt);
+    if (byTime != 0) {
+      return byTime;
+    }
+    final byConversation = left.conversationId.compareTo(right.conversationId);
+    return byConversation != 0
+        ? byConversation
+        : left.startMs.compareTo(right.startMs);
   }
 
   Future<void> _stopAudioForDispose() async {

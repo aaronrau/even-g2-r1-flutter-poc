@@ -162,6 +162,12 @@ final class _HomePageState extends State<HomePage> {
       child: Column(
         children: <Widget>[
           _buildStartupStatus(),
+          if (controller.conversationAnalysisEnabled &&
+              (controller.conversationNeedsEnrollment ||
+                  controller.conversationEnrollmentPending)) ...<Widget>[
+            const SizedBox(height: 8),
+            _buildConversationEnrollmentPrompt(),
+          ],
           const SizedBox(height: 6),
           _buildConnectionsCard(),
           const Divider(height: 16),
@@ -208,6 +214,40 @@ final class _HomePageState extends State<HomePage> {
               icon: const Icon(Icons.refresh, size: 18),
               visualDensity: VisualDensity.compact,
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConversationEnrollmentPrompt() {
+    final theme = Theme.of(context);
+    final preparing = controller.conversationAnalysisStarting;
+    return Container(
+      constraints: const BoxConstraints(minHeight: 48),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: <Widget>[
+          if (preparing)
+            const SizedBox.square(
+              dimension: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else
+            const Icon(Icons.record_voice_over_outlined, size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              preparing
+                  ? 'Preparing private speaker analysis…'
+                  : 'Speak one clear sentence now. It will be saved as your '
+                        '“You” voice signature.',
+              style: theme.textTheme.bodyMedium,
+            ),
+          ),
         ],
       ),
     );
@@ -370,25 +410,40 @@ final class _HomePageState extends State<HomePage> {
     return Expanded(
       child: HomeHistoryPanel(
         events: controller.eventLogs,
+        conversations: controller.conversations,
         messages: controller.sharedWebSocketMessages,
         transcriptions: controller.sharedTranscripts,
         supportsSharedFolder: controller.supportsSharedAudioFolder,
         sharedFolderName: controller.sharedAudioFolder?.displayName,
+        analysisEnabled: controller.conversationAnalysisEnabled,
+        needsEnrollment: controller.conversationNeedsEnrollment,
+        analysisState: controller.conversationAnalysisState,
+        knownSpeakerCount: controller.knownSpeakerCount,
+        pendingConversationCount: controller.pendingConversationCount,
+        isLoadingConversations: controller.isLoadingConversations,
         isLoadingMessages: controller.isLoadingSharedMessages,
         isStorageBusy: _busy || controller.isExportingSharedAudio,
         messageError: controller.sharedMessageError,
-        isPlayingTranscript: controller.isPlayingTranscript,
+        conversationError:
+            controller.conversationAnalysisError ??
+            controller.conversationLoadError,
         onClearEvents: controller.clearLogs,
         onChooseFolder: () => _run(controller.chooseSharedAudioFolder),
         onRefreshMessages: () =>
             _run(() => controller.refreshSharedMessages(reconcileShared: true)),
+        onRefreshConversations: () => _run(controller.refreshConversations),
+        onResetPrimarySpeaker: () =>
+            _run(controller.resetConversationPrimarySpeaker),
         onTabChanged: (tab) {
           final messagesSelected = tab == HomeHistoryTab.messages;
           controller.setSharedMessageViewActive(messagesSelected);
           if (messagesSelected) {
             _run(controller.refreshSharedMessages);
+          } else if (tab == HomeHistoryTab.conversations) {
+            _run(controller.refreshConversations);
           }
         },
+        isPlayingTranscript: controller.isPlayingTranscript,
         onToggleTranscriptAudio: (transcript) {
           _run(() => controller.toggleTranscriptAudio(transcript));
         },
@@ -402,6 +457,8 @@ final class _HomePageState extends State<HomePage> {
       children: <Widget>[
         _buildTranscriptionSettingsCard(),
         const SizedBox(height: 12),
+        _buildConversationAnalysisCard(),
+        const SizedBox(height: 12),
         _buildVoiceWebSocketCard(),
         const SizedBox(height: 12),
         _buildDisplayToolsCard(),
@@ -413,6 +470,96 @@ final class _HomePageState extends State<HomePage> {
         _buildStyleGuideSection(),
         const SizedBox(height: 24),
       ],
+    );
+  }
+
+  Widget _buildConversationAnalysisCard() {
+    final theme = Theme.of(context);
+    final enabled = controller.conversationAnalysisEnabled;
+    final error = controller.conversationAnalysisError;
+    final state = controller.conversationAnalysisState.replaceAll('_', ' ');
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text('Conversation analysis', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 4),
+            Text(
+              'Optional speaker diarization runs in a supervised worker with '
+              'its own speech recognizer. It reuses each finalized WAV; the '
+              'live transcription, correction, and agent connection never '
+              'wait for it.',
+              style: theme.textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Enable speaker-labeled conversations'),
+              subtitle: Text(
+                enabled
+                    ? 'State: $state · ${controller.knownSpeakerCount} saved '
+                          'speakers · ${controller.pendingConversationCount} '
+                          'pending'
+                    : 'Disabled by default',
+                style: theme.textTheme.bodySmall,
+              ),
+              value: enabled,
+              onChanged: _busy
+                  ? null
+                  : (value) => _run(
+                      () => controller.setConversationAnalysisEnabled(value),
+                    ),
+            ),
+            if (enabled) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                controller.conversationNeedsEnrollment
+                    ? 'Speak one clear sentence. The next speech segment '
+                          'becomes your saved “You” signature.'
+                    : 'New voices are assigned a saved speaker label and '
+                          'matched again in future conversations.',
+                style: theme.textTheme.bodyMedium,
+              ),
+              if (error != null) ...<Widget>[
+                const SizedBox(height: 8),
+                Text(error, style: theme.textTheme.bodySmall),
+              ],
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: <Widget>[
+                  if (controller.conversationNeedsEnrollment)
+                    FilledButton.icon(
+                      onPressed: _busy
+                          ? null
+                          : controller.requestConversationEnrollment,
+                      icon: const Icon(Icons.mic_none_outlined),
+                      label: const Text('Listen for my voice'),
+                    )
+                  else
+                    OutlinedButton.icon(
+                      onPressed: _busy
+                          ? null
+                          : controller.requestConversationEnrollment,
+                      icon: const Icon(Icons.mic_none_outlined),
+                      label: const Text('Update my voice'),
+                    ),
+                  OutlinedButton(
+                    onPressed: _busy || controller.knownSpeakerCount == 0
+                        ? null
+                        : () =>
+                              _run(controller.clearConversationSpeakerProfiles),
+                    child: const Text('Reset speaker signatures'),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
@@ -794,7 +941,7 @@ final class _HomePageState extends State<HomePage> {
             Text('Peer views', style: theme.textTheme.titleSmall),
             const SizedBox(height: 8),
             DefaultTabController(
-              length: 2,
+              length: 3,
               child: IgnorePointer(
                 child: TabBar(
                   dividerColor: theme.colorScheme.outlineVariant,
@@ -805,6 +952,47 @@ final class _HomePageState extends State<HomePage> {
                   tabs: const <Tab>[
                     Tab(height: 48, text: 'Events'),
                     Tab(height: 48, text: 'Messages'),
+                    Tab(height: 48, text: 'Conversation'),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text('Conversation turn', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        Container(
+                          width: 12,
+                          height: 12,
+                          decoration: BoxDecoration(
+                            color: conversationUserMarkerColor,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text('You', style: theme.textTheme.titleSmall),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Speaker-labeled text',
+                      style: theme.textTheme.bodyMedium,
+                    ),
                   ],
                 ),
               ),
@@ -885,6 +1073,7 @@ final class _HomePageState extends State<HomePage> {
               '16dp section padding • 12dp group gap • 8dp control gap\n'
               '48dp minimum targets • grayscale UI • green status dots only\n'
               'Text tabs with an underline switch between peer views\n'
+              'Speaker turns use aligned labels with grayscale color markers\n'
               'Labeled dropdowns select one persisted setting\n'
               'Multiline settings use a labeled field and explicit Save action\n'
               'Secrets are masked, app-private, and excluded from logs\n'

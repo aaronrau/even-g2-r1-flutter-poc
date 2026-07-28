@@ -4,42 +4,63 @@ import 'package:flutter/material.dart';
 
 import '../audio/shared_audio_export_store.dart';
 import '../ble/ble_models.dart';
+import 'workbench_theme.dart';
 
-enum HomeHistoryTab { events, messages }
+enum HomeHistoryTab { events, messages, conversations }
 
 final class HomeHistoryPanel extends StatefulWidget {
   const HomeHistoryPanel({
     required this.events,
-    required this.messages,
-    required this.transcriptions,
-    required this.supportsSharedFolder,
-    required this.isLoadingMessages,
+    required this.conversations,
+    required this.analysisEnabled,
+    required this.needsEnrollment,
+    required this.analysisState,
+    required this.knownSpeakerCount,
+    required this.pendingConversationCount,
+    required this.isLoadingConversations,
     required this.isStorageBusy,
-    required this.isPlayingTranscript,
+    this.messages = const <SharedWebSocketMessage>[],
+    this.transcriptions = const <SharedTranscript>[],
+    this.supportsSharedFolder = false,
+    this.isLoadingMessages = false,
     this.sharedFolderName,
     this.messageError,
+    this.conversationError,
     this.onClearEvents,
     this.onChooseFolder,
     this.onRefreshMessages,
+    this.onRefreshConversations,
+    this.onResetPrimarySpeaker,
     this.onTabChanged,
     this.onToggleTranscriptAudio,
+    this.isPlayingTranscript,
     super.key,
   });
 
   final List<PooledLog> events;
+  final List<SharedConversationTurn> conversations;
+  final bool analysisEnabled;
+  final bool needsEnrollment;
+  final String analysisState;
+  final int knownSpeakerCount;
+  final int pendingConversationCount;
+  final bool isLoadingConversations;
+  final bool isStorageBusy;
   final List<SharedWebSocketMessage> messages;
   final List<SharedTranscript> transcriptions;
   final bool supportsSharedFolder;
   final bool isLoadingMessages;
-  final bool isStorageBusy;
-  final bool Function(SharedTranscript transcript) isPlayingTranscript;
   final String? sharedFolderName;
   final String? messageError;
+  final String? conversationError;
   final VoidCallback? onClearEvents;
   final VoidCallback? onChooseFolder;
   final VoidCallback? onRefreshMessages;
+  final VoidCallback? onRefreshConversations;
+  final VoidCallback? onResetPrimarySpeaker;
   final ValueChanged<HomeHistoryTab>? onTabChanged;
   final ValueChanged<SharedTranscript>? onToggleTranscriptAudio;
+  final bool Function(SharedTranscript transcript)? isPlayingTranscript;
 
   @override
   State<HomeHistoryPanel> createState() => _HomeHistoryPanelState();
@@ -48,9 +69,11 @@ final class HomeHistoryPanel extends StatefulWidget {
 final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     with SingleTickerProviderStateMixin {
   static const int _messagePageSize = 20;
+  static const int _conversationPageSize = 100;
 
   late final TabController _tabController;
   int _visibleMessageCount = _messagePageSize;
+  int _visibleConversationCount = _conversationPageSize;
   HomeHistoryTab _reportedTab = HomeHistoryTab.events;
 
   HomeHistoryTab get _selectedTab =>
@@ -73,11 +96,14 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         oldWidget.transcriptions.length != widget.transcriptions.length) {
       _visibleMessageCount = _messagePageSize;
     }
+    if (oldWidget.conversations.length != widget.conversations.length) {
+      _visibleConversationCount = _conversationPageSize;
+    }
   }
 
   @override
   void dispose() {
-    if (_reportedTab == HomeHistoryTab.messages) {
+    if (_reportedTab != HomeHistoryTab.events) {
       widget.onTabChanged?.call(HomeHistoryTab.events);
     }
     _tabController
@@ -116,6 +142,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                 tabs: const <Tab>[
                   Tab(height: 48, text: 'Events'),
                   Tab(height: 48, text: 'Messages'),
+                  Tab(height: 48, text: 'Conversation'),
                 ],
               ),
             ),
@@ -130,7 +157,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                   height: 48,
                 ),
               )
-            else
+            else if (_selectedTab == HomeHistoryTab.messages)
               IconButton(
                 tooltip: 'Refresh messages',
                 onPressed:
@@ -144,6 +171,18 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                   width: 48,
                   height: 48,
                 ),
+              )
+            else
+              IconButton(
+                tooltip: 'Refresh conversations',
+                onPressed: widget.isLoadingConversations || widget.isStorageBusy
+                    ? null
+                    : widget.onRefreshConversations,
+                icon: const Icon(Icons.refresh),
+                constraints: const BoxConstraints.tightFor(
+                  width: 48,
+                  height: 48,
+                ),
               ),
           ],
         ),
@@ -151,7 +190,11 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         Expanded(
           child: TabBarView(
             controller: _tabController,
-            children: <Widget>[_buildEvents(context), _buildMessages(context)],
+            children: <Widget>[
+              _buildEvents(context),
+              _buildMessages(context),
+              _buildConversations(context),
+            ],
           ),
         ),
       ],
@@ -287,7 +330,8 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                   return _buildWebSocketMessage(context, message);
                 }
                 final transcript = entry.transcript!;
-                final isPlaying = widget.isPlayingTranscript(transcript);
+                final isPlaying =
+                    widget.isPlayingTranscript?.call(transcript) ?? false;
                 return Padding(
                   key: ValueKey<String>('transcript-${transcript.id}'),
                   padding: const EdgeInsets.symmetric(vertical: 8),
@@ -396,6 +440,227 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     );
   }
 
+  Widget _buildConversations(BuildContext context) {
+    final theme = Theme.of(context);
+    final chronological = widget.conversations.toList(growable: false)
+      ..sort((left, right) {
+        final byTime = left.updatedAt.compareTo(right.updatedAt);
+        return byTime != 0 ? byTime : left.id.compareTo(right.id);
+      });
+    if (widget.isLoadingConversations && chronological.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (widget.needsEnrollment && chronological.isEmpty) {
+      return Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: Text(
+            'Speak one clear sentence. The next detected speech becomes your '
+            'saved “You” voice signature.',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium,
+          ),
+        ),
+      );
+    }
+    final error = widget.conversationError;
+    if (error != null && chronological.isEmpty) {
+      return Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                error,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton(
+                onPressed: widget.isStorageBusy
+                    ? null
+                    : widget.onRefreshConversations,
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (chronological.isEmpty) {
+      return Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                widget.analysisEnabled
+                    ? 'No speaker-labeled conversations yet.'
+                    : 'Enable Conversation analysis in Tools to identify '
+                          'speakers. Messages and ordinary transcripts remain '
+                          'in the separate Messages tab.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium,
+              ),
+              if (widget.analysisEnabled &&
+                  !widget.needsEnrollment &&
+                  widget.onResetPrimarySpeaker != null) ...<Widget>[
+                const SizedBox(height: 12),
+                _buildResetPrimarySpeakerButton(),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
+
+    final visibleCount = min(_visibleConversationCount, chronological.length);
+    final visible = chronological
+        .skip(chronological.length - visibleCount)
+        .toList(growable: false)
+        .reversed
+        .toList(growable: false);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text(
+          widget.analysisEnabled
+              ? '${widget.knownSpeakerCount} saved speakers · '
+                    '${widget.pendingConversationCount} pending · '
+                    '${_stateLabel(widget.analysisState)}'
+              : 'Saved speaker-labeled conversations · analysis disabled',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodySmall,
+        ),
+        const SizedBox(height: 8),
+        if (widget.analysisEnabled) ...<Widget>[
+          if (widget.needsEnrollment)
+            Text(
+              'Speak one clear sentence. The next detected speech becomes '
+              'your new saved “You” voice signature.',
+              style: theme.textTheme.bodyMedium,
+            )
+          else if (widget.onResetPrimarySpeaker != null)
+            Align(
+              alignment: Alignment.centerRight,
+              child: _buildResetPrimarySpeakerButton(),
+            ),
+          const SizedBox(height: 8),
+        ],
+        Expanded(
+          child: NotificationListener<ScrollNotification>(
+            onNotification: (notification) =>
+                _loadMoreConversations(notification, chronological.length),
+            child: ListView.separated(
+              reverse: true,
+              key: const ValueKey<String>('conversation-list'),
+              itemCount: visible.length,
+              padding: const EdgeInsets.only(bottom: 8),
+              separatorBuilder: (_, _) => const SizedBox(height: 8),
+              itemBuilder: (context, index) {
+                return _buildConversationTurn(context, visible[index]);
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildResetPrimarySpeakerButton() {
+    final blocked =
+        widget.isStorageBusy ||
+        widget.isLoadingConversations ||
+        widget.pendingConversationCount > 0;
+    return OutlinedButton.icon(
+      key: const ValueKey<String>('reset-primary-speaker'),
+      onPressed: blocked ? null : widget.onResetPrimarySpeaker,
+      icon: const Icon(Icons.person_remove_outlined),
+      label: const Text('Reset You signature'),
+    );
+  }
+
+  Widget _buildConversationTurn(
+    BuildContext context,
+    SharedConversationTurn turn,
+  ) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final primary = turn.isPrimary && !turn.isOverlap;
+    final alignment = turn.isOverlap
+        ? Alignment.center
+        : primary
+        ? Alignment.centerRight
+        : Alignment.centerLeft;
+    final markerColor = primary
+        ? conversationUserMarkerColor
+        : colors.surfaceContainerHighest;
+    final foreground = colors.onSurface;
+    final label = turn.isOverlap ? 'Overlapping speakers' : turn.speakerLabel;
+    return Semantics(
+      label: '$label said ${turn.text}',
+      child: Align(
+        key: ValueKey<String>('conversation-${turn.id}'),
+        alignment: alignment,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Container(
+                      key: ValueKey<String>(
+                        'conversation-speaker-color-${turn.id}',
+                      ),
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        color: markerColor,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: colors.outlineVariant),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        label,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          color: foreground,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  turn.text,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: foreground,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${_savedLabel(context, turn.updatedAt)} · '
+                  '${_durationLabel(turn.startMs, turn.endMs)}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: foreground.withValues(alpha: 0.72),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   bool _loadMoreMessages(ScrollNotification notification, int historyLength) {
     if (notification is! ScrollEndNotification ||
         notification.metrics.extentAfter > 160 ||
@@ -405,6 +670,24 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     setState(() {
       _visibleMessageCount = min(
         _visibleMessageCount + _messagePageSize,
+        historyLength,
+      );
+    });
+    return false;
+  }
+
+  bool _loadMoreConversations(
+    ScrollNotification notification,
+    int historyLength,
+  ) {
+    if (notification is! ScrollEndNotification ||
+        notification.metrics.extentAfter > 160 ||
+        _visibleConversationCount >= historyLength) {
+      return false;
+    }
+    setState(() {
+      _visibleConversationCount = min(
+        _visibleConversationCount + _conversationPageSize,
         historyLength,
       );
     });
@@ -425,6 +708,15 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     }
     return localizations.formatCompactDate(local);
   }
+
+  String _durationLabel(int startMs, int endMs) {
+    final start = (startMs / 1000).toStringAsFixed(1);
+    final end = (endMs / 1000).toStringAsFixed(1);
+    return '${start}s–${end}s';
+  }
+
+  String _stateLabel(String state) =>
+      state.replaceAll('_', ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
 
   String _singleLine(String value) =>
       value.replaceAll(RegExp(r'\s+'), ' ').trim();

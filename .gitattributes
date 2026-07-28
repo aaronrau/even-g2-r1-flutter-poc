@@ -1,3 +1,4 @@
 *.patch -whitespace
 models/stt/**/*.onnx filter=lfs diff=lfs merge=lfs -text
+models/diarization/**/*.onnx filter=lfs diff=lfs merge=lfs -text
 models/llm/**/*.litertlm.part-* filter=lfs diff=lfs merge=lfs -text

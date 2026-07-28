@@ -224,6 +224,20 @@ class MainActivity : FlutterActivity() {
                         reconcileShared =
                             call.argument<Boolean>("reconcileShared") == true,
                     )
+                "indexConversation" -> {
+                    val turns =
+                        call.argument<List<Map<String, Any?>>>("turns")
+                    if (turns == null) {
+                        result.error(
+                            "missing_conversation",
+                            "Conversation turns are required.",
+                            null,
+                        )
+                        return@setMethodCallHandler
+                    }
+                    indexConversation(turns, result)
+                }
+                "listConversations" -> listConversations(result)
                 "playAudio" -> {
                     val fileName = call.argument<String>("fileName")
                     if (fileName == null) {
@@ -957,6 +971,53 @@ class MainActivity : FlutterActivity() {
                     result.error(
                         "message_list_failed",
                         "Could not read messages from the selected folder.",
+                        null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun indexConversation(
+        turns: List<Map<String, Any?>>,
+        result: MethodChannel.Result,
+    ) {
+        historyExecutor.execute {
+            try {
+                sharedHistoryCache.replaceConversationTurns(turns)
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][Conversation] state=indexed " +
+                        "turns=${turns.size}",
+                )
+                runOnUiThread { result.success(null) }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    result.error(
+                        "conversation_index_failed",
+                        "Could not index the saved conversation.",
+                        null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun listConversations(result: MethodChannel.Result) {
+        historyExecutor.execute {
+            try {
+                val entries = sharedHistoryCache.listConversationTurns()
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][Conversation] state=list_ready " +
+                        "turns=${entries.size}",
+                )
+                runOnUiThread { result.success(entries) }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    result.error(
+                        "conversation_list_failed",
+                        "Could not read saved conversations.",
                         null,
                     )
                 }

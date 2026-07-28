@@ -10,7 +10,7 @@ import java.io.File
  * App-private SQLite index for the Files-visible history.
  *
  * The shared files remain the interoperable source of truth. This index avoids
- * reopening every text document whenever the Messages tab becomes active.
+ * reopening every text document whenever history becomes active.
  */
 internal class SharedHistoryCache(
     context: Context,
@@ -22,11 +22,12 @@ internal class SharedHistoryCache(
     ) {
     companion object {
         private const val DATABASE_NAME = "workbench_shared_history.db"
-        private const val DATABASE_VERSION = 2
+        private const val DATABASE_VERSION = 3
 
         private const val TABLE_META = "cache_meta"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_MESSAGES = "messages"
+        private const val TABLE_CONVERSATIONS = "conversation_turns"
         private const val TABLE_EXPORTS = "exports"
 
         private const val META_TRANSCRIPTS_SNAPSHOT = "transcripts_snapshot"
@@ -74,6 +75,7 @@ internal class SharedHistoryCache(
             )
             """.trimIndent(),
         )
+        createConversationTable(database)
         database.execSQL(
             "CREATE INDEX transcripts_updated_idx " +
                 "ON $TABLE_TRANSCRIPTS(updated_at_millis DESC)",
@@ -89,11 +91,17 @@ internal class SharedHistoryCache(
         oldVersion: Int,
         newVersion: Int,
     ) {
-        database.execSQL("DROP TABLE IF EXISTS $TABLE_META")
-        database.execSQL("DROP TABLE IF EXISTS $TABLE_TRANSCRIPTS")
-        database.execSQL("DROP TABLE IF EXISTS $TABLE_MESSAGES")
-        database.execSQL("DROP TABLE IF EXISTS $TABLE_EXPORTS")
-        onCreate(database)
+        if (oldVersion < 2) {
+            database.execSQL("DROP TABLE IF EXISTS $TABLE_META")
+            database.execSQL("DROP TABLE IF EXISTS $TABLE_TRANSCRIPTS")
+            database.execSQL("DROP TABLE IF EXISTS $TABLE_MESSAGES")
+            database.execSQL("DROP TABLE IF EXISTS $TABLE_EXPORTS")
+            onCreate(database)
+            return
+        }
+        if (oldVersion < 3) {
+            createConversationTable(database)
+        }
     }
 
     fun reset() {
@@ -101,6 +109,7 @@ internal class SharedHistoryCache(
             delete(TABLE_META, null, null)
             delete(TABLE_TRANSCRIPTS, null, null)
             delete(TABLE_MESSAGES, null, null)
+            delete(TABLE_CONVERSATIONS, null, null)
             delete(TABLE_EXPORTS, null, null)
         }
     }
@@ -254,6 +263,124 @@ internal class SharedHistoryCache(
         return entries
     }
 
+    fun replaceConversationTurns(entries: List<Map<String, Any?>>) {
+        val conversationIds =
+            entries
+                .mapNotNull { (it["conversationId"] as? String)?.trim() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+        if (conversationIds.isEmpty()) {
+            return
+        }
+        writableDatabase.runInTransaction {
+            for (conversationId in conversationIds) {
+                delete(
+                    TABLE_CONVERSATIONS,
+                    "conversation_id = ?",
+                    arrayOf(conversationId),
+                )
+            }
+            for (entry in entries) {
+                val id = (entry["id"] as? String)?.trim().orEmpty()
+                val conversationId =
+                    (entry["conversationId"] as? String)?.trim().orEmpty()
+                val speakerId =
+                    (entry["speakerId"] as? String)?.trim().orEmpty()
+                val speakerLabel =
+                    (entry["speakerLabel"] as? String)?.trim().orEmpty()
+                val text = (entry["text"] as? String)?.trim().orEmpty()
+                val startMs = (entry["startMs"] as? Number)?.toLong()
+                val endMs = (entry["endMs"] as? Number)?.toLong()
+                val confidence =
+                    (entry["confidence"] as? Number)?.toDouble()
+                val updatedAtMillis =
+                    (entry["updatedAtMillis"] as? Number)?.toLong()
+                if (id.isEmpty() ||
+                    conversationId.isEmpty() ||
+                    speakerId.isEmpty() ||
+                    speakerLabel.isEmpty() ||
+                    text.isEmpty() ||
+                    startMs == null ||
+                    endMs == null ||
+                    endMs <= startMs ||
+                    confidence == null ||
+                    !confidence.isFinite() ||
+                    updatedAtMillis == null
+                ) {
+                    continue
+                }
+                insertWithOnConflict(
+                    TABLE_CONVERSATIONS,
+                    null,
+                    ContentValues().apply {
+                        put("turn_id", id)
+                        put("conversation_id", conversationId)
+                        put("speaker_id", speakerId)
+                        put("speaker_label", speakerLabel)
+                        put("turn_text", text.take(MAX_TEXT_CHARACTERS))
+                        put("start_ms", startMs)
+                        put("end_ms", endMs)
+                        put("confidence", confidence.coerceIn(0.0, 1.0))
+                        put(
+                            "is_primary",
+                            if (entry["isPrimary"] == true) 1 else 0,
+                        )
+                        put(
+                            "is_overlap",
+                            if (entry["isOverlap"] == true) 1 else 0,
+                        )
+                        put("updated_at_millis", updatedAtMillis)
+                    },
+                    SQLiteDatabase.CONFLICT_REPLACE,
+                )
+            }
+        }
+    }
+
+    fun listConversationTurns(): List<Map<String, Any?>> {
+        val entries = mutableListOf<Map<String, Any?>>()
+        readableDatabase.query(
+            TABLE_CONVERSATIONS,
+            arrayOf(
+                "turn_id",
+                "conversation_id",
+                "speaker_id",
+                "speaker_label",
+                "turn_text",
+                "start_ms",
+                "end_ms",
+                "confidence",
+                "is_primary",
+                "is_overlap",
+                "updated_at_millis",
+            ),
+            null,
+            null,
+            null,
+            null,
+            "updated_at_millis ASC, conversation_id ASC, start_ms ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                entries.add(
+                    mapOf(
+                        "id" to cursor.getString(0),
+                        "conversationId" to cursor.getString(1),
+                        "speakerId" to cursor.getString(2),
+                        "speakerLabel" to cursor.getString(3),
+                        "text" to cursor.getString(4),
+                        "startMs" to cursor.getLong(5),
+                        "endMs" to cursor.getLong(6),
+                        "confidence" to cursor.getDouble(7),
+                        "isPrimary" to (cursor.getInt(8) == 1),
+                        "isOverlap" to (cursor.getInt(9) == 1),
+                        "updatedAtMillis" to cursor.getLong(10),
+                    ),
+                )
+            }
+        }
+        return entries
+    }
+
     fun indexExportedFile(source: File) {
         val classified = classify(source.name) ?: return
         val modifiedAt =
@@ -390,6 +517,31 @@ internal class SharedHistoryCache(
         ).use { cursor ->
             return cursor.moveToFirst() && cursor.getInt(0) == 1
         }
+    }
+
+    private fun createConversationTable(database: SQLiteDatabase) {
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS $TABLE_CONVERSATIONS (
+                turn_id TEXT PRIMARY KEY NOT NULL,
+                conversation_id TEXT NOT NULL,
+                speaker_id TEXT NOT NULL,
+                speaker_label TEXT NOT NULL,
+                turn_text TEXT NOT NULL,
+                start_ms INTEGER NOT NULL,
+                end_ms INTEGER NOT NULL,
+                confidence REAL NOT NULL,
+                is_primary INTEGER NOT NULL,
+                is_overlap INTEGER NOT NULL,
+                updated_at_millis INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        database.execSQL(
+            "CREATE INDEX IF NOT EXISTS conversation_updated_idx " +
+                "ON $TABLE_CONVERSATIONS(updated_at_millis ASC, " +
+                "conversation_id ASC, start_ms ASC)",
+        )
     }
 
     private fun markSnapshot(

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 const Color connectedStatusColor = Color(0xff4caf50);
 const Color inactiveStatusColor = Color(0xff757575);
+const Color conversationUserMarkerColor = Color(0xff616161);
 
 final ColorScheme workBenchColorScheme = ColorScheme.fromSeed(
   seedColor: const Color(0xff808080),
