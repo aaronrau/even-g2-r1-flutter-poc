@@ -534,7 +534,7 @@ final class TranscriptCorrectionSupervisor {
     }
     final acousticAliases = <String, List<String>>{};
     const knownAliases = <String, List<String>>{
-      'flux': <String>['plus', 'plux', 'flex', 'flax'],
+      'flux': <String>['plus', 'plux', 'flex', 'flax', 'fox'],
       'brock': <String>['broke', 'block', 'broc'],
       'pike': <String>['bike', 'pipe', 'pyke'],
       'wolf': <String>['woolf', 'woof', 'wolfe'],

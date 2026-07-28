@@ -181,7 +181,7 @@ void main() {
       expect(client.instructions.single, contains('["Flux","Brock"]'));
       expect(
         client.instructions.single,
-        contains('"Flux":["plus","plux","flex","flax"]'),
+        contains('"Flux":["plus","plux","flex","flax","fox"]'),
       );
       expect(
         client.instructions.single,

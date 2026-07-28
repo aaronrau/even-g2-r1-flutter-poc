@@ -37,7 +37,7 @@ class MainActivity : FlutterActivity() {
         private const val STORAGE_DOCUMENT_INDEX = "shared_audio_document_index"
         internal const val CORRECTION_PROMPT_FILE_NAME =
             "workbench-correction-prompt.txt"
-        private const val MAX_CORRECTION_PROMPT_CHARACTERS = 2000
+        private const val MAX_CORRECTION_PROMPT_CHARACTERS = 10_000
         private const val CHOOSE_DIRECTORY_REQUEST = 4201
     }
 
@@ -616,7 +616,7 @@ class MainActivity : FlutterActivity() {
         if (validated == null) {
             result.error(
                 "invalid_instructions",
-                "Correction instructions must contain 1 to 2000 valid characters.",
+                "Correction instructions must contain 1 to 10000 valid characters.",
                 null,
             )
             return

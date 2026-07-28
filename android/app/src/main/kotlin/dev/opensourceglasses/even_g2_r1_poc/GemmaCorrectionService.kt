@@ -351,7 +351,9 @@ class GemmaCorrectionService : Service() {
 
     companion object {
         private const val MAX_NUM_TOKENS = 2048
-        private const val MAX_INSTRUCTION_CHARACTERS = 2_000
+        // The editable base prompt is capped at 10,000 characters. Flutter
+        // appends bounded agent names and acoustic aliases per live segment.
+        private const val MAX_INSTRUCTION_CHARACTERS = 16_000
         private const val MAX_TRANSCRIPT_CHARACTERS = 6_000
         private const val RUNNING_LOW_MEMORY_LEVEL = 10
         private const val DEFAULT_TIMEOUT_MS = 30_000L

@@ -18,27 +18,89 @@ void main() {
     temp.deleteSync(recursive: true);
   });
 
-  test('default instructions preserve constrained local command recovery', () {
+  test('default instructions include the full guarded correction policy', () {
     expect(
       defaultTranscriptCorrectionInstructions,
-      contains('Use only the known command names and acoustic aliases'),
+      contains('Always rewrite every occurrence of "length view"'),
     );
     expect(
       defaultTranscriptCorrectionInstructions,
-      contains(
-        '"Plus, all the latest changes." becomes '
-        '"Flux, pull the latest changes."',
-      ),
+      contains('rewrite "flex" or "fox" as "Flux"'),
     );
     expect(
       defaultTranscriptCorrectionInstructions,
-      contains('never invent a name'),
+      contains('Do not rewrite an ordinary reference to a fox.'),
     );
+    expect(
+      defaultTranscriptCorrectionInstructions,
+      contains('"code x", "condex", "codec", and "kodex" as "Codex"'),
+    );
+    expect(
+      defaultTranscriptCorrectionInstructions,
+      contains('"N to N" directly modifies conversation flow'),
+    );
+    expect(
+      defaultTranscriptCorrectionInstructions,
+      contains('"Claire session", "Clare session"'),
+    );
+    expect(
+      defaultTranscriptCorrectionInstructions,
+      contains('Never summarize, shorten, or omit an informational clause.'),
+    );
+    expect(defaultTranscriptCorrectionInstructions.length, greaterThan(2000));
     expect(
       defaultTranscriptCorrectionInstructions.length,
       lessThanOrEqualTo(
         TranscriptCorrectionConfig.maximumInstructionCharacters,
       ),
+    );
+  });
+
+  test('migrates untouched legacy private and shared defaults', () async {
+    const legacyInstructions =
+        'You correct short automatic speech recognition transcripts from smart '
+        'glasses and return only corrected text. Preserve the speaker\'s meaning '
+        'and requested action. Correct obvious phonetic errors, command names, '
+        'verbs, capitalization, punctuation, and light grammar. A leading local '
+        'command name or attention word may be dropped or misheard. Use only the '
+        'known command names and acoustic aliases supplied after these instructions; '
+        'never invent a name. Restore a name only when the remaining words form a '
+        'plausible imperative. With Flux supplied as a known name, for example, '
+        '"Plus, all the latest changes." becomes "Flux, pull the latest changes." '
+        'Ordinary prose such as "Plus, this is already complete." stays ordinary '
+        'prose. Preserve numbers, paths, flags, identifiers, and uncertainty. Do '
+        'not summarize, remove requested actions, add facts, answer the transcript, '
+        'or use markdown.';
+    final workbench = Directory('${temp.path}/workbench');
+    await workbench.create(recursive: true);
+    final file = File('${workbench.path}/config.json');
+    await file.writeAsString(
+      jsonEncode(
+        TranscriptCorrectionConfig.defaults
+            .copyWith(instructions: legacyInstructions)
+            .toJson(),
+      ),
+      flush: true,
+    );
+    var sharedPrompt = legacyInstructions;
+    final store = TranscriptCorrectionConfigStore(
+      supportDirectory: () async => temp,
+      sharedInstructionsAvailable: () => true,
+      sharedInstructionsReader: () async => sharedPrompt,
+      sharedInstructionsWriter: (value) async => sharedPrompt = value,
+    );
+    addTearDown(store.dispose);
+
+    await store.initialize();
+
+    expect(store.config.instructions, defaultTranscriptCorrectionInstructions);
+    expect(sharedPrompt, defaultTranscriptCorrectionInstructions);
+    final privateConfig =
+        jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+    expect(
+      (privateConfig['transcriptCorrection']
+          as Map<String, dynamic>)['instructions'],
+      defaultTranscriptCorrectionInstructions,
     );
   });
 
@@ -217,7 +279,7 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(sharedPrompt, 'Original shared instruction.');
-    pendingRead.complete(sharedPrompt);
+      pendingRead.complete(sharedPrompt);
       await reload;
       await save;
 

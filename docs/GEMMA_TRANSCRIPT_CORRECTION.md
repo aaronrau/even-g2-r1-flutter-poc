@@ -52,6 +52,12 @@ editable instruction text to `workbench-correction-prompt.txt` in that folder
 and mirrors it into the private configuration. Model, backend, timeout, and
 schema constraints remain app-private.
 
+The app-owned initial prompt includes the guarded engineering vocabulary and
+routing corrections, including `flex` or `fox` to `Flux` only in routing
+position before an engineering command. An untouched prompt from the previous
+release migrates to this default in both storage locations. A user-edited
+prompt is never replaced by that migration.
+
 At startup and before each queued segment begins, the supervisor rereads the
 private fallback and then the shared prompt when available. A valid save or
 external shared-file edit therefore affects the next segment without
@@ -65,7 +71,7 @@ Validation requires:
 - model `gemma-4-e4b-it`;
 - backend `gpu`;
 - timeout from 5,000 to 120,000 milliseconds;
-- non-empty instructions no longer than 2,000 characters;
+- non-empty instructions no longer than 10,000 characters;
 - no unsupported control characters.
 
 The shared prompt may contain user vocabulary and is not source material. Do
