@@ -164,9 +164,13 @@ never block capture, VAD, STT, or access to the original transcript.
 
 - Keep `<segment>.raw.txt` and `<segment>.corrected.txt` separate. Show the
   original first in the Transcriptions tab.
-- Treat runtime `config.json` as private, ignored configuration. Commit only a
-  generic `config.example.json`. Validate every edit before it can become the
-  next job's instruction.
+- Treat the complete runtime `config.json` as private, ignored configuration
+  and commit only a generic `config.example.json`. When a shared folder is
+  selected, keep the editable instructions in
+  `workbench-correction-prompt.txt`, validate that file before every use, and
+  mirror only validated instructions into the private last-known-good config.
+  Never let an invalid, partial, missing, or unreadable shared edit replace the
+  last validated prompt.
 - Keep the pinned Gemma weights under `models/llm/` as Git LFS chunks. Install
   with `tool/install_android_workbench.sh`, which must require an explicit
   device serial and copy models only through the app identity. Never require
@@ -181,3 +185,41 @@ never block capture, VAD, STT, or access to the original transcript.
   both app processes once per minute. Require bounded post-warm-up memory, no
   lost raw files, no capture gaps, an eventually empty correction queue, and
   recovery after killing only the Gemma process.
+
+## Voice WebSocket bridge
+
+Treat the local agent bridge as an optional downstream consumer of the durable
+final transcript. A missing agent match, unavailable server, failed upgrade,
+negative acknowledgement, timeout, or reconnect must never block capture, VAD,
+STT, correction, file export, or access to the original transcript.
+
+- Keep runtime `voice_websocket.json` app-private and ignored. Commit only the
+  generic `voice_websocket.example.json`.
+- Never log the configured IP address, secret, upgrade headers, request body,
+  transcript text, inbound message text, server session ID, or request ID.
+  Logs may contain only connection state, selected authentication mode, agent
+  count, payload character count, and whether a route was sent or saved.
+- Send the selected secret only during the WebSocket HTTP upgrade using the
+  configured `Authorization: Bearer` or `X-Voice-Api-Token` header. Never send
+  a client hello or connection message before `connection.ready`.
+- Match configured agent names as complete phrases. Preserve the complete
+  finalized transcript in durable storage regardless of routing outcome.
+- When Gemma correction is enabled, route only the corrected live transcript
+  and supply the validated saved agent names as correction vocabulary. Keep the
+  raw transcript independently durable and visible before correction.
+- Never route a transcription or correction job restored after app or process
+  restart. A restored job may finish its local files, but only a transcript
+  captured and corrected live in the current process may send a command.
+- Require the matching `message.accepted` response before changing the G2
+  transcript prefix from `Saved:` to `Sent:`. Legacy messages have no
+  acknowledgement contract and may report sent only after a successful socket
+  write.
+- Track event IDs in memory and send `connection.resume` only after a
+  previously ready connection reconnects to the same saved configuration.
+- Keep reconnect timers, ready timers, acknowledgement timers, subscriptions,
+  and pending completers bounded and cancel them during configuration changes
+  and disposal.
+- Plain `ws://` sends the secret and transcript without transport encryption.
+  Document that it is restricted to a trusted local connection. On Android,
+  `127.0.0.1` addresses the phone itself; use an explicit development bridge
+  such as `adb reverse` or a trusted LAN address for a computer-hosted server.

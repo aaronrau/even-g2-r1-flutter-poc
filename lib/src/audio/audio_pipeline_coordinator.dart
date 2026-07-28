@@ -21,6 +21,9 @@ import 'vad_worker.dart';
 
 typedef AudioPipelineLog =
     void Function(String source, String message, {bool isError});
+typedef TranscriptHandler =
+    Future<void> Function(String segmentId, String transcript);
+typedef CorrectionTermsProvider = Iterable<String> Function();
 
 final class AudioPipelineCoordinator {
   AudioPipelineCoordinator({
@@ -28,6 +31,9 @@ final class AudioPipelineCoordinator {
     required this.onChanged,
     required this.onCaptureUnsafe,
     required SharedAudioExportStore sharedAudioExportStore,
+    this.onQueuedTranscript,
+    this.onFinalTranscript,
+    this.correctionTermsProvider,
     ModelAssetStore? modelStore,
     GemmaModelStore? gemmaModelStore,
     TranscriptCorrectionConfigStore? correctionConfigStore,
@@ -35,7 +41,15 @@ final class AudioPipelineCoordinator {
   }) : _modelStore = modelStore ?? ModelAssetStore(),
        _gemmaModelStore = gemmaModelStore ?? GemmaModelStore(),
        _correctionConfigStore =
-           correctionConfigStore ?? TranscriptCorrectionConfigStore(),
+           correctionConfigStore ??
+           TranscriptCorrectionConfigStore(
+             sharedInstructionsAvailable: () =>
+                 sharedAudioExportStore.hasSharedFolder,
+             sharedInstructionsReader:
+                 sharedAudioExportStore.readCorrectionInstructions,
+             sharedInstructionsWriter:
+                 sharedAudioExportStore.writeCorrectionInstructions,
+           ),
        _decoder = decoder ?? Lc3Decoder(),
        _sharedAudioExportStore = sharedAudioExportStore {
     _correctionConfigStore.addListener(onChanged);
@@ -46,6 +60,9 @@ final class AudioPipelineCoordinator {
   final AudioPipelineLog log;
   final void Function() onChanged;
   final void Function() onCaptureUnsafe;
+  final TranscriptHandler? onQueuedTranscript;
+  final TranscriptHandler? onFinalTranscript;
+  final CorrectionTermsProvider? correctionTermsProvider;
   final ModelAssetStore _modelStore;
   final GemmaModelStore _gemmaModelStore;
   final TranscriptCorrectionConfigStore _correctionConfigStore;
@@ -193,6 +210,7 @@ final class AudioPipelineCoordinator {
         configStore: _correctionConfigStore,
         modelStore: _gemmaModelStore,
         onCorrected: _onCorrectedTranscript,
+        onUncorrected: _onUncorrectedTranscript,
         onStatus: _correctionStatus,
       );
       try {
@@ -354,8 +372,34 @@ final class AudioPipelineCoordinator {
             'latest=${_transcriptTurn.currentSegmentId ?? 'none'}',
       );
     }
+    if (!result.routeEligible) {
+      log(
+        'Pipeline',
+        '[WorkBench][VoiceRoute] state=suppressed segment=$id '
+            'reason=recovered_transcription',
+      );
+      startup = StartupSnapshot(
+        phase: StartupPhase.ready,
+        message: 'Local audio ready · $activeModelName · $activeProvider',
+        provider: activeProvider,
+      );
+      onChanged();
+      return;
+    }
+    final queuedTranscriptHandler = onQueuedTranscript;
+    if (queuedTranscriptHandler != null) {
+      unawaited(_publishTranscript(queuedTranscriptHandler, id, result.text));
+    }
     final correction = _correction;
     if (correction != null) {
+      final correctionTerms =
+          correctionTermsProvider?.call().toList(growable: false) ??
+          const <String>[];
+      log(
+        'Pipeline',
+        '[WorkBench][VoiceRoute] state=awaiting_correction segment=$id '
+            'terms=${correctionTerms.length}',
+      );
       unawaited(
         correction.queue(
           TranscriptCorrectionJob(
@@ -367,9 +411,21 @@ final class AudioPipelineCoordinator {
             sttDecodeMs: result.decodeMs,
             sttTotalMs: result.totalMs,
             queuedAt: result.queuedAt,
+            correctionTerms: correctionTerms,
+            routeWhenCorrected: true,
           ),
         ),
       );
+    } else {
+      final finalTranscriptHandler = onFinalTranscript;
+      if (finalTranscriptHandler != null) {
+        log(
+          'Pipeline',
+          '[WorkBench][VoiceRoute] state=raw_fallback segment=$id '
+              'reason=correction_unavailable',
+        );
+        unawaited(_publishTranscript(finalTranscriptHandler, id, result.text));
+      }
     }
     startup = StartupSnapshot(
       phase: StartupPhase.ready,
@@ -377,6 +433,23 @@ final class AudioPipelineCoordinator {
       provider: activeProvider,
     );
     onChanged();
+  }
+
+  Future<void> _publishTranscript(
+    TranscriptHandler handler,
+    String segmentId,
+    String transcript,
+  ) async {
+    try {
+      await handler(segmentId, transcript);
+    } on Object catch (error) {
+      log(
+        'Pipeline',
+        '[WorkBench][TranscriptDisplay] state=failed '
+            'error=${_oneLine(error)}',
+        isError: true,
+      );
+    }
   }
 
   void _onCorrectedTranscript(CorrectedTranscriptResult result) {
@@ -391,7 +464,57 @@ final class AudioPipelineCoordinator {
         segmentId: result.segmentId,
       ),
     );
+    if (result.routeWhenCorrected) {
+      final finalTranscriptHandler = onFinalTranscript;
+      if (finalTranscriptHandler != null) {
+        log(
+          'Pipeline',
+          '[WorkBench][VoiceRoute] state=corrected_ready '
+              'segment=${result.segmentId} provider=${result.provider}',
+        );
+        unawaited(
+          _publishTranscript(
+            finalTranscriptHandler,
+            result.segmentId,
+            result.correctedText,
+          ),
+        );
+      }
+    } else {
+      log(
+        'Pipeline',
+        '[WorkBench][VoiceRoute] state=suppressed '
+            'segment=${result.segmentId} reason=recovered_job',
+      );
+    }
     onChanged();
+  }
+
+  void _onUncorrectedTranscript(
+    TranscriptCorrectionJob job,
+    String transcript,
+    String reason,
+  ) {
+    if (!job.routeWhenCorrected) {
+      log(
+        'Pipeline',
+        '[WorkBench][VoiceRoute] state=suppressed '
+            'segment=${job.segmentId} reason=recovered_job',
+      );
+      return;
+    }
+    final finalTranscriptHandler = onFinalTranscript;
+    if (finalTranscriptHandler == null) {
+      return;
+    }
+    log(
+      'Pipeline',
+      '[WorkBench][VoiceRoute] state=raw_fallback '
+          'segment=${job.segmentId} reason=$reason',
+    );
+    unawaited(
+      _publishTranscript(finalTranscriptHandler, job.segmentId, transcript),
+    );
   }
 
   Future<void> syncSharedAudioExport() async {
@@ -579,6 +702,18 @@ final class AudioPipelineCoordinator {
 
   Future<void> setCorrectionEnabled(bool enabled) =>
       _correctionConfigStore.setEnabled(enabled);
+
+  Future<void> syncSharedCorrectionInstructions() async {
+    await _correctionConfigStore.reloadForNextTranscript();
+    final rejected = _correctionConfigStore.validationError != null;
+    log(
+      'Pipeline',
+      '[WorkBench][CorrectionConfig] '
+          'state=${rejected ? 'shared_rejected' : 'shared_synced'} '
+          '${rejected ? 'fallback=last_validated' : 'applies=next_transcript'}',
+      isError: rejected,
+    );
+  }
 
   Future<void> handleMemoryPressure() async {
     await _correction?.releaseIdleEngine();

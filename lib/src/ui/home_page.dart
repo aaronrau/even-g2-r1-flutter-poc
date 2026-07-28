@@ -7,6 +7,7 @@ import '../util/hex.dart';
 import '../wearable_controller.dart';
 import 'home_history_panel.dart';
 import 'transcript_correction_settings.dart';
+import 'voice_websocket_settings.dart';
 import 'workbench_theme.dart';
 
 final class HomePage extends StatefulWidget {
@@ -400,6 +401,8 @@ final class _HomePageState extends State<HomePage> {
       children: <Widget>[
         _buildTranscriptionSettingsCard(),
         const SizedBox(height: 12),
+        _buildVoiceWebSocketCard(),
+        const SizedBox(height: 12),
         _buildDisplayToolsCard(),
         const SizedBox(height: 12),
         _buildRawG2Card(),
@@ -409,6 +412,33 @@ final class _HomePageState extends State<HomePage> {
         _buildStyleGuideSection(),
         const SizedBox(height: 24),
       ],
+    );
+  }
+
+  Widget _buildVoiceWebSocketCard() {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text('Agent connection', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 16),
+            VoiceWebSocketSettings(
+              config: controller.voiceWebSocketConfig,
+              status: controller.voiceWebSocketStatus,
+              statusText: controller.voiceWebSocketStatusText,
+              validationError: controller.voiceWebSocketValidationError,
+              busy: _busy,
+              onSave: (config) =>
+                  _run(() => controller.saveVoiceWebSocketConfig(config)),
+              onConnect: () => _run(controller.connectVoiceWebSocket),
+              onDisconnect: () => _run(controller.disconnectVoiceWebSocket),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -500,8 +530,9 @@ final class _HomePageState extends State<HomePage> {
             const SizedBox(height: 4),
             Text(
               'Choose a device folder for Files-visible WAV audio and text '
-              'transcripts. Home can read and play those shared files; private '
-              'durable capture remains available if export is interrupted.',
+              'transcripts plus the correction prompt. Home can read and play '
+              'the shared files; private durable capture and a last-known-good '
+              'prompt remain available if shared access is interrupted.',
               style: theme.textTheme.bodyMedium,
             ),
             const SizedBox(height: 8),
@@ -807,6 +838,19 @@ final class _HomePageState extends State<HomePage> {
               ),
             ),
             const SizedBox(height: 16),
+            Text('Sensitive setting', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 8),
+            const IgnorePointer(
+              child: TextField(
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: 'Secret',
+                  helperText: 'Store privately and never include in logs.',
+                  suffixIcon: Icon(Icons.visibility_outlined),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
             Semantics(
               label:
                   'Button examples: filled primary, outlined secondary, '
@@ -841,6 +885,7 @@ final class _HomePageState extends State<HomePage> {
               'Text tabs with an underline switch between peer views\n'
               'Labeled dropdowns select one persisted setting\n'
               'Multiline settings use a labeled field and explicit Save action\n'
+              'Secrets are masked, app-private, and excluded from logs\n'
               'Connected devices replace “Connected” with a battery icon '
               'and percentage',
               style: theme.textTheme.bodySmall,

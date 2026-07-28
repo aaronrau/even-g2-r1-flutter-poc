@@ -15,9 +15,12 @@ import 'background/app_runtime_coordinator.dart';
 import 'background/background_service.dart';
 import 'ble/ble_models.dart';
 import 'ble/g2_connection.dart';
+import 'ble/glasses_status_queue.dart';
 import 'ble/r1_connection.dart';
 import 'util/hex.dart';
 import 'startup/startup_state.dart';
+import 'websocket/voice_websocket_client.dart';
+import 'websocket/voice_websocket_config.dart';
 
 final class WearableController extends ChangeNotifier
     with WidgetsBindingObserver {
@@ -26,16 +29,25 @@ final class WearableController extends ChangeNotifier
     SpeechModelPreferences speechModelPreferences =
         const SpeechModelPreferences(),
     SharedAudioExportStore? sharedAudioExportStore,
+    VoiceWebSocketConfigStore? voiceWebSocketConfigStore,
   }) : _ble = ble ?? FlutterReactiveBle(),
        _speechModelPreferences = speechModelPreferences,
        _sharedAudioExportStore =
            sharedAudioExportStore ?? SharedAudioExportStore() {
     _sharedAudioExportStore.addListener(_sharedStorageChanged);
     _runtime = AppRuntimeCoordinator(log: addLog);
+    _voiceWebSocket = VoiceWebSocketClient(
+      configStore: voiceWebSocketConfigStore,
+      onInboundMessage: _handleInboundWebSocketMessage,
+    );
+    _voiceWebSocket.addListener(_voiceWebSocketChanged);
     _audioPipeline = AudioPipelineCoordinator(
       log: addLog,
       onChanged: _safeNotify,
       onCaptureUnsafe: _handleUnsafeCapture,
+      onQueuedTranscript: _handleQueuedTranscript,
+      onFinalTranscript: _handleFinalTranscript,
+      correctionTermsProvider: () => _voiceWebSocket.config.agentNames,
       sharedAudioExportStore: _sharedAudioExportStore,
     );
     g2 = G2Connection(
@@ -46,6 +58,13 @@ final class WearableController extends ChangeNotifier
       onLc3Audio: _audioPipeline.acceptLc3,
       onUnexpectedDisconnect: _unexpectedG2Disconnect,
     );
+    _glassesStatusQueue = GlassesStatusQueue(
+      isConnected: () => g2.isConnected,
+      showText: g2.sendText,
+      clearText: g2.clearText,
+      log: (message, {bool isError = false}) =>
+          addLog('Glasses status', message, isError: isError),
+    );
     r1 = R1Connection(ble: _ble, log: addLog, onChanged: _connectionChanged);
   }
 
@@ -53,8 +72,10 @@ final class WearableController extends ChangeNotifier
   final SpeechModelPreferences _speechModelPreferences;
   final SharedAudioExportStore _sharedAudioExportStore;
   late final AppRuntimeCoordinator _runtime;
+  late final VoiceWebSocketClient _voiceWebSocket;
   late final AudioPipelineCoordinator _audioPipeline;
   late final G2Connection g2;
+  late final GlassesStatusQueue _glassesStatusQueue;
   late final R1Connection r1;
   StreamSubscription<BleStatus>? _statusSubscription;
   StreamSubscription<DiscoveredDevice>? _scanSubscription;
@@ -115,6 +136,10 @@ final class WearableController extends ChangeNotifier
   String get selectedSpeechModelId => _selectedSpeechModel.id;
   String get selectedSpeechModelName => _selectedSpeechModel.displayName;
   bool get isSwitchingSpeechModel => _audioPipeline.isSwitchingModel;
+  VoiceWebSocketConfig get voiceWebSocketConfig => _voiceWebSocket.config;
+  VoiceWebSocketStatus get voiceWebSocketStatus => _voiceWebSocket.status;
+  String get voiceWebSocketStatusText => _voiceWebSocket.statusText;
+  String? get voiceWebSocketValidationError => _voiceWebSocket.validationError;
 
   List<G2PairCandidate> get g2Candidates {
     final values = _g2ByKey.values.toList(growable: false);
@@ -138,6 +163,16 @@ final class WearableController extends ChangeNotifier
   Future<void> initialize() async {
     WidgetsBinding.instance.addObserver(this);
     await _runtime.initialize();
+    try {
+      await _voiceWebSocket.initialize();
+    } on Object {
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=unavailable '
+            'action=check_app_storage',
+        isError: true,
+      );
+    }
     try {
       await _sharedAudioExportStore.initialize();
     } catch (error) {
@@ -376,6 +411,22 @@ final class WearableController extends ChangeNotifier
     _safeNotify();
   }
 
+  Future<void> saveVoiceWebSocketConfig(VoiceWebSocketConfig config) async {
+    await _voiceWebSocket.saveConfig(config);
+    addLog(
+      'WebSocket',
+      '[WorkBench][VoiceWebSocket] state=saved '
+          'auth=${config.authHeader.serializedName} '
+          'agents=${config.agentNames.length} '
+          'legacy=${config.useLegacyMessageShape}',
+    );
+    _safeNotify();
+  }
+
+  Future<void> connectVoiceWebSocket() => _voiceWebSocket.connect();
+
+  Future<void> disconnectVoiceWebSocket() => _voiceWebSocket.disconnect();
+
   Future<void> chooseSharedAudioFolder() async {
     final selected = await _sharedAudioExportStore.chooseFolder();
     if (selected == null) {
@@ -386,6 +437,7 @@ final class WearableController extends ChangeNotifier
       '[WorkBench][SharedStorage] state=selected access=persisted',
     );
     _safeNotify();
+    await _audioPipeline.syncSharedCorrectionInstructions();
     await _audioPipeline.syncSharedAudioExport();
   }
 
@@ -570,6 +622,7 @@ final class WearableController extends ChangeNotifier
       _audioPipeline.handleWearableReconnect();
     }
     _safeNotify();
+    _glassesStatusQueue.connectionChanged();
     final active = _hasWearableSession;
     if (_runtimeSessionActive != active) {
       _runtimeSessionActive = active;
@@ -579,6 +632,62 @@ final class WearableController extends ChangeNotifier
 
   void _sharedStorageChanged() {
     _safeNotify();
+  }
+
+  void _voiceWebSocketChanged() {
+    _safeNotify();
+  }
+
+  Future<void> _handleFinalTranscript(
+    String segmentId,
+    String transcript,
+  ) async {
+    final route = _voiceWebSocket.routeForTranscript(transcript);
+    if (route == null) {
+      await _glassesStatusQueue.completeTranscript(
+        segmentId: segmentId,
+        transcript: transcript,
+        outcome: GlassesTranscriptOutcome.saved,
+      );
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=saved routed=false',
+      );
+      return;
+    }
+    final sent = await _voiceWebSocket.sendAgentMessage(
+      agent: route.agent,
+      message: route.message,
+    );
+    await _glassesStatusQueue.completeTranscript(
+      segmentId: segmentId,
+      transcript: transcript,
+      outcome: sent
+          ? GlassesTranscriptOutcome.sent
+          : GlassesTranscriptOutcome.saved,
+    );
+    addLog(
+      'WebSocket',
+      '[WorkBench][VoiceWebSocket] '
+          'state=${sent ? 'sent' : 'saved'} routed=true',
+    );
+  }
+
+  Future<void> _handleQueuedTranscript(String segmentId, String transcript) =>
+      _glassesStatusQueue.queueTranscript(
+        segmentId: segmentId,
+        transcript: transcript,
+      );
+
+  void _handleInboundWebSocketMessage(String message) {
+    unawaited(
+      _glassesStatusQueue.queueTransient(prefix: 'Received', message: message),
+    );
+    addLog(
+      'WebSocket',
+      '[WorkBench][VoiceWebSocket] state=received '
+          'characters=${message.length}',
+    );
   }
 
   void _unexpectedG2Disconnect(String side) {
@@ -692,6 +801,8 @@ final class WearableController extends ChangeNotifier
     _disposed = true;
     WidgetsBinding.instance.removeObserver(this);
     _sharedAudioExportStore.removeListener(_sharedStorageChanged);
+    _voiceWebSocket.removeListener(_voiceWebSocketChanged);
+    _glassesStatusQueue.dispose();
     _sharedAudioExportStore.dispose();
     _scanTimer?.cancel();
     _notifyTimer?.cancel();
@@ -702,6 +813,7 @@ final class WearableController extends ChangeNotifier
     unawaited(g2.dispose());
     unawaited(r1.dispose());
     unawaited(_audioPipeline.dispose());
+    unawaited(_voiceWebSocket.close());
     unawaited(_runtime.dispose());
     super.dispose();
   }

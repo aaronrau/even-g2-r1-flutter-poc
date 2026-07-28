@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "voiceWebSocket": {
+    "host": "127.0.0.1",
+    "port": 8787,
+    "path": "/ws",
+    "secret": "<local-secret>",
+    "authHeader": "authorizationBearer",
+    "agentNames": [
+      "Agent One",
+      "Agent Two"
+    ],
+    "useLegacyMessageShape": false
+  }
+}

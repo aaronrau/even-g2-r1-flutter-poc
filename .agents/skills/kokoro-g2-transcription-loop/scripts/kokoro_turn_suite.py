@@ -16,6 +16,10 @@ from pathlib import Path
 
 import kokoro_g2_loop as loop
 
+ENDPOINT_TAIL_MS = 1250
+ENDPOINT_AUDIO_MIN_MS = 1200
+ENDPOINT_AUDIO_MAX_MS = 1350
+
 
 @dataclass(frozen=True)
 class TurnCase:
@@ -261,6 +265,8 @@ BOUNDARY_CASES = (
     _boundary_case(1500, None),
     _boundary_case(1550, None),
     _boundary_case(1650, None),
+    _boundary_case(1700, None),
+    _boundary_case(1750, None),
     _boundary_case(1800, 2),
     _boundary_case(2500, 2),
     _boundary_case(5000, 2),
@@ -530,13 +536,15 @@ def analyze_case(
                 or index < len(expected_transcripts)
             ),
             "ui_cleared_at_start": segment_id in ui_clears,
-            "endpoint_configured_1000_ms": (
-                ending is not None and ending.value == 1000
+            "endpoint_configured_1250_ms": (
+                ending is not None and ending.value == ENDPOINT_TAIL_MS
             ),
             "endpoint_audio_duration": (
                 end is not None
                 and isinstance(end.value, int)
-                and 950 <= end.value <= 1100
+                and ENDPOINT_AUDIO_MIN_MS
+                <= end.value
+                <= ENDPOINT_AUDIO_MAX_MS
             ),
             "buffer_cleared": (
                 buffer is not None

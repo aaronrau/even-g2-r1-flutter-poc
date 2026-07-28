@@ -14,7 +14,7 @@ G2 BLE notifications
         │ 16 kHz mono PCM
         ├──────────────► one-second UI meter summaries
         ▼
- VAD isolate ── 5 s pre-roll / 1 s endpoint ──► atomic speech WAV
+ VAD isolate ── 2 s pre-roll / 1.75 s total silence ──► atomic speech WAV
         │                              │
         │                              └──────► selected shared folder
         ▼
@@ -107,12 +107,22 @@ The package README, patch, licenses, and SHA-256 runtime manifest are under
 - Pending packets stay in memory while the journal isolate restarts. If the
   bounded queue reaches 600 packets, Work Bench disconnects the wearables
   instead of silently dropping unjournaled source audio.
-- VAD saves speech only. It keeps five seconds before speech and captures one
-  second of PCM after the last positive VAD detection. The `speech_ended`
-  marker reports that duration as `audio_ms`, independent of UI scheduling. It
-  writes a partial WAV first and atomically renames completed files. After
-  finalization, the completed turn is removed from pre-roll before buffering
-  the next turn.
+- VAD saves speech only. It keeps two seconds before speech. Silero qualifies
+  500 ms of silence, then Work Bench retains a 1,250 ms endpoint tail, for a
+  nominal 1.75-second total-silence boundary. Speech resuming during that tail
+  cancels finalization and remains in the same WAV/STT/Gemma turn. The
+  `speech_ended` marker reports the retained tail as `audio_ms`, independent of
+  UI scheduling. It writes a partial WAV first and atomically renames completed
+  files. When the endpoint begins, Work Bench clears earlier turn history from
+  pre-roll and then retains the endpoint-tail PCM. That handoff prevents prior
+  speech from leaking into the next turn without dropping the opening of a
+  near-boundary next utterance.
+- Continuous speech remains one VAD turn until endpoint silence or the
+  15-minute segment safety limit. Work Bench does not emit partial live
+  transcripts from the middle of that turn. Natural pauses may finalize
+  multiple turns; their WAV, STT, and correction jobs retain segment IDs and
+  ordered durable ledgers, while the separate bounded glasses FIFO presents
+  each result as `Queued` then `Saved` or `Sent`.
 - A wearable disconnect flushes an active VAD segment before changing link
   state. Raw journals, WAV files, and completed transcripts are never deleted
   by a model restart.
@@ -133,9 +143,13 @@ App-private storage remains the reliable source of truth. On Android, the
 **Tools → Transcription → File storage** setting opens the system folder picker
 and retains only the narrow read/write document-tree grant selected by the
 user. The app does not request broad storage permission. Completed speech WAV
-and text files are copied into that folder so they are visible in Files and to
-other apps after the user gives those apps access to the same location.
-Choosing a folder also copies existing completed speech files.
+and text files plus `workbench-correction-prompt.txt` are stored in that folder
+so they are visible in Files and to other apps after the user gives those apps
+access to the same location. Choosing a folder also copies existing completed
+speech files. If the folder already contains a valid correction prompt, that
+value is loaded for the next correction and mirrored into app-private storage.
+Otherwise the app creates the prompt file from its last-known-good private
+value.
 
 Home's **Transcriptions** tab enumerates completed `.txt` files through the
 same Android document provider, pairs each with a same-name `.wav`, and reads
@@ -148,6 +162,7 @@ native storage bridge also keeps an app-private filename-to-document-URI
 index. This preserves deterministic listing and playback on OEM document
 providers that accept writes but return an empty child-directory query; the
 indexed WAV/TXT content itself remains in the user-selected shared folder.
+The correction prompt is deliberately excluded from transcript enumeration.
 
 Shared export is downstream from durable capture: a revoked grant, unavailable
 document provider, or copy failure never blocks journaling, VAD, or local

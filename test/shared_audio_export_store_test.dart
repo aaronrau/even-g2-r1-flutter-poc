@@ -82,6 +82,59 @@ void main() {
     ]);
   });
 
+  test(
+    'reads and writes correction instructions in the shared folder',
+    () async {
+      String? savedInstructions;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        return switch (call.method) {
+          'currentDirectory' => <String, Object>{'displayName': 'Shared'},
+          'readCorrectionInstructions' => 'Preserve device names exactly.',
+          'writeCorrectionInstructions' => () {
+            savedInstructions =
+                (call.arguments as Map<Object?, Object?>)['instructions']
+                    as String;
+            return null;
+          }(),
+          _ => fail('Unexpected method ${call.method}'),
+        };
+      });
+      final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+      addTearDown(store.dispose);
+      await store.initialize();
+
+      expect(
+        await store.readCorrectionInstructions(),
+        'Preserve device names exactly.',
+      );
+      await store.writeCorrectionInstructions('Keep command names unchanged.');
+
+      expect(savedInstructions, 'Keep command names unchanged.');
+      expect(
+        SharedAudioExportStore.correctionPromptFileName,
+        'workbench-correction-prompt.txt',
+      );
+    },
+  );
+
+  test('does not read or write a prompt without a selected folder', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      return switch (call.method) {
+        'currentDirectory' => null,
+        _ => fail('Unexpected method ${call.method}'),
+      };
+    });
+    final store = SharedAudioExportStore(channel: channel, isAndroid: true);
+    addTearDown(store.dispose);
+    await store.initialize();
+
+    expect(await store.readCorrectionInstructions(), isNull);
+    await expectLater(
+      store.writeCorrectionInstructions('Validated prompt.'),
+      throwsStateError,
+    );
+  });
+
   test('clears shared folder access', () async {
     messenger.setMockMethodCallHandler(channel, (call) async {
       return switch (call.method) {

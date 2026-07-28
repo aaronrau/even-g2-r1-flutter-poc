@@ -53,6 +53,7 @@ void main() {
         modelStore: modelStore,
         client: client,
         onCorrected: completed.complete,
+        onUncorrected: (_, _, _) {},
         onStatus: (_, {isError = false}) {},
       );
       addTearDown(supervisor.dispose);
@@ -103,6 +104,7 @@ void main() {
         modelStore: modelStore,
         client: client,
         onCorrected: completions.add,
+        onUncorrected: (_, _, _) {},
         onStatus: (_, {isError = false}) {},
       );
       addTearDown(supervisor.dispose);
@@ -139,6 +141,120 @@ void main() {
       'Run version 15 with --verbose.',
     );
   });
+
+  test(
+    'adds known command names and marks a live correction routable',
+    () async {
+      final completed = Completer<CorrectedTranscriptResult>();
+      final supervisor = TranscriptCorrectionSupervisor(
+        speechPath: speech.path,
+        configStore: configStore,
+        modelStore: modelStore,
+        client: client,
+        onCorrected: completed.complete,
+        onUncorrected: (_, _, _) {},
+        onStatus: (_, {isError = false}) {},
+      );
+      addTearDown(supervisor.dispose);
+      await supervisor.start();
+      final raw = File('${speech.path}/live.raw.txt')
+        ..writeAsStringSync('Plus, for the latest changes.\n');
+
+      await supervisor.queue(
+        TranscriptCorrectionJob(
+          segmentId: 'live',
+          rawPath: raw.path,
+          sttModel: 'parakeet-0.6b',
+          sttProvider: 'nnapi',
+          audioMs: 5000,
+          sttDecodeMs: 500,
+          sttTotalMs: 550,
+          queuedAt: DateTime.now().toUtc(),
+          correctionTerms: const <String>['Flux', 'Brock', 'Flux'],
+          routeWhenCorrected: true,
+        ),
+      );
+      final result = await completed.future.timeout(const Duration(seconds: 5));
+
+      expect(result.correctedText, 'Flux, pull the latest changes.');
+      expect(result.routeWhenCorrected, isTrue);
+      expect(client.instructions.single, contains('["Flux","Brock"]'));
+      expect(
+        client.instructions.single,
+        contains('"Flux":["plus","plux","flex","flax"]'),
+      );
+      expect(
+        client.instructions.single,
+        contains('Plus, all the latest changes.'),
+      );
+    },
+  );
+
+  test('a restored correction job can never route an old command', () {
+    final original = TranscriptCorrectionJob(
+      segmentId: 'pending',
+      rawPath: '/private/app/pending.raw.txt',
+      sttModel: 'parakeet-0.6b',
+      sttProvider: 'nnapi',
+      audioMs: 5000,
+      sttDecodeMs: 500,
+      sttTotalMs: 550,
+      queuedAt: DateTime.now().toUtc(),
+      correctionTerms: const <String>['Flux'],
+      routeWhenCorrected: true,
+    );
+
+    final restored = TranscriptCorrectionJob.fromJson(
+      original.segmentId,
+      original.toJson(),
+    );
+
+    expect(restored, isNotNull);
+    expect(restored!.routeWhenCorrected, isFalse);
+    expect(restored.correctionTerms, isEmpty);
+  });
+
+  test(
+    'disabled correction returns the live raw transcript explicitly',
+    () async {
+      await configStore.setEnabled(false);
+      final bypassed = Completer<(TranscriptCorrectionJob, String, String)>();
+      final supervisor = TranscriptCorrectionSupervisor(
+        speechPath: speech.path,
+        configStore: configStore,
+        modelStore: modelStore,
+        client: client,
+        onCorrected: (_) {},
+        onUncorrected: (job, transcript, reason) {
+          bypassed.complete((job, transcript, reason));
+        },
+        onStatus: (_, {isError = false}) {},
+      );
+      addTearDown(supervisor.dispose);
+      await supervisor.start();
+      final raw = File('${speech.path}/disabled.raw.txt')
+        ..writeAsStringSync('Flux, pull the latest changes.\n');
+
+      await supervisor.queue(
+        TranscriptCorrectionJob(
+          segmentId: 'disabled',
+          rawPath: raw.path,
+          sttModel: 'parakeet-0.6b',
+          sttProvider: 'nnapi',
+          audioMs: 5000,
+          sttDecodeMs: 500,
+          sttTotalMs: 550,
+          queuedAt: DateTime.now().toUtc(),
+          routeWhenCorrected: true,
+        ),
+      );
+      final result = await bypassed.future.timeout(const Duration(seconds: 5));
+
+      expect(result.$1.routeWhenCorrected, isTrue);
+      expect(result.$2, 'Flux, pull the latest changes.');
+      expect(result.$3, 'correction_disabled');
+    },
+  );
 }
 
 Future<void> _queue(
@@ -169,9 +285,13 @@ final class _FakeGemmaClient implements GemmaCorrectionClient {
   Future<GemmaCorrectionResult> correct(GemmaCorrectionRequest request) async {
     instructions.add(request.instructions);
     final source = request.transcript;
-    final corrected = source == 'run test 15 with --verbose'
-        ? 'Run test 15 with --verbose.'
-        : '${source[0].toUpperCase()}${source.substring(1)}.';
+    final corrected = switch (source) {
+      'run test 15 with --verbose' => 'Run test 15 with --verbose.',
+      'Plus, for the latest changes.'
+          when request.instructions.contains('"Flux"') =>
+        'Flux, pull the latest changes.',
+      _ => '${source[0].toUpperCase()}${source.substring(1)}.',
+    };
     return GemmaCorrectionResult(
       correctedText: corrected,
       provider: 'gpu',

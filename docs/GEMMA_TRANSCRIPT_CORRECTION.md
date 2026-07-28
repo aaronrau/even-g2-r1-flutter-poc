@@ -34,23 +34,30 @@ pending-transcriptions.json
 pending-corrections.json
 ```
 
-All user-visible files are written through a `.part` file followed by an
-atomic rename. The raw transcript exists before correction starts. The private
-metadata records stage timings and providers but does not duplicate transcript
-text. When a shared folder is selected, only final WAV and text files are
-exported. Legacy `<segment>.txt` files remain readable as original-only
-transcripts.
+App-private user-visible files are written through a `.part` file followed by
+an atomic rename. The raw transcript exists before correction starts. The
+private metadata records stage timings and providers but does not duplicate
+transcript text. When a shared folder is selected, final WAV and transcript
+files plus `workbench-correction-prompt.txt` are stored there through Android's
+document provider. The prompt file is excluded from the Transcriptions list.
+Legacy `<segment>.txt` files remain readable as original-only transcripts.
 
 ## Configuration
 
 The source-controlled `config.example.json` is a generic schema example.
-At runtime, Settings writes `workbench/config.json` inside app-private support
-storage. It is ignored by Git.
+At runtime, the complete validated configuration is stored in
+`workbench/config.json` inside app-private support storage. It is ignored by
+Git. If the user selects a shared File storage folder, Settings saves only the
+editable instruction text to `workbench-correction-prompt.txt` in that folder
+and mirrors it into the private configuration. Model, backend, timeout, and
+schema constraints remain app-private.
 
-Before each queued segment begins, the supervisor rereads and validates the
-file. A valid save therefore affects the next segment without restarting the
-Flutter app, native service, or engine. An invalid external edit does not
-replace the last valid in-memory snapshot.
+At startup and before each queued segment begins, the supervisor rereads the
+private fallback and then the shared prompt when available. A valid save or
+external shared-file edit therefore affects the next segment without
+restarting the Flutter app, native service, or engine. A missing shared prompt
+is recreated from the private fallback. An invalid or unreadable external edit
+does not replace the last valid snapshot.
 
 Validation requires:
 
@@ -60,6 +67,9 @@ Validation requires:
 - timeout from 5,000 to 120,000 milliseconds;
 - non-empty instructions no longer than 2,000 characters;
 - no unsupported control characters.
+
+The shared prompt may contain user vocabulary and is not source material. Do
+not copy it into the repository or test fixtures.
 
 The output guard rejects empty text, expansion beyond twice the original plus
 256 characters, or removal of numeric values, paths, or command-line flags.

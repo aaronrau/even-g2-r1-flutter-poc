@@ -1,17 +1,29 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+typedef SharedCorrectionInstructionsAvailable = bool Function();
+typedef SharedCorrectionInstructionsReader = Future<String?> Function();
+typedef SharedCorrectionInstructionsWriter =
+    Future<void> Function(String instructions);
+
 const defaultTranscriptCorrectionInstructions =
-    'You clean short automatic speech recognition transcripts from smart '
-    'glasses. Correct obvious recognition errors, capitalization, punctuation, '
-    'and light grammar only. Preserve the speaker’s meaning, wording, order, '
-    'names, numbers, commands, paths, flags, identifiers, and uncertainty. Do '
+    'You correct short automatic speech recognition transcripts from smart '
+    'glasses and return only corrected text. Preserve the speaker’s meaning '
+    'and requested action. Correct obvious phonetic errors, command names, '
+    'verbs, capitalization, punctuation, and light grammar. A leading local '
+    'command name or attention word may be dropped or misheard. Use only the '
+    'known command names and acoustic aliases supplied after these instructions; '
+    'never invent a name. Restore a name only when the remaining words form a '
+    'plausible imperative. With Flux supplied as a known name, for example, '
+    '"Plus, all the latest changes." becomes "Flux, pull the latest changes." '
+    'Ordinary prose such as "Plus, this is already complete." stays ordinary '
+    'prose. Preserve numbers, paths, flags, identifiers, and uncertainty. Do '
     'not summarize, remove requested actions, add facts, answer the transcript, '
-    'or use markdown. If a correction is uncertain, retain the original wording. '
-    'Return only the corrected transcript text.';
+    'or use markdown.';
 
 final class TranscriptCorrectionConfig {
   const TranscriptCorrectionConfig({
@@ -153,27 +165,47 @@ final class TranscriptCorrectionConfigStore extends ChangeNotifier {
   TranscriptCorrectionConfigStore({
     Future<Directory> Function() supportDirectory =
         getApplicationSupportDirectory,
-  }) : _supportDirectory = supportDirectory;
+    SharedCorrectionInstructionsAvailable? sharedInstructionsAvailable,
+    SharedCorrectionInstructionsReader? sharedInstructionsReader,
+    SharedCorrectionInstructionsWriter? sharedInstructionsWriter,
+  }) : _supportDirectory = supportDirectory,
+       _sharedInstructionsAvailable = sharedInstructionsAvailable,
+       _sharedInstructionsReader = sharedInstructionsReader,
+       _sharedInstructionsWriter = sharedInstructionsWriter;
 
   final Future<Directory> Function() _supportDirectory;
+  final SharedCorrectionInstructionsAvailable? _sharedInstructionsAvailable;
+  final SharedCorrectionInstructionsReader? _sharedInstructionsReader;
+  final SharedCorrectionInstructionsWriter? _sharedInstructionsWriter;
   File? _file;
+  Future<void> _operationTail = Future<void>.value();
 
   TranscriptCorrectionConfig config = TranscriptCorrectionConfig.defaults;
   String? validationError;
 
-  Future<void> initialize() async {
+  Future<void> initialize() => _serialize(_initialize);
+
+  Future<void> _initialize() async {
     final support = await _supportDirectory();
     final workbench = Directory('${support.path}/workbench');
     await workbench.create(recursive: true);
     _file = File('${workbench.path}/config.json');
     if (!await _file!.exists()) {
       await _write(config);
-      return;
+    } else {
+      await _reloadPrivateConfig();
     }
-    await reloadForNextTranscript();
+    await _reloadSharedInstructions();
   }
 
-  Future<TranscriptCorrectionConfig> reloadForNextTranscript() async {
+  Future<TranscriptCorrectionConfig> reloadForNextTranscript() =>
+      _serialize(() async {
+        await _reloadPrivateConfig();
+        await _reloadSharedInstructions();
+        return config;
+      });
+
+  Future<void> _reloadPrivateConfig() async {
     final file = _file;
     if (file == null) {
       throw StateError(
@@ -198,30 +230,69 @@ final class TranscriptCorrectionConfigStore extends ChangeNotifier {
       // The last validated snapshot remains active. A partial or externally
       // malformed config can never inject an unvalidated prompt into a job.
     }
-    return config;
   }
 
-  Future<void> saveInstructions(String instructions) async {
+  Future<void> saveInstructions(String instructions) => _serialize(() async {
     final validated = TranscriptCorrectionConfig.validateInstructions(
       instructions,
     );
     final updated = config.copyWith(instructions: validated);
+    if (_hasSharedInstructions) {
+      await _sharedInstructionsWriter!(validated);
+    }
     await _write(updated);
     config = updated;
     validationError = null;
     notifyListeners();
-  }
+  });
 
-  Future<void> setEnabled(bool enabled) async {
+  Future<void> setEnabled(bool enabled) => _serialize(() async {
     final updated = config.copyWith(enabled: enabled);
     await _write(updated);
     config = updated;
     validationError = null;
     notifyListeners();
-  }
+  });
 
   Future<void> resetInstructions() =>
       saveInstructions(defaultTranscriptCorrectionInstructions);
+
+  bool get _hasSharedInstructions =>
+      (_sharedInstructionsAvailable?.call() ?? false) &&
+      _sharedInstructionsReader != null &&
+      _sharedInstructionsWriter != null;
+
+  Future<void> _reloadSharedInstructions() async {
+    if (!_hasSharedInstructions) {
+      return;
+    }
+    try {
+      final shared = await _sharedInstructionsReader!();
+      if (shared == null) {
+        await _sharedInstructionsWriter!(config.instructions);
+        return;
+      }
+      final validated = TranscriptCorrectionConfig.validateInstructions(shared);
+      final updated = config.copyWith(instructions: validated);
+      if (updated != config) {
+        await _write(updated);
+      }
+      final changed = updated != config || validationError != null;
+      config = updated;
+      validationError = null;
+      if (changed) {
+        notifyListeners();
+      }
+    } on Object catch (error) {
+      final message = 'Shared correction prompt: ${_oneLine(error)}';
+      if (validationError != message) {
+        validationError = message;
+        notifyListeners();
+      }
+      // A missing provider, partial external write, or invalid shared prompt
+      // cannot replace the app-private last-known-good configuration.
+    }
+  }
 
   Future<void> _write(TranscriptCorrectionConfig value) async {
     final file = _file;
@@ -238,6 +309,18 @@ final class TranscriptCorrectionConfigStore extends ChangeNotifier {
     // Android's POSIX rename replaces the old file atomically, so a reader
     // sees either the previous validated config or the complete new config.
     await partial.rename(file.path);
+  }
+
+  Future<T> _serialize<T>(Future<T> Function() operation) {
+    final completion = Completer<T>();
+    _operationTail = _operationTail.then((_) async {
+      try {
+        completion.complete(await operation());
+      } on Object catch (error, stackTrace) {
+        completion.completeError(error, stackTrace);
+      }
+    });
+    return completion.future;
   }
 
   static String _oneLine(Object value) =>

@@ -520,7 +520,29 @@ final class G2Connection {
         reserveFlag: true,
       );
     }
-    _log('G2 TX', 'Text: $content');
+    _log(
+      'G2 TX',
+      'Text update sent (${content.runes.length} characters; content private)',
+    );
+  }
+
+  Future<void> clearText() async {
+    _requireConnected();
+    if (!_pageCreated) {
+      return;
+    }
+    // EvenHub text updates have no ACK. Send the clear twice so a single
+    // dropped write cannot leave stale private text visible on-glass.
+    for (var send = 0; send < 2; send++) {
+      await _sendPayload(
+        G2Ids.serviceEvenHub,
+        _protocol.clearText(),
+        reserveFlag: true,
+        priority: AsyncWritePriority.high,
+      );
+    }
+    _lastPageContent = '';
+    _log('G2 TX', 'Text cleared');
   }
 
   Future<void> sendTestDrawing() async {
@@ -1696,16 +1718,7 @@ final class G2Connection {
 
   Future<void> _clearExpiredGesture(String pageLabel) async {
     try {
-      // EvenHub text updates have no ACK. Match the firmware integration's
-      // redundant send so one dropped write cannot leave stale text on-glass.
-      for (var send = 0; send < 2; send++) {
-        await _sendPayload(
-          G2Ids.serviceEvenHub,
-          _protocol.clearText(),
-          reserveFlag: true,
-          priority: AsyncWritePriority.high,
-        );
-      }
+      await clearText();
       _log('G2 gesture display', '$pageLabel cleared after 3 seconds');
     } catch (error) {
       _log(

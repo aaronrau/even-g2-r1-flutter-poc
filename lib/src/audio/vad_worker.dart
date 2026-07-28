@@ -11,8 +11,52 @@ import 'nnapi_attestation.dart';
 typedef VadStatusSink = void Function(String message, {bool isError});
 typedef SpeechSegmentSink = void Function(String id, String wavPath);
 
-const Duration vadPreRollDuration = Duration(seconds: 5);
-const Duration vadTranscriptionDelay = Duration(seconds: 1);
+const Duration vadPreRollDuration = Duration(seconds: 2);
+const Duration vadDetectorSilenceDuration = Duration(milliseconds: 500);
+const Duration vadTranscriptionDelay = Duration(milliseconds: 1250);
+const Duration vadTotalSilenceDuration = Duration(milliseconds: 1750);
+
+final class VadEndpointBuffer {
+  VadEndpointBuffer({required int sampleRate, required Duration duration})
+    : assert(sampleRate > 0),
+      assert(duration > Duration.zero),
+      _sampleRate = sampleRate,
+      _targetSamples =
+          sampleRate *
+          duration.inMilliseconds ~/
+          Duration.millisecondsPerSecond;
+
+  final int _sampleRate;
+  final int _targetSamples;
+  int _remainingSamples = -1;
+  int _capturedSamples = 0;
+
+  bool get isActive => _remainingSamples >= 0;
+  int get capturedMilliseconds =>
+      _capturedSamples * Duration.millisecondsPerSecond ~/ _sampleRate;
+
+  bool begin(int chunkSamples) {
+    assert(chunkSamples >= 0);
+    _capturedSamples = chunkSamples;
+    _remainingSamples = _targetSamples - chunkSamples;
+    return _remainingSamples <= 0;
+  }
+
+  bool add(int chunkSamples) {
+    assert(chunkSamples >= 0);
+    if (!isActive) {
+      return false;
+    }
+    _capturedSamples += chunkSamples;
+    _remainingSamples -= chunkSamples;
+    return _remainingSamples <= 0;
+  }
+
+  void reset() {
+    _remainingSamples = -1;
+    _capturedSamples = 0;
+  }
+}
 
 final class VadPreRollBuffer {
   VadPreRollBuffer({required this.maximumBytes}) : assert(maximumBytes > 0);
@@ -180,7 +224,9 @@ final class VadSupervisor {
         return;
       case 'speech_started':
         onStatus(
-          '[WorkBench][VAD] state=speech_started segment=${event['id']}',
+          '[WorkBench][VAD] state=speech_started segment=${event['id']} '
+          'pre_roll_ms=${event['preRollMs']} '
+          'pre_roll_bytes=${event['preRollBytes']}',
         );
         return;
       case 'speech_ending':
@@ -275,10 +321,6 @@ void _vadWorker(Map<String, Object> bootstrap) {
       2 *
       vadPreRollDuration.inMilliseconds ~/
       Duration.millisecondsPerSecond;
-  final postRollSamples =
-      sampleRate *
-      vadTranscriptionDelay.inMilliseconds ~/
-      Duration.millisecondsPerSecond;
   const maximumSegmentSamples = sampleRate * 60 * 15;
 
   final events = bootstrap['events']! as SendPort;
@@ -287,12 +329,14 @@ void _vadWorker(Map<String, Object> bootstrap) {
   final providers = (bootstrap['providers']! as List<Object?>).cast<String>();
   final commands = ReceivePort();
   final preRoll = VadPreRollBuffer(maximumBytes: preRollBytes);
+  final endpoint = VadEndpointBuffer(
+    sampleRate: sampleRate,
+    duration: vadTranscriptionDelay,
+  );
   RandomAccessFile? segmentFile;
   String? segmentId;
   String? partialPath;
   var segmentSamples = 0;
-  var postRollRemaining = -1;
-  var postRollCapturedSamples = 0;
   var wasDetected = false;
 
   void writeHeader(RandomAccessFile file, int samples) {
@@ -321,6 +365,7 @@ void _vadWorker(Map<String, Object> bootstrap) {
 
   void beginSegment() {
     final now = DateTime.now().toUtc();
+    final preRollBytesAtStart = preRoll.sizeBytes;
     segmentId =
         '${now.microsecondsSinceEpoch}-${now.toIso8601String().substring(11, 19).replaceAll(':', '')}';
     partialPath = '$outputPath/$segmentId.part.wav';
@@ -331,20 +376,26 @@ void _vadWorker(Map<String, Object> bootstrap) {
       segmentFile!.writeFromSync(chunk);
       segmentSamples += chunk.length ~/ 2;
     }
-    postRollRemaining = -1;
-    postRollCapturedSamples = 0;
-    events.send(<String, Object>{'type': 'speech_started', 'id': segmentId!});
+    endpoint.reset();
+    events.send(<String, Object>{
+      'type': 'speech_started',
+      'id': segmentId!,
+      'preRollMs':
+          preRollBytesAtStart *
+          Duration.millisecondsPerSecond ~/
+          (sampleRate * 2),
+      'preRollBytes': preRollBytesAtStart,
+    });
   }
 
-  void finishSegment() {
+  void finishSegment({bool preserveEndpointPreRoll = false}) {
     final file = segmentFile;
     final id = segmentId;
     final part = partialPath;
     if (file == null || id == null || part == null) {
       return;
     }
-    final endpointAudioMs =
-        postRollCapturedSamples * Duration.millisecondsPerSecond ~/ sampleRate;
+    final endpointAudioMs = endpoint.capturedMilliseconds;
     writeHeader(file, segmentSamples);
     file.flushSync();
     file.closeSync();
@@ -354,14 +405,15 @@ void _vadWorker(Map<String, Object> bootstrap) {
     segmentId = null;
     partialPath = null;
     segmentSamples = 0;
-    postRollRemaining = -1;
-    postRollCapturedSamples = 0;
-    final clearedBytes = preRoll.clear();
-    events.send(<String, Object>{
-      'type': 'buffer_cleared',
-      'id': id,
-      'bytes': clearedBytes,
-    });
+    endpoint.reset();
+    if (!preserveEndpointPreRoll) {
+      final clearedBytes = preRoll.clear();
+      events.send(<String, Object>{
+        'type': 'buffer_cleared',
+        'id': id,
+        'bytes': clearedBytes,
+      });
+    }
     events.send(<String, Object>{
       'type': 'segment',
       'id': id,
@@ -408,7 +460,9 @@ void _vadWorker(Map<String, Object> bootstrap) {
           sileroVad: sherpa.SileroVadModelConfig(
             model: modelPath,
             threshold: 0.5,
-            minSilenceDuration: 0.5,
+            minSilenceDuration:
+                vadDetectorSilenceDuration.inMilliseconds /
+                Duration.millisecondsPerSecond,
             minSpeechDuration: 0.25,
             windowSize: 512,
             maxSpeechDuration: 900,
@@ -499,26 +553,28 @@ void _vadWorker(Map<String, Object> bootstrap) {
             segmentFile!.writeFromSync(pcm);
             segmentSamples += pcm.length ~/ 2;
             if (detected) {
-              postRollRemaining = -1;
-              postRollCapturedSamples = 0;
+              endpoint.reset();
             } else if (wasDetected) {
               final chunkSamples = pcm.length ~/ 2;
-              postRollCapturedSamples = chunkSamples;
-              postRollRemaining = postRollSamples - chunkSamples;
+              final endpointComplete = endpoint.begin(chunkSamples);
+              final clearedBytes = preRoll.clear();
               events.send(<String, Object>{
                 'type': 'speech_ending',
                 'id': segmentId!,
                 'delayMs': vadTranscriptionDelay.inMilliseconds,
               });
-              if (postRollRemaining <= 0) {
-                finishSegment();
+              events.send(<String, Object>{
+                'type': 'buffer_cleared',
+                'id': segmentId!,
+                'bytes': clearedBytes,
+              });
+              if (endpointComplete) {
+                finishSegment(preserveEndpointPreRoll: true);
               }
-            } else if (postRollRemaining >= 0) {
+            } else if (endpoint.isActive) {
               final chunkSamples = pcm.length ~/ 2;
-              postRollCapturedSamples += chunkSamples;
-              postRollRemaining -= chunkSamples;
-              if (postRollRemaining <= 0) {
-                finishSegment();
+              if (endpoint.add(chunkSamples)) {
+                finishSegment(preserveEndpointPreRoll: true);
               }
             }
             if (segmentSamples >= maximumSegmentSamples) {

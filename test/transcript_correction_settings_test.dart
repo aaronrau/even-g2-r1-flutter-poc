@@ -40,7 +40,8 @@ void main() {
 
     expect(find.text('LLM instructions'), findsOneWidget);
     expect(find.textContaining('next transcription'), findsOneWidget);
-    expect(find.textContaining('config.json'), findsOneWidget);
+    expect(find.textContaining('selected shared folder'), findsOneWidget);
+    expect(find.textContaining('private fallback'), findsOneWidget);
 
     await tester.enterText(find.byType(TextFormField), '   ');
     await tester.tap(find.widgetWithText(FilledButton, 'Save instructions'));

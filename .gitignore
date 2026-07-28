@@ -26,6 +26,7 @@ migrate_working_dir/
 local.properties
 key.properties
 /config.json
+/voice_websocket.json
 .vscode/
 .gradle/
 **/xcuserdata/

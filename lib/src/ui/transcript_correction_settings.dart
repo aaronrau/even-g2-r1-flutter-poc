@@ -117,7 +117,9 @@ final class _TranscriptCorrectionSettingsState
             decoration: const InputDecoration(
               labelText: 'LLM instructions',
               alignLabelWithHint: true,
-              helperText: 'Saved to validated config.json.',
+              helperText:
+                  'Saved to the selected shared folder when available, with '
+                  'a private fallback.',
             ),
             validator: (value) {
               try {

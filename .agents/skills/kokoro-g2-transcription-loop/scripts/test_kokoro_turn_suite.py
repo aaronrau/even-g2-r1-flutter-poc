@@ -62,6 +62,9 @@ class TurnSuiteTest(unittest.TestCase):
         self.assertIsNone(
             boundaries["gap_1500ms_characterize"].expected_turns
         )
+        self.assertIsNone(
+            boundaries["gap_1750ms_characterize"].expected_turns
+        )
         self.assertEqual(boundaries["gap_1800ms_split"].expected_turns, 2)
 
     def test_center_clip_has_exact_requested_length(self) -> None:
@@ -114,30 +117,30 @@ class TurnSuiteTest(unittest.TestCase):
                 line(
                     3.0,
                     "[WorkBench][VAD] state=speech_ending "
-                    f"segment={segment} delay_ms=1000",
+                    f"segment={segment} delay_ms=1250",
                 ),
                 line(
-                    4.0,
+                    4.25,
                     "[WorkBench][VAD] state=buffer_cleared "
                     f"segment={segment} bytes=64000 next=ready",
                 ),
                 line(
-                    4.0,
+                    4.25,
                     "[WorkBench][VAD] state=speech_ended "
-                    f"segment={segment} audio_ms=1000",
+                    f"segment={segment} audio_ms=1250",
                 ),
                 line(
-                    4.0,
+                    4.25,
                     "[WorkBench][Transcription] state=queued "
                     f"segment={segment} pending=1",
                 ),
                 line(
-                    4.1,
+                    4.35,
                     "[WorkBench][Transcription] state=processing "
                     f"segment={segment}",
                 ),
                 line(
-                    4.2,
+                    4.45,
                     "[WorkBench][Transcript][FINAL] "
                     f"segment={segment} text=Where is my red book",
                 ),
@@ -155,8 +158,8 @@ class TurnSuiteTest(unittest.TestCase):
         )
         self.assertTrue(result.passed)
         self.assertTrue(result.checks["playback_boundary"])
-        self.assertAlmostEqual(result.turns[0].endpoint_seconds, 1.0)
-        self.assertEqual(result.turns[0].endpoint_audio_ms, 1000)
+        self.assertAlmostEqual(result.turns[0].endpoint_seconds, 1.25)
+        self.assertEqual(result.turns[0].endpoint_audio_ms, 1250)
         self.assertAlmostEqual(
             result.turns[0].queue_to_final_seconds,
             0.2,

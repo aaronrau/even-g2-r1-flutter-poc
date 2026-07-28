@@ -10,6 +10,12 @@ import 'transcript_correction_config.dart';
 typedef CorrectionStatusSink = void Function(String message, {bool isError});
 typedef CorrectedTranscriptSink =
     void Function(CorrectedTranscriptResult result);
+typedef UncorrectedTranscriptSink =
+    void Function(
+      TranscriptCorrectionJob job,
+      String transcript,
+      String reason,
+    );
 
 final class TranscriptCorrectionJob {
   const TranscriptCorrectionJob({
@@ -21,6 +27,8 @@ final class TranscriptCorrectionJob {
     required this.sttDecodeMs,
     required this.sttTotalMs,
     required this.queuedAt,
+    this.correctionTerms = const <String>[],
+    this.routeWhenCorrected = false,
     this.attempts = 0,
     this.nextAttemptAt,
   });
@@ -33,6 +41,8 @@ final class TranscriptCorrectionJob {
   final int sttDecodeMs;
   final int sttTotalMs;
   final DateTime queuedAt;
+  final List<String> correctionTerms;
+  final bool routeWhenCorrected;
   final int attempts;
   final DateTime? nextAttemptAt;
 
@@ -45,6 +55,8 @@ final class TranscriptCorrectionJob {
     sttDecodeMs: sttDecodeMs,
     sttTotalMs: sttTotalMs,
     queuedAt: queuedAt,
+    correctionTerms: correctionTerms,
+    routeWhenCorrected: routeWhenCorrected,
     attempts: attempts + 1,
     nextAttemptAt: DateTime.now().toUtc().add(delay),
   );
@@ -80,6 +92,8 @@ final class TranscriptCorrectionJob {
       sttDecodeMs: (value['sttDecodeMs'] as num?)?.toInt() ?? 0,
       sttTotalMs: (value['sttTotalMs'] as num?)?.toInt() ?? 0,
       queuedAt: queuedAt.toUtc(),
+      correctionTerms: const <String>[],
+      routeWhenCorrected: false,
       attempts: (value['attempts'] as num?)?.toInt() ?? 0,
       nextAttemptAt: DateTime.tryParse(
         '${value['nextAttemptAt'] ?? ''}',
@@ -100,6 +114,7 @@ final class CorrectedTranscriptResult {
     required this.inferenceMs,
     required this.correctionTotalMs,
     required this.pipelineTotalMs,
+    required this.routeWhenCorrected,
   });
 
   final String segmentId;
@@ -112,6 +127,7 @@ final class CorrectedTranscriptResult {
   final int inferenceMs;
   final int correctionTotalMs;
   final int pipelineTotalMs;
+  final bool routeWhenCorrected;
 }
 
 final class TranscriptCorrectionSupervisor {
@@ -120,6 +136,7 @@ final class TranscriptCorrectionSupervisor {
     required this.configStore,
     required this.modelStore,
     required this.onCorrected,
+    required this.onUncorrected,
     required this.onStatus,
     GemmaCorrectionClient? client,
   }) : _client = client ?? PlatformGemmaCorrectionClient();
@@ -128,12 +145,14 @@ final class TranscriptCorrectionSupervisor {
   final TranscriptCorrectionConfigStore configStore;
   final GemmaModelStore modelStore;
   final CorrectedTranscriptSink onCorrected;
+  final UncorrectedTranscriptSink onUncorrected;
   final CorrectionStatusSink onStatus;
   final GemmaCorrectionClient _client;
   final LinkedHashMap<String, TranscriptCorrectionJob> _pending =
       LinkedHashMap<String, TranscriptCorrectionJob>();
 
   Timer? _pumpTimer;
+  Future<void> _ledgerWriteTail = Future<void>.value();
   bool _pumping = false;
   bool _disposed = false;
   String? activeProvider;
@@ -237,6 +256,7 @@ final class TranscriptCorrectionSupervisor {
       onStatus(
         '[WorkBench][Correction] state=disabled segment=${job.segmentId}',
       );
+      onUncorrected(job, rawText, 'correction_disabled');
       return;
     }
     final modelPath = await modelStore.installedModelPath();
@@ -266,7 +286,10 @@ final class TranscriptCorrectionSupervisor {
         GemmaCorrectionRequest(
           modelPath: modelPath,
           modelId: config.modelId,
-          instructions: config.instructions,
+          instructions: buildCorrectionInstructions(
+            config.instructions,
+            job.correctionTerms,
+          ),
           transcript: rawText,
           timeoutMs: config.timeoutMs,
         ),
@@ -338,6 +361,7 @@ final class TranscriptCorrectionSupervisor {
           inferenceMs: result.inferenceMs,
           correctionTotalMs: result.totalMs,
           pipelineTotalMs: pipelineTotalMs,
+          routeWhenCorrected: job.routeWhenCorrected,
         ),
       );
     } on Object catch (error) {
@@ -442,14 +466,19 @@ final class TranscriptCorrectionSupervisor {
     }
   }
 
-  Future<void> _persistPending() async {
-    final ledger = File('$speechPath/pending-corrections.json');
-    final partial = File('${ledger.path}.part');
+  Future<void> _persistPending() {
     final value = <String, Object>{
       for (final entry in _pending.entries) entry.key: entry.value.toJson(),
     };
-    await partial.writeAsString(jsonEncode(value), flush: true);
-    await partial.rename(ledger.path);
+    final encoded = jsonEncode(value);
+    final operation = _ledgerWriteTail.then((_) async {
+      final ledger = File('$speechPath/pending-corrections.json');
+      final partial = File('${ledger.path}.part');
+      await partial.writeAsString(encoded, flush: true);
+      await partial.rename(ledger.path);
+    });
+    _ledgerWriteTail = operation.then<void>((_) {}, onError: (_) {});
+    return operation;
   }
 
   static String validateCorrectedTranscript({
@@ -483,6 +512,52 @@ final class TranscriptCorrectionSupervisor {
     return corrected;
   }
 
+  static String buildCorrectionInstructions(
+    String base,
+    Iterable<String> correctionTerms,
+  ) {
+    final terms = <String>[];
+    final seen = <String>{};
+    for (final value in correctionTerms) {
+      final term = value.trim();
+      final key = term.toLowerCase();
+      if (term.isEmpty || term.length > 64 || !seen.add(key)) {
+        continue;
+      }
+      terms.add(term);
+      if (terms.length == 32) {
+        break;
+      }
+    }
+    if (terms.isEmpty) {
+      return base;
+    }
+    final acousticAliases = <String, List<String>>{};
+    const knownAliases = <String, List<String>>{
+      'flux': <String>['plus', 'plux', 'flex', 'flax'],
+      'brock': <String>['broke', 'block', 'broc'],
+      'pike': <String>['bike', 'pipe', 'pyke'],
+      'wolf': <String>['woolf', 'woof', 'wolfe'],
+    };
+    for (final term in terms) {
+      final aliases = knownAliases[term.toLowerCase()];
+      if (aliases != null) {
+        acousticAliases[term] = aliases;
+      }
+    }
+    return '$base\nKnown local command names: ${jsonEncode(terms)}. '
+        'The first one to three words may be a spoken command name even when '
+        'the attention word "hey" was dropped by ASR. When the remaining words '
+        'form a plausible imperative command or request, replace an obvious '
+        'leading phonetic ASR match with the exact command name. Known acoustic '
+        'aliases: ${jsonEncode(acousticAliases)}. Correct an adjacent obvious '
+        'verb error as part of the same invocation; for example, with Flux in '
+        'the known names, "Plus, all the latest changes." becomes '
+        '"Flux, pull the latest changes." Do not make that replacement in '
+        'ordinary prose such as "Plus, this is already complete." Never insert '
+        'a command name when the audio does not plausibly contain it.';
+  }
+
   static Future<void> _atomicWriteText(String path, String value) async {
     final partial = File('$path.part');
     await partial.writeAsString('$value\n', flush: true);
@@ -502,6 +577,7 @@ final class TranscriptCorrectionSupervisor {
     _disposed = true;
     _pumpTimer?.cancel();
     _pumpTimer = null;
+    await _ledgerWriteTail;
     await _client.releaseEngine();
   }
 

@@ -35,6 +35,9 @@ class MainActivity : FlutterActivity() {
         private const val STORAGE_PREFERENCES = "workbench_storage"
         private const val STORAGE_DIRECTORY_URI = "shared_audio_directory_uri"
         private const val STORAGE_DOCUMENT_INDEX = "shared_audio_document_index"
+        private const val CORRECTION_PROMPT_FILE_NAME =
+            "workbench-correction-prompt.txt"
+        private const val MAX_CORRECTION_PROMPT_CHARACTERS = 2000
         private const val CHOOSE_DIRECTORY_REQUEST = 4201
     }
 
@@ -190,6 +193,20 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
                     exportFiles(paths, result)
+                }
+                "readCorrectionInstructions" ->
+                    readCorrectionInstructions(result)
+                "writeCorrectionInstructions" -> {
+                    val instructions = call.argument<String>("instructions")
+                    if (instructions == null) {
+                        result.error(
+                            "missing_instructions",
+                            "Correction instructions are required.",
+                            null,
+                        )
+                        return@setMethodCallHandler
+                    }
+                    writeCorrectionInstructions(instructions, result)
                 }
                 "listTranscriptions" -> listTranscriptions(result)
                 "playAudio" -> {
@@ -476,6 +493,135 @@ class MainActivity : FlutterActivity() {
         return null
     }
 
+    private fun readCorrectionInstructions(result: MethodChannel.Result) {
+        val directory = storedDirectoryUri()
+        if (directory == null) {
+            result.error(
+                "directory_unavailable",
+                "Choose the shared save folder again.",
+                null,
+            )
+            return
+        }
+        storageExecutor.execute {
+            try {
+                val document =
+                    indexedDocument(directory, CORRECTION_PROMPT_FILE_NAME)
+                        ?: findChild(directory, CORRECTION_PROMPT_FILE_NAME)
+                        ?: predictableExternalStorageChild(
+                            directory,
+                            CORRECTION_PROMPT_FILE_NAME,
+                        )
+                val instructions = document?.let(::readTranscriptText)
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][SharedStorage] state=prompt_read " +
+                        "found=${document != null}",
+                )
+                runOnUiThread { result.success(instructions) }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    result.error(
+                        "prompt_read_failed",
+                        "Could not read the correction prompt.",
+                        null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun writeCorrectionInstructions(
+        instructions: String,
+        result: MethodChannel.Result,
+    ) {
+        val validated = validateCorrectionInstructions(instructions)
+        if (validated == null) {
+            result.error(
+                "invalid_instructions",
+                "Correction instructions must contain 1 to 2000 valid characters.",
+                null,
+            )
+            return
+        }
+        val directory = storedDirectoryUri()
+        if (directory == null) {
+            result.error(
+                "directory_unavailable",
+                "Choose the shared save folder again.",
+                null,
+            )
+            return
+        }
+        storageExecutor.execute {
+            try {
+                val rootDocument =
+                    DocumentsContract.buildDocumentUriUsingTree(
+                        directory,
+                        DocumentsContract.getTreeDocumentId(directory),
+                    )
+                val document =
+                    indexedDocument(directory, CORRECTION_PROMPT_FILE_NAME)
+                        ?: findChild(directory, CORRECTION_PROMPT_FILE_NAME)
+                        ?: predictableExternalStorageChild(
+                            directory,
+                            CORRECTION_PROMPT_FILE_NAME,
+                        )
+                        ?: DocumentsContract.createDocument(
+                            contentResolver,
+                            rootDocument,
+                            "text/plain",
+                            CORRECTION_PROMPT_FILE_NAME,
+                        )
+                        ?: throw IllegalStateException(
+                            "The document provider rejected the prompt.",
+                        )
+                contentResolver.openOutputStream(document, "wt")?.use { output ->
+                    output.writer(Charsets.UTF_8).use { writer ->
+                        writer.write(validated)
+                        writer.write("\n")
+                        writer.flush()
+                    }
+                } ?: throw IllegalStateException(
+                    "The document provider is not writable.",
+                )
+                rememberDocument(CORRECTION_PROMPT_FILE_NAME, document)
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][SharedStorage] state=prompt_saved",
+                )
+                runOnUiThread { result.success(null) }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    result.error(
+                        "prompt_write_failed",
+                        "Could not save the correction prompt.",
+                        null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun validateCorrectionInstructions(value: String): String? {
+        val trimmed = value.trim()
+        if (trimmed.isEmpty() ||
+            trimmed.length > MAX_CORRECTION_PROMPT_CHARACTERS
+        ) {
+            return null
+        }
+        for (character in trimmed) {
+            if (character.code < 0x20 &&
+                character != '\t' &&
+                character != '\n' &&
+                character != '\r'
+            ) {
+                return null
+            }
+        }
+        return trimmed
+    }
+
     private fun listTranscriptions(result: MethodChannel.Result) {
         val directory = storedDirectoryUri()
         if (directory == null) {
@@ -522,6 +668,7 @@ class MainActivity : FlutterActivity() {
         fun classify(name: String): SharedFile? {
             val lower = name.lowercase()
             if (name.isEmpty() ||
+                lower == CORRECTION_PROMPT_FILE_NAME ||
                 lower.endsWith(".part.wav") ||
                 lower.endsWith(".part.txt")
             ) {

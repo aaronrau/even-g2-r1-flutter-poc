@@ -49,8 +49,9 @@ This repository combines the hardware foundation already needed for that
 vision: low-level dual-lens G2 BLE, R1 connectivity and gesture research,
 continuous LC3 audio, durable local capture, VAD, on-device transcription,
 on-glasses feedback, background operation, reconnect and Hub-page recovery,
-raw diagnostics, and the documented firmware limitations. Intent processing,
-the computer bridge, and terminal delegation are the next product layers.
+raw diagnostics, an authenticated local WebSocket bridge, and the documented
+firmware limitations. Broader intent processing and terminal-specific adapters
+remain future product layers.
 
 Here, **local-first** means the wearable connections, session control, desktop
 bridge, and owned context stay on the user's devices. Claude Code or Codex may
@@ -101,7 +102,7 @@ expose for a true locked Hub mode.
 | Durable LC3 capture, VAD, and selectable local Whisper/Parakeet STT | Implemented on Android |
 | Gemma 4 post-STT correction with separate original/corrected files | Implemented on Android; GPU-qualified on the representative RedMagic phone |
 | On-device intent, task context, and approval policy | Planned |
-| Authenticated bridge to the user's computer | Planned |
+| Authenticated WebSocket bridge to the user's computer | Implemented; local `ws://` transport |
 | Claude Code and Codex terminal adapters | Planned |
 | Glasses status, questions, approvals, cancellation, and results | Planned |
 
@@ -110,9 +111,9 @@ expose for a true locked Hub mode.
 - Connects both G2 lenses and an R1 ring.
 - Starts raw 16 kHz mono LC3 streaming automatically.
 - Journals compressed audio before decoding, saves VAD speech with a
-  five-second pre-roll and one-second endpoint delay, and transcribes locally
-  with a Tools-selectable local model. Parakeet 0.6B is the current default;
-  Parakeet 110M and Tiny Whisper remain available.
+  two-second pre-roll and a 1.75-second total-silence boundary, and transcribes
+  locally with a Tools-selectable local model. Parakeet 0.6B is the current
+  default; Parakeet 110M and Tiny Whisper remain available.
 - Lets Android users choose a shared device folder for Files-visible speech
   WAVs plus separate `.raw.txt` and `.corrected.txt` transcripts. Home's
   **Transcriptions** tab shows the original first and corrected text second,
@@ -122,6 +123,13 @@ expose for a true locked Hub mode.
 - Runs Gemma 4 E4B correction through pinned LiteRT-LM in a dedicated Android
   process after Parakeet commits the raw transcript. The correction queue is
   durable and never blocks capture, VAD, or STT.
+- Saves an authenticated local WebSocket endpoint, secret, upgrade-header mode,
+  and agent names under **Tools → Agent connection**. Gemma uses those names as
+  correction vocabulary, and only the corrected live transcript is matched
+  and sent after `connection.ready`. Each G2 status follows one FIFO lifecycle:
+  `Queued:` while correction/routing is pending, then `Saved:` or acknowledged
+  `Sent:` for two seconds before clearing. Inbound server messages appear as
+  serialized `Received:` items and also clear after two seconds.
 - Draws a thin waveform in the upper-left using LC3 global gain and an adaptive
   silence floor.
 - Displays `Tap`, `Double tap`, `Swipe up`, `Swipe down`, and
@@ -134,6 +142,58 @@ expose for a true locked Hub mode.
   `bluetooth-central` background support.
 - Prevents screen sleep while the app is visible and preserves active BLE,
   reconnect, and LC3 work during temporary app switching.
+
+## Connect a local agent WebSocket
+
+Open **Tools → Agent connection** and save the numeric IP address, numeric
+port, secret, upgrade authentication header, and one or more agent names. Work
+Bench connects to:
+
+```text
+ws://127.0.0.1:8787/ws
+```
+
+The secret is stored only in app-private `workbench/voice_websocket.json` and
+is sent only during the HTTP upgrade as either:
+
+```text
+Authorization: Bearer <local-secret>
+```
+
+or:
+
+```text
+X-Voice-Api-Token: <local-secret>
+```
+
+The client sends no hello message. It waits for `connection.ready`, routes a
+complete configured agent-name match with `message.send`, correlates the
+server's `message.accepted` using `request_id`, and resumes from the last
+observed event ID after an unexpected reconnect. The optional legacy setting
+sends exactly `agent` and `message`.
+
+[`voice_websocket.example.json`](voice_websocket.example.json) documents the
+validated app-private schema. Agent names are matched case-insensitively as
+complete phrases. When a transcript starts with the selected name, Work Bench
+removes that spoken invocation from the outgoing message; a name elsewhere in
+the corrected transcript selects the agent while preserving the full text.
+The raw and corrected transcript files remain separate, and transcription or
+correction jobs restored after a process restart are never allowed to send an
+old command.
+
+`ws://` is unencrypted, so use it only over a trusted local connection. On an
+Android phone, `127.0.0.1` means the phone, not the development computer. For a
+computer-hosted development server on port 8787, an explicit USB bridge keeps
+the configured endpoint on loopback:
+
+```sh
+adb -s <android-serial> reverse tcp:8787 tcp:8787
+```
+
+The secret, endpoint, transcripts, inbound message content, request IDs, and
+server session IDs are excluded from Work Bench logs. Socket failure never
+blocks durable audio capture, VAD, STT, transcript files, Gemma correction, or
+shared-folder export.
 
 ## Run the current hardware POC
 
@@ -217,18 +277,32 @@ therefore report the correction provider as `gpu`.
 ### Override correction instructions
 
 Open **Tools → Transcription → Transcript correction**. Edit **LLM
-instructions** and tap **Save instructions**. The app validates and atomically
-writes app-private `workbench/config.json`; the correction supervisor reloads
-that file immediately before every job. The new instructions therefore apply
-to the next transcription without restarting the app or model.
+instructions** and tap **Save instructions**. When a File storage folder is
+selected, the app writes the validated prompt to
+`workbench-correction-prompt.txt` in that folder so Files and other apps with
+access to the folder can read or edit it. The prompt is also mirrored into the
+app-private `workbench/config.json` as a last-known-good fallback. Without a
+selected shared folder, saves remain app-private.
+
+At startup and immediately before every correction job, the app checks the
+shared prompt and validates it before mirroring or using it. A valid external
+edit therefore applies to the next transcription without restarting the app
+or model. If the shared prompt is missing, the app recreates it from the
+private fallback. An unreadable, empty, oversized, or partially written shared
+prompt never replaces the last validated value, and Settings reports the
+validation error.
 
 [`config.example.json`](config.example.json) documents the complete schema.
+Its generic default includes the constrained leading-command recovery used by
+the physical `Flux` validation: only a configured name or acoustic alias may
+be restored, and only when the remaining text is a plausible imperative.
 Only schema version 1, the pinned Gemma model, the `gpu` backend, a timeout from
 5 to 120 seconds, and non-empty instructions up to 2,000 characters are
 accepted. If an external edit is malformed, the last validated configuration
 remains active and Settings shows the validation error. Local `config.json` is
 ignored and must never be committed because user instructions may contain
-private vocabulary.
+private vocabulary. The shared prompt is user data as well and must not be
+copied into the repository.
 
 Every completed turn records app-private timing metadata for audio duration,
 STT decode and total time, correction queue delay, engine load, inference,
@@ -273,6 +347,27 @@ show the phone as `device`, not `unauthorized`:
 ```sh
 adb devices
 ```
+
+On Linux, if a RedMagic phone is listed as `no permissions`, install the
+checked-in USB rule once and reload udev:
+
+```sh
+sudo install -o root -g root -m 0644 \
+  tool/udev/51-redmagic-adb.rules \
+  /etc/udev/rules.d/51-redmagic-adb.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger \
+  --subsystem-match=usb \
+  --attr-match=idVendor=19d2 \
+  --attr-match=idProduct=1352
+adb kill-server
+adb start-server
+adb devices
+```
+
+The rule is limited to USB vendor/product `19d2:1352` and the existing
+`plugdev` group. Reconnect the phone if the current USB node does not update.
+Do not broaden it to all Android or USB devices.
 
 With one authorized Android device connected, copy the default larger model:
 
@@ -394,6 +489,9 @@ shared folder.
 - [Gemma transcript correction](docs/GEMMA_TRANSCRIPT_CORRECTION.md) — process
   isolation, hot configuration, persistence, timing, GPU qualification, and
   continuous-run acceptance.
+- [Voice WebSocket bridge](docs/VOICE_WEBSOCKET.md) — authentication,
+  transcript routing, acknowledgements, reconnect resume, G2 status, and
+  privacy boundaries.
 - [Transcription and model test plan](docs/TRANSCRIPTION_TURN_TEST_PLAN.md) —
   physical Kokoro tests and matched-input STT comparison rules.
 - [Hub/Terminal long-press analysis](docs/G2_R1_HUB_LONG_PRESS.md) — physical

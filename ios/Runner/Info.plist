@@ -30,6 +30,13 @@
 	<string>This app connects directly to Even Realities G2 glasses and an R1 ring.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>This app connects directly to Even Realities G2 glasses and an R1 ring.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Work Bench connects to an agent server on your local network.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

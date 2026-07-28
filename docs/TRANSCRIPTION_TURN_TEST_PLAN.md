@@ -5,8 +5,9 @@
 Validate that continuous G2 audio becomes reliable conversational turns:
 
 ```text
-speech → last positive VAD detection → 1 second endpoint
-→ atomic WAV → pre-roll cleared → FIFO transcription job
+speech → 500 ms detector silence → clear prior pre-roll
+→ 1.25 second endpoint tail → atomic WAV → retain tail for next turn
+→ FIFO transcription job
 → latest-turn text only
 ```
 
@@ -75,9 +76,9 @@ python3 .agents/skills/kokoro-g2-transcription-loop/scripts/kokoro_turn_suite.py
   --case duration_clip_600ms_characterize \
   --case duration_clip_650ms_characterize \
   --case duration_clip_700ms_characterize \
-  --case gap_1450ms_characterize \
-  --case gap_1500ms_characterize \
-  --case gap_1550ms_characterize \
+  --case gap_1650ms_characterize \
+  --case gap_1700ms_characterize \
+  --case gap_1750ms_characterize \
   --repeat 3 \
   --output-dir /tmp/workbench-kokoro-boundary-repeats \
   --computer-volume 0.90
@@ -171,10 +172,10 @@ suite.
 
 ### Phase C: silence-gap boundary
 
-Each stimulus contains two distinct short phrases. The effective acoustic
-split boundary is expected near 1.5 seconds: 500 ms for Silero to report
-silence, followed by Work Bench's 1000 ms endpoint capture. Speaker, room, and
-microphone tails can shift the observed boundary, so dense probes are required.
+Each stimulus contains two distinct short phrases. The nominal acoustic split
+boundary is 1.75 seconds: 500 ms for Silero to report silence, followed by Work
+Bench's 1,250 ms endpoint capture. Speaker, room, and microphone tails can
+shift the observed boundary, so dense probes are required.
 
 | ID | Inserted digital silence | Repetitions | Expected result |
 | --- | ---: | ---: | --- |
@@ -187,9 +188,11 @@ microphone tails can shift the observed boundary, so dense probes are required.
 | C7 | 1500 ms | 3 | Boundary characterization |
 | C8 | 1550 ms | 3 | Boundary characterization |
 | C9 | 1650 ms | 3 | Boundary characterization |
-| C10 | 1800 ms | 3 | Two independent turns |
-| C11 | 2500 ms | 1 | Two independent turns |
-| C12 | 5000 ms | 1 | Two independent turns |
+| C10 | 1700 ms | 3 | Boundary characterization |
+| C11 | 1750 ms | 3 | Boundary characterization |
+| C12 | 1800 ms | 3 | Two independent turns |
+| C13 | 2500 ms | 1 | Two independent turns |
+| C14 | 5000 ms | 1 | Two independent turns |
 
 The transition probes pass when all repetitions are safe and the observed
 merge/split ratio is recorded. After a reference boundary is established on
@@ -218,7 +221,7 @@ Bluetooth restart even if a transcript eventually appears.
 1. Confirm models are ready, G2 audio is stable, and the baseline level is low.
 2. Run A1–A7 before long tests so minimum-duration failures are cheap to
    diagnose.
-3. Run C1–C12 in ascending gap order to locate the actual merge/split boundary.
+3. Run C1–C14 in ascending gap order to locate the actual merge/split boundary.
 4. Run B1–B5 as the standard duration suite.
 5. Run D1–D3 for queue pressure.
 6. Run D4–D8 individually with lifecycle markers enabled.
@@ -230,7 +233,7 @@ Bluetooth restart even if a transcript eventually appears.
 ```text
 [WorkBench][VAD] state=speech_started segment=<id>
 [WorkBench][TranscriptUI] state=cleared reason=speech_started segment=<id>
-[WorkBench][VAD] state=speech_ending segment=<id> delay_ms=1000
+[WorkBench][VAD] state=speech_ending segment=<id> delay_ms=1250
 [WorkBench][VAD] state=buffer_cleared segment=<id> bytes=<positive> next=ready
 [WorkBench][VAD] state=speech_ended segment=<id> audio_ms=<duration>
 [WorkBench][Transcription] state=queued segment=<id> pending=<count>
@@ -242,10 +245,12 @@ Bluetooth restart even if a transcript eventually appears.
 
 - Both playback boundary markers are present and name the same case.
 - The observed segment count equals the expected turn count.
-- `speech_ended audio_ms` contains 0.95–1.10 seconds of post-VAD PCM for every
+- `speech_ended audio_ms` contains 1.20–1.35 seconds of post-VAD PCM for every
   normally completed turn. Logcat wall time is retained as a diagnostic only
   because isolate-to-UI delivery may be batched under load.
-- Buffer clearing occurs before the same segment is queued.
+- Buffer clearing occurs when the endpoint starts and before the same segment
+  ends and is queued. Only audio captured before the endpoint transition is
+  cleared; the endpoint tail remains available to the next turn.
 - Segment IDs remain ordered across start, clear, queue, processing, and final
   transcript markers.
 - Each completed turn produces its own WAV and TXT file.
@@ -291,7 +296,49 @@ Matched-input model comparison additionally requires:
 6. Correct pipeline with poor words: inspect speaker acoustics, clipping, and
    STT model accuracy without weakening turn-boundary assertions.
 
-## Reference physical run
+## Reference physical runs
+
+### Current 1,250 ms endpoint-tail revision
+
+On July 27, 2026, a representative RedMagic phone passed both sides of the
+1.75-second total-silence boundary with the packaged Parakeet 0.6B model
+attested on NNAPI:
+
+- `short_continuation` kept three utterances separated by 400 ms in one turn.
+  The transcript WER was 0.00, the retained endpoint tail was 1,250 ms, capture
+  held 100 frames/s, and every transport, activity, queue, and safety check
+  passed.
+- `queue_overlap` split three utterances separated by 1,800 ms into three
+  ordered turns. Per-turn WER was 0.20, 0.00, and 0.00; every turn reported a
+  1,250 ms endpoint tail; capture held 100 frames/s; and every transport,
+  activity, queue, and safety check passed.
+- Gemma correction completed on its GPU provider, the glasses status advanced
+  through `Queued` and `Saved` before clearing after two seconds, and the WAV,
+  raw transcript, and corrected transcript were exported to and indexed in the
+  selected Android shared-storage folder.
+
+Two earlier 1,800 ms boundary trials remain preserved as failures. In both, all
+boundary, capture, and safety checks passed, but Parakeet consistently decoded
+the first fixture phrase as "It's on the table" and exceeded the 0.25 WER
+limit. The second phrase decoded at 0.00 WER after the endpoint/pre-roll handoff
+fix. These failures are not omitted from the evidence or relabeled as passes.
+
+The fixture SHA-256 values for the accepted runs are:
+
+- `short_continuation`: source
+  `5decba01fd1e42f13faaadf3779636f9780e3e314b7685effc7a04c3ad30ec05`,
+  padded playback
+  `3db84b815a2824002a7b23f009c41363ac416e8c458e360e22239ec2578a9ef1`.
+- `queue_overlap`: source
+  `0fcc1edfefdc13eafe9e62383592cc29d578717b2f74be681d248913b6efe826`,
+  padded playback
+  `a96c9afd9d9c6a0b838ae7680aedb70727074389d138d016e955d60d347e7cc6`.
+
+### Earlier 1,000 ms endpoint-tail revision
+
+The reference results below used the earlier 1,000 ms endpoint-tail revision.
+They remain immutable historical evidence and must not be relabeled as
+1,250 ms results.
 
 ### Marker-validated run
 

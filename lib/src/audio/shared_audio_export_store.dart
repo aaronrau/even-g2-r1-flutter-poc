@@ -31,6 +31,9 @@ final class SharedTranscript {
 }
 
 final class SharedAudioExportStore extends ChangeNotifier {
+  static const String correctionPromptFileName =
+      'workbench-correction-prompt.txt';
+
   SharedAudioExportStore({
     MethodChannel channel = const MethodChannel(
       'dev.opensourceglasses/workbench_storage',
@@ -110,6 +113,23 @@ final class SharedAudioExportStore extends ChangeNotifier {
       <String, Object>{'paths': stablePaths},
     );
     return exported ?? 0;
+  }
+
+  Future<String?> readCorrectionInstructions() async {
+    if (!_isAndroid || folder == null) {
+      return null;
+    }
+    return _channel.invokeMethod<String>('readCorrectionInstructions');
+  }
+
+  Future<void> writeCorrectionInstructions(String instructions) async {
+    if (!_isAndroid || folder == null) {
+      throw StateError('Choose a shared folder before saving instructions.');
+    }
+    await _channel.invokeMethod<void>(
+      'writeCorrectionInstructions',
+      <String, Object>{'instructions': instructions},
+    );
   }
 
   Future<void> refreshTranscriptions() async {

@@ -32,7 +32,7 @@ the same normalized, padded fixture. The original volume is restored in a
 [WorkBench][Capture] state=streaming sequence=<integer>
 [WorkBench][Inference] state=attested workload=vad provider=nnapi nnapi_nodes=<positive> cpu_nodes=<integer> other_nodes=<integer> nnapi_us=<integer> cpu_us=<integer>
 [WorkBench][VAD] state=ready provider=<provider> recovered=<true|false>
-[WorkBench][VAD] state=speech_started segment=<id>
+[WorkBench][VAD] state=speech_started segment=<id> pre_roll_ms=<integer> pre_roll_bytes=<positive>
 [WorkBench][TranscriptUI] state=cleared reason=speech_started segment=<id>
 [WorkBench][VAD] state=speech_ending segment=<id> delay_ms=<integer>
 [WorkBench][VAD] state=buffer_cleared segment=<id> bytes=<positive> next=ready
@@ -49,6 +49,13 @@ endpoint delay. `speech_ended audio_ms` reports the PCM duration captured after
 that transition. Validate `audio_ms` rather than logcat wall time because
 isolate-to-UI marker delivery may be batched under load.
 
+The current command boundary requires approximately 1.75 seconds of total
+silence: Silero qualifies 500 ms before the transition, then Work Bench retains
+and reports a 1,250 ms endpoint tail. A resumed positive VAD detection during
+that tail cancels finalization and keeps the audio in the same turn. Therefore,
+normal completed turns must report `delay_ms=1250` and approximately
+`audio_ms=1250`.
+
 The attestation marker is required only when the corresponding ready/completed
 provider is `nnapi`. A CPU provider must not emit a synthetic NNAPI
 attestation. The positive NNAPI node count comes from a silent warm-up profile
@@ -56,6 +63,14 @@ created in the app cache and deleted after its aggregate counts are logged.
 
 For a complete turn, the clear, ending, buffer-clear, ended, queued, processing,
 and final markers must retain the same segment ID and appear in that order.
+`buffer_cleared` removes audio captured before the endpoint transition. Audio
+captured after that marker remains in the bounded pre-roll so a near-boundary
+next utterance does not lose its opening words. If speech resumes before the
+endpoint completes, finalization is cancelled and that audio remains part of
+the active turn.
+`speech_started` must report the PCM already prepended from continuous capture;
+the standard Work Bench window is two seconds (`pre_roll_ms=2000`) after the
+ring buffer has filled.
 
 Existing audio summaries are also accepted:
 

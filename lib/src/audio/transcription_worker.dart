@@ -24,6 +24,7 @@ final class TranscriptionResult {
     required this.decodeMs,
     required this.totalMs,
     required this.queuedAt,
+    required this.routeEligible,
   });
 
   final String segmentId;
@@ -35,6 +36,23 @@ final class TranscriptionResult {
   final int decodeMs;
   final int totalMs;
   final DateTime queuedAt;
+  final bool routeEligible;
+}
+
+final class TranscriptionRecoveryTracker {
+  final Set<String> _restoredJobIds = <String>{};
+
+  void restore(Iterable<String> segmentIds) {
+    _restoredJobIds.addAll(segmentIds);
+  }
+
+  void markLive(String segmentId) {
+    _restoredJobIds.remove(segmentId);
+  }
+
+  bool takeRouteEligibility(String segmentId) {
+    return !_restoredJobIds.remove(segmentId);
+  }
 }
 
 final class TranscriptionSupervisor {
@@ -57,6 +75,8 @@ final class TranscriptionSupervisor {
   final Map<String, Timer> _jobRetryTimers = <String, Timer>{};
   final Map<String, int> _jobRetryAttempts = <String, int>{};
   final Map<String, DateTime> _jobQueuedAt = <String, DateTime>{};
+  final TranscriptionRecoveryTracker _recoveryTracker =
+      TranscriptionRecoveryTracker();
   ReceivePort? _events;
   ReceivePort? _errors;
   ReceivePort? _exit;
@@ -81,6 +101,7 @@ final class TranscriptionSupervisor {
     if (_disposed) {
       return;
     }
+    _recoveryTracker.markLive(segmentId);
     _pending[segmentId] = wavPath;
     _jobQueuedAt.putIfAbsent(segmentId, () => DateTime.now().toUtc());
     _persistPending();
@@ -199,6 +220,7 @@ final class TranscriptionSupervisor {
       case 'result':
         final id = event['id']! as String;
         final text = event['text']! as String;
+        final routeEligible = _recoveryTracker.takeRouteEligibility(id);
         final queuedAt = _jobQueuedAt.remove(id) ?? DateTime.now().toUtc();
         final totalMs = DateTime.now()
             .toUtc()
@@ -226,6 +248,7 @@ final class TranscriptionSupervisor {
             decodeMs: event['decodeMs']! as int,
             totalMs: totalMs,
             queuedAt: queuedAt,
+            routeEligible: routeEligible,
           ),
         );
         return;
@@ -318,6 +341,7 @@ final class TranscriptionSupervisor {
     _pending.removeWhere(
       (_, path) => !File(path).existsSync() || _hasTranscriptForAudio(path),
     );
+    _recoveryTracker.restore(_pending.keys);
     _persistPending();
     if (_pending.isNotEmpty) {
       onStatus(
