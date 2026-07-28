@@ -380,7 +380,8 @@ final class _HomePageState extends State<HomePage> {
         isPlayingTranscript: controller.isPlayingTranscript,
         onClearEvents: controller.clearLogs,
         onChooseFolder: () => _run(controller.chooseSharedAudioFolder),
-        onRefreshMessages: () => _run(controller.refreshSharedMessages),
+        onRefreshMessages: () =>
+            _run(() => controller.refreshSharedMessages(reconcileShared: true)),
         onTabChanged: (tab) {
           final messagesSelected = tab == HomeHistoryTab.messages;
           controller.setSharedMessageViewActive(messagesSelected);

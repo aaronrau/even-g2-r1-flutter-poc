@@ -162,15 +162,27 @@ Home's **Messages** tab combines those sent/received records with completed
 transcripts from the same Android document provider. It pairs each transcript
 with a same-name `.wav` and reads or plays files directly from the shared
 folder. Playback uses the content URI rather than copying audio back into
-private storage. The list refreshes only while **Messages** is selected,
-presents the newest 20 combined records first, and reveals the next 20 near
-the end of each scroll batch. **Events** is the default peer tab and retains
-only the 30 most recent in-app events. The native storage bridge also keeps an
-app-private filename-to-document-URI index. This preserves deterministic
-listing and playback on OEM document providers that accept writes but return
-an empty child-directory query; the indexed WAV/TXT content itself remains in
-the user-selected shared folder. The correction prompt is deliberately
-excluded from transcript enumeration.
+private storage. The native bridge maintains an app-private SQLite index of
+message and transcript metadata plus text. A normal **Messages** selection
+queries SQLite instead of reopening every shared text document. Every
+successful app export updates the index incrementally. The first selection
+after upgrading or changing folders performs a one-time shared-folder import;
+the explicit refresh action performs a full reconciliation for files changed
+by another app. The shared WAV/TXT files remain the interoperable source of
+truth, and playback still uses their content URIs.
+
+The same private database records successful export fingerprints. Background
+recovery sync skips unchanged files that are still present in the native
+document index, so opening Messages is not queued behind redundant copies of
+the complete capture archive.
+
+The list presents the newest 20 combined records first and reveals the next 20
+near the end of each scroll batch. **Events** is the default peer tab and
+retains only the 30 most recent in-app events. The native storage bridge also
+keeps an app-private filename-to-document-URI index. This preserves
+deterministic listing and playback on OEM document providers that accept
+writes but return an empty child-directory query. The correction prompt is
+deliberately excluded from transcript enumeration.
 
 Shared export is downstream from durable capture: a revoked grant, unavailable
 document provider, or copy failure never blocks journaling, VAD, or local

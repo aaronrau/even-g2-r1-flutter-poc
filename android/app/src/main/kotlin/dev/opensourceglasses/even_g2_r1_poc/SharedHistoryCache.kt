@@ -1,0 +1,510 @@
+package dev.opensourceglasses.even_g2_r1_poc
+
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+import java.io.File
+
+/**
+ * App-private SQLite index for the Files-visible history.
+ *
+ * The shared files remain the interoperable source of truth. This index avoids
+ * reopening every text document whenever the Messages tab becomes active.
+ */
+internal class SharedHistoryCache(
+    context: Context,
+) : SQLiteOpenHelper(
+        context,
+        DATABASE_NAME,
+        null,
+        DATABASE_VERSION,
+    ) {
+    companion object {
+        private const val DATABASE_NAME = "workbench_shared_history.db"
+        private const val DATABASE_VERSION = 2
+
+        private const val TABLE_META = "cache_meta"
+        private const val TABLE_TRANSCRIPTS = "transcripts"
+        private const val TABLE_MESSAGES = "messages"
+        private const val TABLE_EXPORTS = "exports"
+
+        private const val META_TRANSCRIPTS_SNAPSHOT = "transcripts_snapshot"
+        private const val META_MESSAGES_SNAPSHOT = "messages_snapshot"
+        private const val MAX_TEXT_CHARACTERS = 65_536
+    }
+
+    override fun onCreate(database: SQLiteDatabase) {
+        database.execSQL(
+            """
+            CREATE TABLE $TABLE_META (
+                cache_key TEXT PRIMARY KEY NOT NULL,
+                cache_value INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        database.execSQL(
+            """
+            CREATE TABLE $TABLE_TRANSCRIPTS (
+                transcript_id TEXT PRIMARY KEY NOT NULL,
+                raw_text TEXT,
+                legacy_text TEXT,
+                corrected_text TEXT,
+                audio_file_name TEXT,
+                updated_at_millis INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        database.execSQL(
+            """
+            CREATE TABLE $TABLE_MESSAGES (
+                message_id TEXT PRIMARY KEY NOT NULL,
+                direction TEXT NOT NULL,
+                message_text TEXT NOT NULL,
+                updated_at_millis INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        database.execSQL(
+            """
+            CREATE TABLE $TABLE_EXPORTS (
+                file_name TEXT PRIMARY KEY NOT NULL,
+                file_size INTEGER NOT NULL,
+                modified_at_millis INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        database.execSQL(
+            "CREATE INDEX transcripts_updated_idx " +
+                "ON $TABLE_TRANSCRIPTS(updated_at_millis DESC)",
+        )
+        database.execSQL(
+            "CREATE INDEX messages_updated_idx " +
+                "ON $TABLE_MESSAGES(updated_at_millis DESC)",
+        )
+    }
+
+    override fun onUpgrade(
+        database: SQLiteDatabase,
+        oldVersion: Int,
+        newVersion: Int,
+    ) {
+        database.execSQL("DROP TABLE IF EXISTS $TABLE_META")
+        database.execSQL("DROP TABLE IF EXISTS $TABLE_TRANSCRIPTS")
+        database.execSQL("DROP TABLE IF EXISTS $TABLE_MESSAGES")
+        database.execSQL("DROP TABLE IF EXISTS $TABLE_EXPORTS")
+        onCreate(database)
+    }
+
+    fun reset() {
+        writableDatabase.runInTransaction {
+            delete(TABLE_META, null, null)
+            delete(TABLE_TRANSCRIPTS, null, null)
+            delete(TABLE_MESSAGES, null, null)
+            delete(TABLE_EXPORTS, null, null)
+        }
+    }
+
+    fun invalidateSnapshots() {
+        writableDatabase.delete(TABLE_META, null, null)
+    }
+
+    fun hasTranscriptSnapshot(): Boolean =
+        hasSnapshot(META_TRANSCRIPTS_SNAPSHOT)
+
+    fun hasMessageSnapshot(): Boolean =
+        hasSnapshot(META_MESSAGES_SNAPSHOT)
+
+    fun replaceTranscripts(entries: List<Map<String, Any?>>) {
+        writableDatabase.runInTransaction {
+            delete(TABLE_TRANSCRIPTS, null, null)
+            for (entry in entries) {
+                val id = (entry["id"] as? String)?.trim().orEmpty()
+                val originalText =
+                    (entry["originalText"] as? String)?.trim().orEmpty()
+                val updatedAtMillis =
+                    (entry["updatedAtMillis"] as? Number)?.toLong()
+                if (id.isEmpty() ||
+                    originalText.isEmpty() ||
+                    updatedAtMillis == null
+                ) {
+                    continue
+                }
+                val values =
+                    ContentValues().apply {
+                        put("transcript_id", id)
+                        put("raw_text", originalText)
+                        putNullableText(
+                            "corrected_text",
+                            entry["correctedText"] as? String,
+                        )
+                        putNullableText(
+                            "audio_file_name",
+                            entry["audioFileName"] as? String,
+                        )
+                        put("updated_at_millis", updatedAtMillis)
+                    }
+                insertWithOnConflict(
+                    TABLE_TRANSCRIPTS,
+                    null,
+                    values,
+                    SQLiteDatabase.CONFLICT_REPLACE,
+                )
+            }
+            markSnapshot(this, META_TRANSCRIPTS_SNAPSHOT)
+        }
+    }
+
+    fun replaceMessages(entries: List<Map<String, Any?>>) {
+        writableDatabase.runInTransaction {
+            delete(TABLE_MESSAGES, null, null)
+            for (entry in entries) {
+                val id = (entry["id"] as? String)?.trim().orEmpty()
+                val direction = entry["direction"] as? String
+                val text = (entry["text"] as? String)?.trim().orEmpty()
+                val updatedAtMillis =
+                    (entry["updatedAtMillis"] as? Number)?.toLong()
+                if (id.isEmpty() ||
+                    direction !in setOf("sent", "received") ||
+                    text.isEmpty() ||
+                    updatedAtMillis == null
+                ) {
+                    continue
+                }
+                val values =
+                    ContentValues().apply {
+                        put("message_id", id)
+                        put("direction", direction)
+                        put("message_text", text)
+                        put("updated_at_millis", updatedAtMillis)
+                    }
+                insertWithOnConflict(
+                    TABLE_MESSAGES,
+                    null,
+                    values,
+                    SQLiteDatabase.CONFLICT_REPLACE,
+                )
+            }
+            markSnapshot(this, META_MESSAGES_SNAPSHOT)
+        }
+    }
+
+    fun listTranscripts(): List<Map<String, Any?>> {
+        val entries = mutableListOf<Map<String, Any?>>()
+        readableDatabase.query(
+            TABLE_TRANSCRIPTS,
+            arrayOf(
+                "transcript_id",
+                "raw_text",
+                "legacy_text",
+                "corrected_text",
+                "audio_file_name",
+                "updated_at_millis",
+            ),
+            "raw_text IS NOT NULL OR legacy_text IS NOT NULL",
+            null,
+            null,
+            null,
+            "updated_at_millis DESC, transcript_id DESC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val rawText = cursor.nullableString(1)
+                val legacyText = cursor.nullableString(2)
+                entries.add(
+                    mapOf(
+                        "id" to cursor.getString(0),
+                        "originalText" to (rawText ?: legacyText),
+                        "correctedText" to cursor.nullableString(3),
+                        "audioFileName" to cursor.nullableString(4),
+                        "updatedAtMillis" to cursor.getLong(5),
+                    ),
+                )
+            }
+        }
+        return entries
+    }
+
+    fun listMessages(): List<Map<String, Any?>> {
+        val entries = mutableListOf<Map<String, Any?>>()
+        readableDatabase.query(
+            TABLE_MESSAGES,
+            arrayOf(
+                "message_id",
+                "direction",
+                "message_text",
+                "updated_at_millis",
+            ),
+            null,
+            null,
+            null,
+            null,
+            "updated_at_millis DESC, message_id DESC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                entries.add(
+                    mapOf(
+                        "id" to cursor.getString(0),
+                        "direction" to cursor.getString(1),
+                        "text" to cursor.getString(2),
+                        "updatedAtMillis" to cursor.getLong(3),
+                    ),
+                )
+            }
+        }
+        return entries
+    }
+
+    fun indexExportedFile(source: File) {
+        val classified = classify(source.name) ?: return
+        val modifiedAt =
+            source.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis()
+        val database = writableDatabase
+        when (classified.kind) {
+            SharedHistoryFileKind.sentMessage,
+            SharedHistoryFileKind.receivedMessage,
+            -> {
+                val text = readText(source)
+                if (text.isEmpty()) {
+                    return
+                }
+                val direction =
+                    if (classified.kind == SharedHistoryFileKind.sentMessage) {
+                        "sent"
+                    } else {
+                        "received"
+                    }
+                val values =
+                    ContentValues().apply {
+                        put("message_id", source.name)
+                        put("direction", direction)
+                        put("message_text", text)
+                        put("updated_at_millis", modifiedAt)
+                    }
+                database.insertWithOnConflict(
+                    TABLE_MESSAGES,
+                    null,
+                    values,
+                    SQLiteDatabase.CONFLICT_REPLACE,
+                )
+            }
+            SharedHistoryFileKind.rawTranscript,
+            SharedHistoryFileKind.legacyTranscript,
+            SharedHistoryFileKind.correctedTranscript,
+            SharedHistoryFileKind.audio,
+            -> {
+                database.insertWithOnConflict(
+                    TABLE_TRANSCRIPTS,
+                    null,
+                    ContentValues().apply {
+                        put("transcript_id", classified.id)
+                        put("updated_at_millis", 0L)
+                    },
+                    SQLiteDatabase.CONFLICT_IGNORE,
+                )
+                val column =
+                    when (classified.kind) {
+                        SharedHistoryFileKind.rawTranscript -> "raw_text"
+                        SharedHistoryFileKind.legacyTranscript -> "legacy_text"
+                        SharedHistoryFileKind.correctedTranscript ->
+                            "corrected_text"
+                        SharedHistoryFileKind.audio -> "audio_file_name"
+                        else -> error("Unexpected history file kind.")
+                    }
+                val value =
+                    if (classified.kind == SharedHistoryFileKind.audio) {
+                        source.name
+                    } else {
+                        readText(source)
+                    }
+                if (value.isEmpty()) {
+                    return
+                }
+                database.execSQL(
+                    """
+                    UPDATE $TABLE_TRANSCRIPTS
+                    SET $column = ?,
+                        updated_at_millis = MAX(updated_at_millis, ?)
+                    WHERE transcript_id = ?
+                    """.trimIndent(),
+                    arrayOf(value, modifiedAt, classified.id),
+                )
+            }
+        }
+    }
+
+    fun isCurrentExport(source: File): Boolean {
+        readableDatabase.query(
+            TABLE_EXPORTS,
+            arrayOf("file_size", "modified_at_millis"),
+            "file_name = ?",
+            arrayOf(source.name),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor ->
+            return cursor.moveToFirst() &&
+                cursor.getLong(0) == source.length() &&
+                cursor.getLong(1) == source.lastModified()
+        }
+    }
+
+    fun hasExportRecord(fileName: String): Boolean {
+        readableDatabase.query(
+            TABLE_EXPORTS,
+            arrayOf("file_name"),
+            "file_name = ?",
+            arrayOf(fileName),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor ->
+            return cursor.moveToFirst()
+        }
+    }
+
+    fun markExported(source: File) {
+        writableDatabase.insertWithOnConflict(
+            TABLE_EXPORTS,
+            null,
+            ContentValues().apply {
+                put("file_name", source.name)
+                put("file_size", source.length())
+                put("modified_at_millis", source.lastModified())
+            },
+            SQLiteDatabase.CONFLICT_REPLACE,
+        )
+    }
+
+    private fun hasSnapshot(key: String): Boolean {
+        readableDatabase.query(
+            TABLE_META,
+            arrayOf("cache_value"),
+            "cache_key = ?",
+            arrayOf(key),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor ->
+            return cursor.moveToFirst() && cursor.getInt(0) == 1
+        }
+    }
+
+    private fun markSnapshot(
+        database: SQLiteDatabase,
+        key: String,
+    ) {
+        database.insertWithOnConflict(
+            TABLE_META,
+            null,
+            ContentValues().apply {
+                put("cache_key", key)
+                put("cache_value", 1)
+            },
+            SQLiteDatabase.CONFLICT_REPLACE,
+        )
+    }
+
+    private fun classify(name: String): SharedHistoryFile? {
+        val lower = name.lowercase()
+        if (name.isEmpty() ||
+            lower == MainActivity.CORRECTION_PROMPT_FILE_NAME ||
+            lower.endsWith(".part.wav") ||
+            lower.endsWith(".part.txt")
+        ) {
+            return null
+        }
+        val suffixAndKind =
+            when {
+                lower.endsWith(".sent.message.txt") ->
+                    ".sent.message.txt" to SharedHistoryFileKind.sentMessage
+                lower.endsWith(".received.message.txt") ->
+                    ".received.message.txt" to
+                        SharedHistoryFileKind.receivedMessage
+                lower.endsWith(".corrected.txt") ->
+                    ".corrected.txt" to
+                        SharedHistoryFileKind.correctedTranscript
+                lower.endsWith(".raw.txt") ->
+                    ".raw.txt" to SharedHistoryFileKind.rawTranscript
+                lower.endsWith(".txt") ->
+                    ".txt" to SharedHistoryFileKind.legacyTranscript
+                lower.endsWith(".wav") -> ".wav" to SharedHistoryFileKind.audio
+                else -> return null
+            }
+        val id =
+            if (suffixAndKind.second in
+                setOf(
+                    SharedHistoryFileKind.sentMessage,
+                    SharedHistoryFileKind.receivedMessage,
+                )
+            ) {
+                name
+            } else {
+                name.dropLast(suffixAndKind.first.length)
+            }
+        return id.takeIf { it.isNotEmpty() }?.let {
+            SharedHistoryFile(it, suffixAndKind.second)
+        }
+    }
+
+    private fun readText(source: File): String {
+        val output = StringBuilder()
+        source.bufferedReader(Charsets.UTF_8).use { reader ->
+            val buffer = CharArray(4096)
+            while (output.length < MAX_TEXT_CHARACTERS) {
+                val remaining =
+                    minOf(buffer.size, MAX_TEXT_CHARACTERS - output.length)
+                val count = reader.read(buffer, 0, remaining)
+                if (count <= 0) {
+                    break
+                }
+                output.append(buffer, 0, count)
+            }
+        }
+        return output.toString().trim()
+    }
+}
+
+private data class SharedHistoryFile(
+    val id: String,
+    val kind: SharedHistoryFileKind,
+)
+
+private enum class SharedHistoryFileKind {
+    rawTranscript,
+    legacyTranscript,
+    correctedTranscript,
+    audio,
+    sentMessage,
+    receivedMessage,
+}
+
+private fun ContentValues.putNullableText(
+    key: String,
+    value: String?,
+) {
+    val trimmed = value?.trim().orEmpty()
+    if (trimmed.isEmpty()) {
+        putNull(key)
+    } else {
+        put(key, trimmed)
+    }
+}
+
+private fun android.database.Cursor.nullableString(index: Int): String? =
+    if (isNull(index)) null else getString(index)
+
+private inline fun <T> SQLiteDatabase.runInTransaction(
+    block: SQLiteDatabase.() -> T,
+): T {
+    beginTransaction()
+    return try {
+        val value = block()
+        setTransactionSuccessful()
+        value
+    } finally {
+        endTransaction()
+    }
+}

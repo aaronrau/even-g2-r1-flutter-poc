@@ -156,31 +156,38 @@ void main() {
 
   test('loads saved transcripts and controls shared WAV playback', () async {
     final calls = <String>[];
+    final transcriptReconciliations = <bool>[];
     messenger.setMockMethodCallHandler(channel, (call) async {
       calls.add(call.method);
       return switch (call.method) {
         'currentDirectory' => <String, Object>{'displayName': 'Shared'},
-        'listTranscriptions' => <Object?>[
-          <Object?, Object?>{
-            'id': 'older',
-            'originalText': 'Older raw transcript',
-            'correctedText': 'Older transcript',
-            'audioFileName': 'older.wav',
-            'updatedAtMillis': 1000,
-          },
-          <Object?, Object?>{
-            'id': 'newer',
-            'originalText': 'Newer raw transcript',
-            'correctedText': 'Newer transcript',
-            'audioFileName': 'newer.wav',
-            'updatedAtMillis': 2000,
-          },
-          <Object?, Object?>{
-            'id': 'invalid',
-            'originalText': '',
-            'updatedAtMillis': 3000,
-          },
-        ],
+        'listTranscriptions' => () {
+          transcriptReconciliations.add(
+            (call.arguments as Map<Object?, Object?>)['reconcileShared']
+                as bool,
+          );
+          return <Object?>[
+            <Object?, Object?>{
+              'id': 'older',
+              'originalText': 'Older raw transcript',
+              'correctedText': 'Older transcript',
+              'audioFileName': 'older.wav',
+              'updatedAtMillis': 1000,
+            },
+            <Object?, Object?>{
+              'id': 'newer',
+              'originalText': 'Newer raw transcript',
+              'correctedText': 'Newer transcript',
+              'audioFileName': 'newer.wav',
+              'updatedAtMillis': 2000,
+            },
+            <Object?, Object?>{
+              'id': 'invalid',
+              'originalText': '',
+              'updatedAtMillis': 3000,
+            },
+          ];
+        }(),
         'playAudio' => null,
         'stopAudio' => null,
         _ => fail('Unexpected method ${call.method}'),
@@ -192,11 +199,13 @@ void main() {
     await store.initialize();
     expect(store.transcripts, isEmpty);
     await store.refreshTranscriptions();
+    await store.refreshTranscriptions(reconcileShared: true);
 
     expect(store.transcripts.map((transcript) => transcript.text), <String>[
       'Newer transcript',
       'Older transcript',
     ]);
+    expect(transcriptReconciliations, <bool>[false, true]);
     final newest = store.transcripts.first;
     await store.toggleAudio(newest);
     expect(store.playingAudioFileName, 'newer.wav');
@@ -207,29 +216,36 @@ void main() {
   });
 
   test('loads sent and received WebSocket messages newest first', () async {
+    final messageReconciliations = <bool>[];
     messenger.setMockMethodCallHandler(channel, (call) async {
       return switch (call.method) {
         'currentDirectory' => <String, Object>{'displayName': 'Shared'},
-        'listMessages' => <Object?>[
-          <Object?, Object?>{
-            'id': 'older.sent.message.txt',
-            'direction': 'sent',
-            'text': 'Agent One: Start the task.',
-            'updatedAtMillis': 1000,
-          },
-          <Object?, Object?>{
-            'id': 'newer.received.message.txt',
-            'direction': 'received',
-            'text': 'Agent One: Task complete.',
-            'updatedAtMillis': 2000,
-          },
-          <Object?, Object?>{
-            'id': 'invalid.message.txt',
-            'direction': 'unknown',
-            'text': 'Ignore this record.',
-            'updatedAtMillis': 3000,
-          },
-        ],
+        'listMessages' => () {
+          messageReconciliations.add(
+            (call.arguments as Map<Object?, Object?>)['reconcileShared']
+                as bool,
+          );
+          return <Object?>[
+            <Object?, Object?>{
+              'id': 'older.sent.message.txt',
+              'direction': 'sent',
+              'text': 'Agent One: Start the task.',
+              'updatedAtMillis': 1000,
+            },
+            <Object?, Object?>{
+              'id': 'newer.received.message.txt',
+              'direction': 'received',
+              'text': 'Agent One: Task complete.',
+              'updatedAtMillis': 2000,
+            },
+            <Object?, Object?>{
+              'id': 'invalid.message.txt',
+              'direction': 'unknown',
+              'text': 'Ignore this record.',
+              'updatedAtMillis': 3000,
+            },
+          ];
+        }(),
         _ => fail('Unexpected method ${call.method}'),
       };
     });
@@ -238,6 +254,7 @@ void main() {
 
     await store.initialize();
     await store.refreshMessages();
+    await store.refreshMessages(reconcileShared: true);
 
     expect(store.messages.map((message) => message.text), <String>[
       'Agent One: Task complete.',
@@ -250,6 +267,7 @@ void main() {
         SharedWebSocketMessageDirection.sent,
       ],
     );
+    expect(messageReconciliations, <bool>[false, true]);
   });
 
   test(

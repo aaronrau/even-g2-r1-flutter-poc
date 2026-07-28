@@ -163,7 +163,7 @@ final class SharedAudioExportStore extends ChangeNotifier {
     );
   }
 
-  Future<void> refreshTranscriptions() async {
+  Future<void> refreshTranscriptions({bool reconcileShared = false}) async {
     if (!_isAndroid || folder == null) {
       transcripts = const <SharedTranscript>[];
       transcriptLoadError = null;
@@ -175,7 +175,10 @@ final class SharedAudioExportStore extends ChangeNotifier {
     notifyListeners();
     try {
       final messages =
-          await _channel.invokeMethod<List<Object?>>('listTranscriptions') ??
+          await _channel.invokeMethod<List<Object?>>(
+            'listTranscriptions',
+            <String, Object>{'reconcileShared': reconcileShared},
+          ) ??
           const <Object?>[];
       final loaded = messages
           .whereType<Map<Object?, Object?>>()
@@ -197,7 +200,7 @@ final class SharedAudioExportStore extends ChangeNotifier {
     }
   }
 
-  Future<void> refreshMessages() async {
+  Future<void> refreshMessages({bool reconcileShared = false}) async {
     if (!_isAndroid || folder == null) {
       messages = const <SharedWebSocketMessage>[];
       messageLoadError = null;
@@ -209,7 +212,10 @@ final class SharedAudioExportStore extends ChangeNotifier {
     notifyListeners();
     try {
       final records =
-          await _channel.invokeMethod<List<Object?>>('listMessages') ??
+          await _channel.invokeMethod<List<Object?>>(
+            'listMessages',
+            <String, Object>{'reconcileShared': reconcileShared},
+          ) ??
           const <Object?>[];
       final loaded = records
           .whereType<Map<Object?, Object?>>()

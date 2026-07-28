@@ -225,6 +225,13 @@ STT, correction, file export, or access to the original transcript.
   with the reserved `.sent.message.txt` or `.received.message.txt` suffix, and
   export both to the selected shared folder. Keep message persistence and G2
   display independent so a failure in either consumer cannot block the other.
+- Treat the app-private SQLite history database only as a performance index.
+  Keep the atomic app-private records and shared Files-visible WAV/TXT files as
+  durable sources. Update the index after every successful export, import the
+  selected folder once after migration or folder change, and reserve a full
+  document-provider rescan for explicit user refresh and cache recovery. Keep
+  export fingerprints app-private and skip an unchanged indexed file during
+  recovery sync; never make a bulk export block a cached history read.
 - Keep every G2 BLE write bounded. Transcript and inbound-message text uses
   high priority, visual waveform writes use low priority, and a stalled write
   must time out so later FIFO statuses can still reach and clear from G2.

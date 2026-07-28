@@ -168,6 +168,9 @@ batches and refreshes only while that text tab is selected.
   complete saved transcript text, and shared WAV playback controls.
 - `android/.../MainActivity.kt` — scoped Android document-tree access,
   transcript enumeration, and content-URI media playback.
+- `android/.../SharedHistoryCache.kt` — app-private SQLite index for fast
+  Messages loads, incremental export updates, and explicit shared-folder
+  reconciliation.
 - `android/.../BleConnectionService.kt` — Android foreground service and wake
   lock.
 - `android/.../WorkBenchApplication.kt` — native BLE cancellation safety.

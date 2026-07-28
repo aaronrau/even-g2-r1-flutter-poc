@@ -35,7 +35,7 @@ class MainActivity : FlutterActivity() {
         private const val STORAGE_PREFERENCES = "workbench_storage"
         private const val STORAGE_DIRECTORY_URI = "shared_audio_directory_uri"
         private const val STORAGE_DOCUMENT_INDEX = "shared_audio_document_index"
-        private const val CORRECTION_PROMPT_FILE_NAME =
+        internal const val CORRECTION_PROMPT_FILE_NAME =
             "workbench-correction-prompt.txt"
         private const val MAX_CORRECTION_PROMPT_CHARACTERS = 2000
         private const val CHOOSE_DIRECTORY_REQUEST = 4201
@@ -43,6 +43,10 @@ class MainActivity : FlutterActivity() {
 
     private var pendingDirectoryResult: MethodChannel.Result? = null
     private val storageExecutor = Executors.newSingleThreadExecutor()
+    private val historyExecutor = Executors.newSingleThreadExecutor()
+    private val sharedHistoryCache by lazy {
+        SharedHistoryCache(applicationContext)
+    }
     private lateinit var storageChannel: MethodChannel
     private var sharedAudioPlayer: MediaPlayer? = null
     private var sharedAudioFileName: String? = null
@@ -208,8 +212,18 @@ class MainActivity : FlutterActivity() {
                     }
                     writeCorrectionInstructions(instructions, result)
                 }
-                "listTranscriptions" -> listTranscriptions(result)
-                "listMessages" -> listMessages(result)
+                "listTranscriptions" ->
+                    listTranscriptions(
+                        result,
+                        reconcileShared =
+                            call.argument<Boolean>("reconcileShared") == true,
+                    )
+                "listMessages" ->
+                    listMessages(
+                        result,
+                        reconcileShared =
+                            call.argument<Boolean>("reconcileShared") == true,
+                    )
                 "playAudio" -> {
                     val fileName = call.argument<String>("fileName")
                     if (fileName == null) {
@@ -284,6 +298,7 @@ class MainActivity : FlutterActivity() {
                 getSharedPreferences(STORAGE_PREFERENCES, Context.MODE_PRIVATE)
             if (preferences.getString(STORAGE_DIRECTORY_URI, null) != uri.toString()) {
                 preferences.edit().remove(STORAGE_DOCUMENT_INDEX).apply()
+                sharedHistoryCache.reset()
             }
             releaseStoredDirectory(except = uri)
             preferences.edit()
@@ -350,6 +365,7 @@ class MainActivity : FlutterActivity() {
                 .edit()
                 .remove(STORAGE_DIRECTORY_URI)
                 .apply()
+            sharedHistoryCache.reset()
             return null
         }
         return uri
@@ -362,6 +378,7 @@ class MainActivity : FlutterActivity() {
             .remove(STORAGE_DIRECTORY_URI)
             .remove(STORAGE_DOCUMENT_INDEX)
             .apply()
+        sharedHistoryCache.reset()
     }
 
     private fun releaseStoredDirectory(except: Uri? = null) {
@@ -401,8 +418,9 @@ class MainActivity : FlutterActivity() {
             try {
                 var exported = 0
                 for (path in paths.distinct()) {
-                    exportInternalFile(directory, path)
-                    exported++
+                    if (exportInternalFile(directory, path)) {
+                        exported++
+                    }
                 }
                 runOnUiThread { result.success(exported) }
             } catch (_: Exception) {
@@ -420,7 +438,7 @@ class MainActivity : FlutterActivity() {
     private fun exportInternalFile(
         directory: Uri,
         sourcePath: String,
-    ) {
+    ): Boolean {
         val source = File(sourcePath).canonicalFile
         val internalRoot = filesDir.canonicalFile
         if (!source.isFile ||
@@ -439,8 +457,21 @@ class MainActivity : FlutterActivity() {
                 directory,
                 DocumentsContract.getTreeDocumentId(directory),
             )
+        val indexedTarget = indexedDocument(directory, source.name)
+        if (indexedTarget != null) {
+            if (sharedHistoryCache.isCurrentExport(source)) {
+                return false
+            }
+            if (!sharedHistoryCache.hasExportRecord(source.name) ||
+                sharedDocumentIsCurrent(indexedTarget, source)
+            ) {
+                updateHistoryCache(source)
+                sharedHistoryCache.markExported(source)
+                return false
+            }
+        }
         val target =
-            indexedDocument(directory, source.name)
+            indexedTarget
                 ?: findChild(directory, source.name)
                 ?: predictableExternalStorageChild(directory, source.name)
                 ?: DocumentsContract.createDocument(
@@ -457,6 +488,37 @@ class MainActivity : FlutterActivity() {
             } ?: throw IllegalStateException("The document provider is not writable.")
         }
         rememberDocument(source.name, target)
+        updateHistoryCache(source)
+        sharedHistoryCache.markExported(source)
+        return true
+    }
+
+    private fun updateHistoryCache(source: File) {
+        try {
+            sharedHistoryCache.indexExportedFile(source)
+        } catch (_: Exception) {
+            try {
+                sharedHistoryCache.invalidateSnapshots()
+            } catch (_: Exception) {
+                // A later cache read falls back to the shared document scan.
+            }
+            Log.w(
+                "WorkBench",
+                "[WorkBench][SharedStorage] state=history_cache_update_failed " +
+                    "fallback=shared_scan",
+            )
+        }
+    }
+
+    private fun sharedDocumentIsCurrent(
+        document: Uri,
+        source: File,
+    ): Boolean {
+        val sourceModified = source.lastModified()
+        val documentModified = documentLastModified(document)
+        return sourceModified > 0 &&
+            documentModified > 0 &&
+            documentModified >= sourceModified
     }
 
     private fun findChild(
@@ -623,7 +685,10 @@ class MainActivity : FlutterActivity() {
         return trimmed
     }
 
-    private fun listTranscriptions(result: MethodChannel.Result) {
+    private fun listTranscriptions(
+        result: MethodChannel.Result,
+        reconcileShared: Boolean,
+    ) {
         val directory = storedDirectoryUri()
         if (directory == null) {
             result.error(
@@ -633,12 +698,33 @@ class MainActivity : FlutterActivity() {
             )
             return
         }
-        storageExecutor.execute {
+        historyExecutor.execute {
             try {
-                val entries = readSharedTranscriptions(directory)
+                var source = "cache"
+                val entries =
+                    if (reconcileShared ||
+                        !sharedHistoryCache.hasTranscriptSnapshot()
+                    ) {
+                        try {
+                            readSharedTranscriptions(directory).also {
+                                sharedHistoryCache.replaceTranscripts(it)
+                                source = "shared"
+                            }
+                        } catch (error: Exception) {
+                            val cached = sharedHistoryCache.listTranscripts()
+                            if (cached.isEmpty()) {
+                                throw error
+                            }
+                            source = "cache_fallback"
+                            cached
+                        }
+                    } else {
+                        sharedHistoryCache.listTranscripts()
+                    }
                 Log.i(
                     "WorkBench",
                     "[WorkBench][SharedStorage] state=list_ready " +
+                        "source=$source " +
                         "transcriptions=${entries.size}",
                 )
                 runOnUiThread { result.success(entries) }
@@ -823,7 +909,10 @@ class MainActivity : FlutterActivity() {
             }.toList()
     }
 
-    private fun listMessages(result: MethodChannel.Result) {
+    private fun listMessages(
+        result: MethodChannel.Result,
+        reconcileShared: Boolean,
+    ) {
         val directory = storedDirectoryUri()
         if (directory == null) {
             result.error(
@@ -833,12 +922,33 @@ class MainActivity : FlutterActivity() {
             )
             return
         }
-        storageExecutor.execute {
+        historyExecutor.execute {
             try {
-                val entries = readSharedMessages(directory)
+                var source = "cache"
+                val entries =
+                    if (reconcileShared ||
+                        !sharedHistoryCache.hasMessageSnapshot()
+                    ) {
+                        try {
+                            readSharedMessages(directory).also {
+                                sharedHistoryCache.replaceMessages(it)
+                                source = "shared"
+                            }
+                        } catch (error: Exception) {
+                            val cached = sharedHistoryCache.listMessages()
+                            if (cached.isEmpty()) {
+                                throw error
+                            }
+                            source = "cache_fallback"
+                            cached
+                        }
+                    } else {
+                        sharedHistoryCache.listMessages()
+                    }
                 Log.i(
                     "WorkBench",
                     "[WorkBench][SharedStorage] state=message_list_ready " +
+                        "source=$source " +
                         "messages=${entries.size}",
                 )
                 runOnUiThread { result.success(entries) }
@@ -1207,6 +1317,7 @@ class MainActivity : FlutterActivity() {
         }
         stopSharedAudio()
         storageExecutor.shutdown()
+        historyExecutor.shutdown()
         WorkBenchLc3.dispose()
         super.onDestroy()
     }

@@ -474,15 +474,19 @@ final class WearableController extends ChangeNotifier
     _safeNotify();
   }
 
-  Future<void> refreshSharedMessages() async {
+  Future<void> refreshSharedMessages({bool reconcileShared = false}) async {
     Object? failure;
     try {
-      await _sharedAudioExportStore.refreshMessages();
+      await _sharedAudioExportStore.refreshMessages(
+        reconcileShared: reconcileShared,
+      );
     } on Object catch (error) {
       failure = error;
     }
     try {
-      await _sharedAudioExportStore.refreshTranscriptions();
+      await _sharedAudioExportStore.refreshTranscriptions(
+        reconcileShared: reconcileShared,
+      );
     } on Object catch (error) {
       failure ??= error;
     }

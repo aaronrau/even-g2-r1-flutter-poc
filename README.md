@@ -119,7 +119,9 @@ expose for a true locked Hub mode.
   **Messages** tab combines those transcripts with sent and received agent
   messages. It shows original text first and corrected text second, plays the
   paired WAV directly from that folder, loads the newest 20 records first, and
-  reveals more while scrolling.
+  reveals more while scrolling. An app-private SQLite index makes ordinary tab
+  loads fast; the refresh action explicitly reconciles changes made by other
+  apps in the shared folder.
 - Runs Gemma 4 E4B correction through pinned LiteRT-LM in a dedicated Android
   process after Parakeet commits the raw transcript. The correction queue is
   durable and never blocks capture, VAD, or STT.
@@ -473,9 +475,10 @@ Then:
    files are exported as they finish.
 3. Return to Home and select **Messages** to browse sent and received agent
    messages, read each original transcript followed by its corrected text, or
-   play the paired WAV. The list refreshes only when this tab is selected and
-   loads 20 entries at a time as you scroll. Select **Events** to see the 30
-   most recent in-app events.
+   play the paired WAV. The tab loads its app-private SQLite index and reveals
+   20 entries at a time as you scroll. Use **Refresh messages** to reconcile
+   files added, edited, or removed by another app. Select **Events** to see the
+   30 most recent in-app events.
 4. Tap **Connect devices**. Work Bench scans for the G2 pair and R1, connects
    them, and releases the temporary R1 setup link after Tri-Sync handoff.
 5. Speak to move the waveform and use the ring to display gestures.
