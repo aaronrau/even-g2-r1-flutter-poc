@@ -54,8 +54,11 @@ Each local diarization cluster produces a normalized TitaNet embedding:
 Each profile keeps its normalized centroid plus at most six recent signatures.
 Matching uses the best saved signature so normal microphone and room variation
 does not erase a previously good enrollment. Speaker profiles are app-private
-and persist across restarts. **Update my voice** merges the next enrollment
-sample into the primary centroid and signature bank.
+and persist across restarts. The bank keeps one primary profile and the 16
+most recently updated non-primary profiles. When a new unknown speaker arrives
+at that limit, the oldest inactive non-primary profile is evicted; startup also
+compacts profile banks created by older unbounded builds. **Update my voice**
+merges the next enrollment sample into the primary centroid and signature bank.
 **Reset speaker signatures** removes profiles but retains prior conversation
 turns.
 
@@ -78,7 +81,11 @@ available.
 
 **Reset You signature** removes only the primary voice profile, retains other
 saved speakers and conversation history, and enrolls the next clear sentence
-as the new `You` signature. The action is disabled while analysis is pending.
+as the new `You` signature. The reset remains busy until the current result and
+profile persistence are complete, preventing a late worker result from
+restoring the removed signature. A speech segment that began before the reset
+is not accepted as the replacement enrollment. The action is disabled while
+analysis is pending.
 
 Atomic WAV, text, and JSON files remain the durable records. SQLite is the
 fast UI index and may be rebuilt independently.
@@ -109,6 +116,8 @@ Automated acceptance includes:
 
 - speaker signature normalization, similarity, centroid updates, and JSON
   validation;
+- bounded legacy-profile compaction and reset cutover to the next newly started
+  speech segment;
 - atomic profile, pending-job, and conversation-record recovery;
 - SQLite method-channel indexing and ordered conversation reads;
 - enrollment, disabled, error, paging, 48dp target, and speaker-turn UI states;

@@ -22,7 +22,7 @@ final class G2PairingException implements Exception {
 }
 
 final class G2Connection {
-  static const Duration _waveformRefreshInterval = Duration(milliseconds: 350);
+  static const Duration _pulseRefreshInterval = Duration(milliseconds: 350);
   static const Duration _gestureDisplayHoldoff = Duration(milliseconds: 500);
   static const MethodChannel _bondChannel = MethodChannel(
     'dev.opensourceglasses/r1_bond',
@@ -65,7 +65,7 @@ final class G2Connection {
   Timer? _reconnectTimer;
   Timer? _pageRestoreTimer;
   Timer? _inferredHoldAudioTimer;
-  Timer? _waveformTimer;
+  Timer? _pulseTimer;
   Timer? _visibleGestureTimer;
   G2PairCandidate? _target;
   bool _manualDisconnect = false;
@@ -76,12 +76,11 @@ final class G2Connection {
   DateTime? _lastAudioSummaryAt;
   int _audioSummaryBytes = 0;
   int _audioSummaryFrames = 0;
-  final List<int> _waveformLevels = List<int>.filled(64, 0, growable: true);
   double? _audioNoiseFloor;
-  DateTime? _lastWaveformUpdateAt;
-  int? _lastWaveformSignature;
-  bool _waveformUpdateInFlight = false;
-  bool _waveformUpdatePending = false;
+  DateTime? _lastPulseUpdateAt;
+  int? _lastPulseSignature;
+  bool _pulseUpdateInFlight = false;
+  bool _pulseUpdatePending = false;
   bool _audioRecoveryInFlight = false;
   DateTime? _lastAudioRecoveryAt;
   DateTime? _lastGestureEventAt;
@@ -136,15 +135,15 @@ final class G2Connection {
   int pageExitEvents = 0;
   int pageRestoreAttempts = 0;
   String pageSessionStatus = 'not started';
-  int waveformUpdates = 0;
-  int waveformUpdatesSkipped = 0;
-  int? lastWaveformWriteDurationMs;
+  int pulseUpdates = 0;
+  int pulseUpdatesSkipped = 0;
+  int? lastPulseWriteDurationMs;
   int? lastGestureDisplayLatencyMs;
   int audioActivityLevel = 0;
   int? lastLc3GlobalGain;
   int? batteryLevel;
   bool? batteryCharging;
-  String waveformStatus = 'waiting for LC3 audio';
+  String pulseStatus = 'waiting for LC3 audio';
 
   bool get isConnected => state == LinkState.connected;
   String? get leftMac => _target?.leftMac;
@@ -157,7 +156,7 @@ final class G2Connection {
     _target = target;
     _manualDisconnect = true;
     await _teardownLinks();
-    _resetWaveformState();
+    _resetPulseState();
     batteryLevel = null;
     batteryCharging = null;
     _lastPageContent = '';
@@ -505,7 +504,7 @@ final class G2Connection {
     pageSessionStatus = 'audio visualizer page created';
     _onChanged();
     await Future<void>.delayed(const Duration(milliseconds: 180));
-    await _sendWaveform(force: true);
+    await _sendPulse(force: true);
   }
 
   Future<void> sendText(String content) async {
@@ -1136,9 +1135,9 @@ final class G2Connection {
     }
     _lastPageContent = label;
     _visibleGesturePageLabel = label;
-    _waveformTimer?.cancel();
-    _waveformTimer = null;
-    _scheduleWaveformUpdate();
+    _pulseTimer?.cancel();
+    _pulseTimer = null;
+    _schedulePulseUpdate();
     if (isConnected && _pageCreated && !terminalModeEnabled) {
       final stopwatch = Stopwatch()..start();
       unawaited(
@@ -1358,8 +1357,8 @@ final class G2Connection {
       case 5:
       case 6:
       case 7:
-        _waveformTimer?.cancel();
-        _waveformTimer = null;
+        _pulseTimer?.cancel();
+        _pulseTimer = null;
         final receivedAt = DateTime.now();
         final foregroundExitAt = _lastForegroundExitAt;
         final isNativeMenuExitSequence =
@@ -1730,9 +1729,9 @@ final class G2Connection {
     }
   }
 
-  void _resetWaveformState() {
-    _waveformTimer?.cancel();
-    _waveformTimer = null;
+  void _resetPulseState() {
+    _pulseTimer?.cancel();
+    _pulseTimer = null;
     _lastAudioPacket = null;
     _activeAudioSource = null;
     _lastAudioSummaryAt = null;
@@ -1748,15 +1747,14 @@ final class G2Connection {
     lastAudioAt = null;
     audioActivityLevel = 0;
     lastLc3GlobalGain = null;
-    _lastWaveformUpdateAt = null;
-    _lastWaveformSignature = null;
-    _waveformUpdateInFlight = false;
-    _waveformUpdatePending = false;
-    _waveformLevels.fillRange(0, _waveformLevels.length, 0);
-    waveformStatus = 'waiting for LC3 audio';
-    waveformUpdates = 0;
-    waveformUpdatesSkipped = 0;
-    lastWaveformWriteDurationMs = null;
+    _lastPulseUpdateAt = null;
+    _lastPulseSignature = null;
+    _pulseUpdateInFlight = false;
+    _pulseUpdatePending = false;
+    pulseStatus = 'waiting for LC3 audio';
+    pulseUpdates = 0;
+    pulseUpdatesSkipped = 0;
+    lastPulseWriteDurationMs = null;
     lastGestureDisplayLatencyMs = null;
   }
 
@@ -1802,7 +1800,7 @@ final class G2Connection {
     lastAudioAt = DateTime.now();
     _onLc3Audio(packet);
     _audioAnalysisWorker.addPacket(packet);
-    _scheduleWaveformUpdate();
+    _schedulePulseUpdate();
     _logAudioSummary(source, packet);
   }
 
@@ -1840,30 +1838,30 @@ final class G2Connection {
     lastLc3GlobalGain = snapshot.globalGain;
     audioActivityLevel = snapshot.activityLevel;
     _audioNoiseFloor = snapshot.noiseFloor;
-    _waveformLevels.setAll(0, snapshot.waveformLevels);
-    waveformStatus =
+    pulseStatus =
         'LC3 gain ${lastLc3GlobalGain ?? '—'} • '
         'silence ${_audioNoiseFloor?.toStringAsFixed(1) ?? '—'} • '
-        'voice $audioActivityLevel/255 • $waveformUpdates display updates';
+        'voice $audioActivityLevel/255 • $pulseUpdates pulse updates';
+    _schedulePulseUpdate();
     _onAudioChanged();
   }
 
-  void _scheduleWaveformUpdate() {
+  void _schedulePulseUpdate() {
     if (!isConnected ||
         !audioEnabled ||
         !_pageCreated ||
         terminalModeEnabled ||
-        _waveformTimer != null) {
+        _pulseTimer != null) {
       return;
     }
     final now = DateTime.now();
-    final previous = _lastWaveformUpdateAt;
+    final previous = _lastPulseUpdateAt;
     final elapsed = previous == null
-        ? _waveformRefreshInterval
+        ? _pulseRefreshInterval
         : now.difference(previous);
-    var delay = elapsed >= _waveformRefreshInterval
+    var delay = elapsed >= _pulseRefreshInterval
         ? Duration.zero
-        : _waveformRefreshInterval - elapsed;
+        : _pulseRefreshInterval - elapsed;
     final inputAt = _lastTypedUserInputAt;
     if (inputAt != null) {
       final inputElapsed = now.difference(inputAt);
@@ -1874,42 +1872,45 @@ final class G2Connection {
         }
       }
     }
-    _waveformTimer = Timer(delay, () {
-      _waveformTimer = null;
+    _pulseTimer = Timer(delay, () {
+      _pulseTimer = null;
       unawaited(
-        _sendWaveform().catchError((Object error) {
-          waveformStatus = 'waveform update failed: $error';
+        _sendPulse().catchError((Object error) {
+          pulseStatus = 'pulse update failed: $error';
           _onChanged();
-          _log('G2 waveform', '$error', isError: true);
+          _log('G2 pulse', '$error', isError: true);
         }),
       );
     });
   }
 
-  Future<void> _sendWaveform({bool force = false}) async {
+  Future<void> _sendPulse({bool force = false}) async {
     if ((!isConnected && !force) ||
         !_pageCreated ||
         terminalModeEnabled ||
         (!audioEnabled && !force)) {
       return;
     }
-    if (_waveformUpdateInFlight) {
-      _waveformUpdatePending = true;
+    if (_pulseUpdateInFlight) {
+      _pulseUpdatePending = true;
       return;
     }
-    _waveformUpdateInFlight = true;
+    _pulseUpdateInFlight = true;
     try {
-      final levels = List<int>.of(_waveformLevels, growable: false);
-      final signature = _waveformSignature(levels);
-      if (!force && signature == _lastWaveformSignature) {
-        _lastWaveformUpdateAt = DateTime.now();
-        waveformUpdatesSkipped++;
+      final streaming = audioEnabled && lastAudioAt != null;
+      final signature = streaming
+          ? G2Bitmap.audioActivityPulseState(audioActivityLevel) + 1
+          : 0;
+      if (!force && signature == _lastPulseSignature) {
+        _lastPulseUpdateAt = DateTime.now();
+        pulseUpdatesSkipped++;
         return;
       }
-      final bitmap = G2Bitmap.audioActivityWaveform(
-        levels: levels,
-        width: G2Protocol.visualizerWaveformWidth,
-        height: G2Protocol.visualizerWaveformHeight,
+      final bitmap = G2Bitmap.audioActivityPulse(
+        level: audioActivityLevel,
+        streaming: streaming,
+        width: G2Protocol.visualizerPulseWidth,
+        height: G2Protocol.visualizerPulseHeight,
       );
       final stopwatch = Stopwatch()..start();
       await _sendPayload(
@@ -1919,33 +1920,23 @@ final class G2Connection {
         priority: AsyncWritePriority.low,
       );
       stopwatch.stop();
-      _lastWaveformUpdateAt = DateTime.now();
-      _lastWaveformSignature = signature;
-      lastWaveformWriteDurationMs = stopwatch.elapsedMilliseconds;
-      waveformUpdates++;
-      waveformStatus =
+      _lastPulseUpdateAt = DateTime.now();
+      _lastPulseSignature = signature;
+      lastPulseWriteDurationMs = stopwatch.elapsedMilliseconds;
+      pulseUpdates++;
+      pulseStatus =
           'LC3 gain ${lastLc3GlobalGain ?? '—'} • '
           'silence ${_audioNoiseFloor?.toStringAsFixed(1) ?? '—'} • '
-          'voice $audioActivityLevel/255 • $waveformUpdates display updates • '
-          '${lastWaveformWriteDurationMs}ms last write';
+          'voice $audioActivityLevel/255 • $pulseUpdates pulse updates • '
+          '${lastPulseWriteDurationMs}ms last write';
       _onChanged();
     } finally {
-      _waveformUpdateInFlight = false;
-      if (_waveformUpdatePending) {
-        _waveformUpdatePending = false;
-        _scheduleWaveformUpdate();
+      _pulseUpdateInFlight = false;
+      if (_pulseUpdatePending) {
+        _pulseUpdatePending = false;
+        _schedulePulseUpdate();
       }
     }
-  }
-
-  int _waveformSignature(List<int> levels) {
-    var hash = 0x1fffffff;
-    for (final level in levels) {
-      // Sixteen-level quantization prevents tiny noise-floor changes from
-      // causing another full bitmap transfer.
-      hash = ((hash * 31) ^ (level >> 4)) & 0x7fffffff;
-    }
-    return hash;
   }
 
   bool _bytesEqual(Uint8List left, Uint8List right) {
@@ -2108,8 +2099,8 @@ final class G2Connection {
     _reconnectTimer = null;
     _pageRestoreTimer?.cancel();
     _pageRestoreTimer = null;
-    _waveformTimer?.cancel();
-    _waveformTimer = null;
+    _pulseTimer?.cancel();
+    _pulseTimer = null;
     _visibleGestureTimer?.cancel();
     _visibleGestureTimer = null;
     _visibleGesturePageLabel = null;
@@ -2132,7 +2123,7 @@ final class G2Connection {
     audioEnabled = false;
     batteryLevel = null;
     batteryCharging = null;
-    _resetWaveformState();
+    _resetPulseState();
     _pageCreated = false;
     _nativeMenuOpen = false;
     _awaitingNativeMenuOpenConfirm = false;

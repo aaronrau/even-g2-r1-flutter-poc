@@ -484,6 +484,7 @@ _WorkerAnalysisResult _analyzeConversation({
   required List<SpeakerProfile> profiles,
 }) {
   const maximumWindowSamples = 30 * 16000;
+  profiles = retainBoundedSpeakerProfiles(profiles).toList(growable: true);
   final wave = sherpa.readWave(path);
   if (wave.sampleRate != 16000 || wave.samples.isEmpty) {
     throw StateError('Conversation analysis requires a non-empty 16 kHz WAV.');
@@ -583,18 +584,18 @@ _WorkerAnalysisResult _analyzeConversation({
       if (best == null || bestScore < 0.65) {
         final nearestKnownScore = bestScore;
         createdSpeakers++;
-        final otherCount = profiles
-            .where((profile) => !profile.isPrimary)
-            .length;
         best = SpeakerProfile(
           id: 'speaker-${now.microsecondsSinceEpoch}-$createdSpeakers',
-          label: 'Speaker ${otherCount + 2}',
+          label: nextNonPrimarySpeakerLabel(profiles),
           embedding: embedding,
           sampleCount: 1,
           createdAt: now,
           updatedAt: now,
         );
         profiles.add(best);
+        profiles = retainBoundedSpeakerProfiles(
+          profiles,
+        ).toList(growable: true);
         bestScore = nearestKnownScore < 0 ? 0 : nearestKnownScore;
       } else if (bestScore >= 0.78) {
         final index = profiles.indexWhere((profile) => profile.id == best!.id);
@@ -702,7 +703,7 @@ _WorkerAnalysisResult _analyzeConversation({
   }
   return _WorkerAnalysisResult(
     record: record,
-    profiles: profiles,
+    profiles: retainBoundedSpeakerProfiles(profiles),
     audioMs: wave.samples.length * 1000 ~/ wave.sampleRate,
   );
 }

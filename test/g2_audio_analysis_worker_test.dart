@@ -42,7 +42,7 @@ void main() {
       );
 
       expect(speechSnapshot.activityLevel, greaterThan(150));
-      expect(speechSnapshot.waveformLevels.last, greaterThan(150));
+      expect(speechSnapshot.noiseFloor, closeTo(166, 0.1));
     },
   );
 }

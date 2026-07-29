@@ -865,7 +865,7 @@ final class _HomePageState extends State<HomePage> {
             Text('R1: ${g2.ringLinkStatus ?? 'waiting for Tri-Sync activity'}'),
             Text(
               'Audio: ${g2.audioPackets} packets • '
-              '${g2.waveformUpdates} display updates',
+              '${g2.pulseUpdates} pulse updates',
             ),
             Text(
               'Recovery: ${g2.pageExitEvents} exits • '

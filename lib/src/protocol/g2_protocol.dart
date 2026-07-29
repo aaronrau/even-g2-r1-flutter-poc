@@ -153,84 +153,56 @@ abstract final class G2Bitmap {
     return build4Bit(width: width, height: height, grayscale: pixels);
   }
 
-  /// Draws a thin scrolling audio-activity line for the G2 image container.
+  /// Draws a quantized grayscale audio-activity pulse for the G2.
   ///
-  /// [levels] contains values from 0 (quiet) through 255 (most active). The
-  /// direct BLE transport receives compressed LC3 rather than PCM, so these
-  /// values are an activity estimate derived from changes between LC3 frames.
-  static Uint8List audioActivityWaveform({
-    required List<int> levels,
-    int width = 192,
-    int height = 40,
+  /// The direct BLE transport receives compressed LC3 rather than PCM, so
+  /// [level] is an activity estimate derived from LC3 frame gain. Quantizing
+  /// the radius and shade keeps the dot stable and avoids redundant bitmap
+  /// writes for insignificant noise-floor changes.
+  static Uint8List audioActivityPulse({
+    required int level,
+    required bool streaming,
+    int width = 32,
+    int height = 24,
   }) {
-    if (width <= 0 || height < 3) {
-      throw ArgumentError('Waveform dimensions must be at least 1x3.');
+    if (width < 5 || height < 5) {
+      throw ArgumentError('Pulse dimensions must be at least 5x5.');
     }
     final pixels = List<int>.filled(width * height, 0);
-    if (levels.isEmpty) {
+    if (!streaming) {
       return build4Bit(width: width, height: height, grayscale: pixels);
     }
 
-    var previousX = 0;
-    var previousY = _waveformY(levels.first, height);
-    pixels[previousY * width] = 0xff;
-    for (var index = 1; index < levels.length; index++) {
-      final x = ((index * (width - 1)) / (levels.length - 1)).round();
-      final y = _waveformY(levels[index], height);
-      _drawLine(
-        pixels,
-        width: width,
-        height: height,
-        x0: previousX,
-        y0: previousY,
-        x1: x,
-        y1: y,
-      );
-      previousX = x;
-      previousY = y;
+    final state = audioActivityPulseState(level);
+    const radii = <int>[2, 3, 4, 5, 7, 9];
+    const shades = <int>[0x55, 0x77, 0x99, 0xbb, 0xdd, 0xff];
+    final maximumRadius = ((width < height ? width : height) - 2) ~/ 2;
+    final radius = radii[state].clamp(1, maximumRadius);
+    final radiusSquared = radius * radius;
+    final centerX = (width - 1) / 2;
+    final centerY = (height - 1) / 2;
+    for (var y = 0; y < height; y++) {
+      final deltaY = y - centerY;
+      for (var x = 0; x < width; x++) {
+        final deltaX = x - centerX;
+        if ((deltaX * deltaX) + (deltaY * deltaY) <= radiusSquared) {
+          pixels[y * width + x] = shades[state];
+        }
+      }
     }
 
     return build4Bit(width: width, height: height, grayscale: pixels);
   }
 
-  static int _waveformY(int level, int height) {
-    final normalized = level.clamp(0, 255) / 255;
-    return (height - 2 - normalized * (height - 3)).round();
-  }
-
-  static void _drawLine(
-    List<int> pixels, {
-    required int width,
-    required int height,
-    required int x0,
-    required int y0,
-    required int x1,
-    required int y1,
-  }) {
-    var x = x0;
-    var y = y0;
-    final deltaX = (x1 - x0).abs();
-    final stepX = x0 < x1 ? 1 : -1;
-    final deltaY = -(y1 - y0).abs();
-    final stepY = y0 < y1 ? 1 : -1;
-    var error = deltaX + deltaY;
-    while (true) {
-      if (x >= 0 && x < width && y >= 0 && y < height) {
-        pixels[y * width + x] = 0xff;
-      }
-      if (x == x1 && y == y1) {
-        break;
-      }
-      final doubledError = error * 2;
-      if (doubledError >= deltaY) {
-        error += deltaY;
-        x += stepX;
-      }
-      if (doubledError <= deltaX) {
-        error += deltaX;
-        y += stepY;
-      }
-    }
+  /// Maps the adaptive 0-255 activity signal to six stable visual states.
+  static int audioActivityPulseState(int level) {
+    final clamped = level.clamp(0, 255);
+    if (clamped < 32) return 0;
+    if (clamped < 80) return 1;
+    if (clamped < 128) return 2;
+    if (clamped < 176) return 3;
+    if (clamped < 224) return 4;
+    return 5;
   }
 }
 
@@ -573,8 +545,8 @@ final class G2ReceiveAssembler {
 
 /// Builds the subset of G2 commands needed by this transport POC.
 final class G2Protocol {
-  static const int visualizerWaveformWidth = 128;
-  static const int visualizerWaveformHeight = 24;
+  static const int visualizerPulseWidth = 32;
+  static const int visualizerPulseHeight = 24;
   static const int visualizerGestureY = 52;
 
   int _syncId = 0;
@@ -917,14 +889,14 @@ final class G2Protocol {
     );
   }
 
-  /// Rebuilds the Hub page as a waveform with an initially blank gesture line.
+  /// Rebuilds the Hub page as a pulse with an initially blank gesture line.
   Uint8List rebuildAudioVisualizerPage({String gesture = ''}) {
     return rebuildPageWithImage(
       content: gesture,
       imageX: 16,
       imageY: 12,
-      imageWidth: visualizerWaveformWidth,
-      imageHeight: visualizerWaveformHeight,
+      imageWidth: visualizerPulseWidth,
+      imageHeight: visualizerPulseHeight,
       textX: 16,
       textY: visualizerGestureY,
       textWidth: 544,

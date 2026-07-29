@@ -309,20 +309,28 @@ void main() {
       expect(utf8.decode(gesture[12]! as Uint8List), isEmpty);
       expect(image[1], 16);
       expect(image[2], 12);
-      expect(image[3], G2Protocol.visualizerWaveformWidth);
-      expect(image[4], G2Protocol.visualizerWaveformHeight);
+      expect(image[3], G2Protocol.visualizerPulseWidth);
+      expect(image[4], G2Protocol.visualizerPulseHeight);
     });
 
-    test('renders a one-fragment LC3 activity waveform', () {
-      final quiet = G2Bitmap.audioActivityWaveform(
-        levels: List<int>.filled(64, 0),
-        width: G2Protocol.visualizerWaveformWidth,
-        height: G2Protocol.visualizerWaveformHeight,
+    test('renders a dim-to-bright quantized LC3 activity pulse', () {
+      final stopped = G2Bitmap.audioActivityPulse(
+        level: 255,
+        streaming: false,
+        width: G2Protocol.visualizerPulseWidth,
+        height: G2Protocol.visualizerPulseHeight,
       );
-      final active = G2Bitmap.audioActivityWaveform(
-        levels: List<int>.generate(64, (index) => index * 4),
-        width: G2Protocol.visualizerWaveformWidth,
-        height: G2Protocol.visualizerWaveformHeight,
+      final quiet = G2Bitmap.audioActivityPulse(
+        level: 0,
+        streaming: true,
+        width: G2Protocol.visualizerPulseWidth,
+        height: G2Protocol.visualizerPulseHeight,
+      );
+      final active = G2Bitmap.audioActivityPulse(
+        level: 255,
+        streaming: true,
+        width: G2Protocol.visualizerPulseWidth,
+        height: G2Protocol.visualizerPulseHeight,
       );
       final protocol = G2Protocol();
       final packets = protocol.frame(
@@ -332,18 +340,26 @@ void main() {
       );
       final header = ByteData.sublistView(active);
 
-      expect(active.length, lessThan(1800));
-      expect(packets.length, lessThan(10));
+      expect(active.length, lessThan(600));
+      expect(packets.length, lessThan(4));
       expect(
         header.getInt32(18, Endian.little),
-        G2Protocol.visualizerWaveformWidth,
+        G2Protocol.visualizerPulseWidth,
       );
       expect(
         header.getInt32(22, Endian.little),
-        G2Protocol.visualizerWaveformHeight,
+        G2Protocol.visualizerPulseHeight,
       );
+      expect(_litPulsePixels(stopped), 0);
+      expect(_litPulsePixels(quiet), greaterThan(0));
+      expect(_litPulsePixels(active), greaterThan(_litPulsePixels(quiet)));
+      expect(_brightestPulseShade(quiet), 5);
+      expect(_brightestPulseShade(active), 15);
       expect(active, isNot(orderedEquals(quiet)));
-      expect(active.skip(118).where((byte) => byte != 0).length, lessThan(300));
+      expect(G2Bitmap.audioActivityPulseState(31), 0);
+      expect(G2Bitmap.audioActivityPulseState(32), 1);
+      expect(G2Bitmap.audioActivityPulseState(223), 4);
+      expect(G2Bitmap.audioActivityPulseState(224), 5);
     });
 
     test('extracts global gain from a 40-byte G2 LC3 frame', () {
@@ -368,4 +384,26 @@ void main() {
       expect(protocol.disableHeyEven(), isNotEmpty);
     });
   });
+}
+
+int _litPulsePixels(Uint8List bitmap) {
+  final dataOffset = ByteData.sublistView(bitmap).getUint32(10, Endian.little);
+  var count = 0;
+  for (final byte in bitmap.skip(dataOffset)) {
+    if ((byte >> 4) != 0) count++;
+    if ((byte & 0x0f) != 0) count++;
+  }
+  return count;
+}
+
+int _brightestPulseShade(Uint8List bitmap) {
+  final dataOffset = ByteData.sublistView(bitmap).getUint32(10, Endian.little);
+  var brightest = 0;
+  for (final byte in bitmap.skip(dataOffset)) {
+    final high = byte >> 4;
+    final low = byte & 0x0f;
+    if (high > brightest) brightest = high;
+    if (low > brightest) brightest = low;
+  }
+  return brightest;
 }

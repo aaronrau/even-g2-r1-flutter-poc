@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:math';
 
+const int maximumNonPrimarySpeakerProfiles = 16;
+
 final class ConversationModelPaths {
   const ConversationModelPaths({
     required this.segmentation,
@@ -196,6 +198,73 @@ List<SpeakerProfile> retainNonPrimarySpeakerProfiles(
 ) => List<SpeakerProfile>.unmodifiable(
   profiles.where((profile) => !profile.isPrimary),
 );
+
+/// Keeps one primary profile and a bounded, most-recent non-primary bank.
+///
+/// Profile matching runs for every finalized segment, so an unbounded bank
+/// would increase both memory and analysis time indefinitely. Duplicate IDs
+/// and older duplicate primary records are also removed during compaction.
+List<SpeakerProfile> retainBoundedSpeakerProfiles(
+  Iterable<SpeakerProfile> profiles, {
+  int maximumNonPrimary = maximumNonPrimarySpeakerProfiles,
+}) {
+  if (maximumNonPrimary < 0) {
+    throw ArgumentError.value(
+      maximumNonPrimary,
+      'maximumNonPrimary',
+      'The maximum must not be negative.',
+    );
+  }
+  final newestById = <String, SpeakerProfile>{};
+  for (final profile in profiles) {
+    final retained = newestById[profile.id];
+    if (retained == null ||
+        profile.updatedAt.isAfter(retained.updatedAt) ||
+        (profile.updatedAt == retained.updatedAt &&
+            profile.sampleCount > retained.sampleCount)) {
+      newestById[profile.id] = profile;
+    }
+  }
+  final primaries =
+      newestById.values
+          .where((profile) => profile.isPrimary)
+          .toList(growable: false)
+        ..sort(_compareSpeakerProfileRetention);
+  final others =
+      newestById.values
+          .where((profile) => !profile.isPrimary)
+          .toList(growable: false)
+        ..sort(_compareSpeakerProfileRetention);
+  return List<SpeakerProfile>.unmodifiable(<SpeakerProfile>[
+    if (primaries.isNotEmpty) primaries.first,
+    ...others.take(maximumNonPrimary),
+  ]);
+}
+
+String nextNonPrimarySpeakerLabel(Iterable<SpeakerProfile> profiles) {
+  final pattern = RegExp(r'^Speaker (\d+)$');
+  var maximum = 1;
+  for (final profile in profiles) {
+    final match = pattern.firstMatch(profile.label);
+    final number = match == null ? null : int.tryParse(match.group(1)!);
+    if (number != null && number > maximum) {
+      maximum = number;
+    }
+  }
+  return 'Speaker ${maximum + 1}';
+}
+
+int _compareSpeakerProfileRetention(SpeakerProfile left, SpeakerProfile right) {
+  final updated = right.updatedAt.compareTo(left.updatedAt);
+  if (updated != 0) {
+    return updated;
+  }
+  final samples = right.sampleCount.compareTo(left.sampleCount);
+  if (samples != 0) {
+    return samples;
+  }
+  return left.id.compareTo(right.id);
+}
 
 final class ConversationUtterance {
   const ConversationUtterance({

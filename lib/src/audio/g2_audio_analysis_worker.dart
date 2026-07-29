@@ -13,13 +13,11 @@ final class G2AudioAnalysisSnapshot {
     required this.globalGain,
     required this.activityLevel,
     required this.noiseFloor,
-    required this.waveformLevels,
   });
 
   final int globalGain;
   final int activityLevel;
   final double? noiseFloor;
-  final List<int> waveformLevels;
 }
 
 /// Processes every LC3 frame away from Flutter's UI/BLE event isolate.
@@ -64,18 +62,14 @@ final class G2AudioAnalysisWorker {
         }
         return;
       }
-      if (message is List<Object?> && message.length == 4) {
-        final levels = message[3];
-        if (levels is List<int>) {
-          _onSnapshot(
-            G2AudioAnalysisSnapshot(
-              globalGain: message[0]! as int,
-              activityLevel: message[1]! as int,
-              noiseFloor: message[2] as double?,
-              waveformLevels: levels,
-            ),
-          );
-        }
+      if (message is List<Object?> && message.length == 3) {
+        _onSnapshot(
+          G2AudioAnalysisSnapshot(
+            globalGain: message[0]! as int,
+            activityLevel: message[1]! as int,
+            noiseFloor: message[2] as double?,
+          ),
+        );
       }
     });
     _isolate = await Isolate.spawn<SendPort>(
@@ -132,7 +126,6 @@ const Duration _snapshotInterval = Duration(milliseconds: 33);
 void _g2AudioWorkerEntry(SendPort output) {
   final commands = ReceivePort();
   final tracker = G2VoiceLevelTracker();
-  final waveformLevels = List<int>.filled(64, 0, growable: true);
   var dirty = false;
   var latestGain = 0;
 
@@ -141,12 +134,7 @@ void _g2AudioWorkerEntry(SendPort output) {
       return;
     }
     dirty = false;
-    output.send(<Object?>[
-      latestGain,
-      tracker.level,
-      tracker.noiseFloor,
-      List<int>.of(waveformLevels, growable: false),
-    ]);
+    output.send(<Object?>[latestGain, tracker.level, tracker.noiseFloor]);
   });
 
   commands.listen((dynamic message) {
@@ -160,17 +148,13 @@ void _g2AudioWorkerEntry(SendPort output) {
           continue;
         }
         latestGain = gain;
-        final level = tracker.addGain(gain);
-        waveformLevels
-          ..removeAt(0)
-          ..add(level);
+        tracker.addGain(gain);
         dirty = true;
       }
       return;
     }
     if (message == _resetCommand) {
       tracker.reset();
-      waveformLevels.fillRange(0, waveformLevels.length, 0);
       latestGain = 0;
       dirty = false;
       return;

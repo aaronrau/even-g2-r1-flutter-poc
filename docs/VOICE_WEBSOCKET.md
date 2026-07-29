@@ -167,7 +167,7 @@ two-second hold starts only after that terminal state was written successfully.
 If the hold elapsed while disconnected, Work Bench clears the stale state
 before advancing after reconnection. Display and socket operations are
 serialized independently so neither can stall the audio pipeline. Text states
-use the high-priority BLE queue, waveform updates remain low priority, and an
+use the high-priority BLE queue, audio-pulse updates remain low priority, and an
 individual BLE write times out after two seconds so a stalled visual transfer
 cannot block every later status indefinitely.
 

@@ -85,6 +85,50 @@ void main() {
     expect(retained.any((profile) => profile.isPrimary), isFalse);
   });
 
+  test('speaker profile bank keeps one primary and recent other speakers', () {
+    final now = DateTime.utc(2026, 1, 1);
+    final profiles = <SpeakerProfile>[
+      SpeakerProfile(
+        id: 'primary-old',
+        label: 'You',
+        embedding: const <double>[1, 0],
+        sampleCount: 1,
+        createdAt: now,
+        updatedAt: now,
+        isPrimary: true,
+      ),
+      SpeakerProfile(
+        id: 'primary-current',
+        label: 'You',
+        embedding: const <double>[1, 0],
+        sampleCount: 2,
+        createdAt: now,
+        updatedAt: now.add(const Duration(seconds: 1)),
+        isPrimary: true,
+      ),
+      for (var index = 0; index < 20; index++)
+        SpeakerProfile(
+          id: 'speaker-$index',
+          label: 'Speaker ${index + 2}',
+          embedding: const <double>[0, 1],
+          sampleCount: 1,
+          createdAt: now,
+          updatedAt: now.add(Duration(minutes: index)),
+        ),
+    ];
+
+    final retained = retainBoundedSpeakerProfiles(profiles);
+
+    expect(retained, hasLength(maximumNonPrimarySpeakerProfiles + 1));
+    expect(
+      retained.where((profile) => profile.isPrimary).single.id,
+      'primary-current',
+    );
+    expect(retained.any((profile) => profile.id == 'speaker-0'), isFalse);
+    expect(retained.any((profile) => profile.id == 'speaker-19'), isTrue);
+    expect(nextNonPrimarySpeakerLabel(retained), 'Speaker 22');
+  });
+
   test('conversation records preserve speaker labels and overlap metadata', () {
     final now = DateTime.utc(2026, 1, 1);
     final record = ConversationRecord(

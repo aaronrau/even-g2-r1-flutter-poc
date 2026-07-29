@@ -48,8 +48,8 @@ still use whichever hosted model services the user configures.
 ## Hub soft-kiosk goal
 
 This build keeps a custom EvenHub page active with continuous microphone
-streaming. The page starts without text, shows a voice-responsive waveform,
-and displays R1 gestures beneath it.
+streaming. The page starts without text, shows a voice-responsive grayscale
+pulse, and displays R1 gestures beneath it.
 
 It is a best-effort **soft kiosk**, not a firmware-level locked mode. The app
 can restore its page and audio stream after recoverable interruptions, but the
@@ -85,7 +85,7 @@ expose for a true locked Hub mode.
 | Layer | Status |
 | --- | --- |
 | G2/R1 discovery, connection, protocol, and diagnostics | Implemented |
-| Continuous LC3 stream, waveform, gestures, and Hub recovery | Implemented |
+| Continuous LC3 stream, audio pulse, gestures, and Hub recovery | Implemented |
 | Android foreground operation and iOS background-central support | Implemented within platform limits |
 | Durable LC3 capture, VAD, and selectable local Whisper/Parakeet STT | Implemented on Android |
 | Optional independent speaker diarization and conversation history | Implemented on Android; disabled by default |
@@ -126,8 +126,8 @@ expose for a true locked Hub mode.
   `Sent:` for two seconds before clearing. Inbound server messages appear as
   serialized `Received:` items, are saved to the selected Files folder, and
   clear from the glasses after two seconds.
-- Draws a thin waveform in the upper-left using LC3 global gain and an adaptive
-  silence floor.
+- Draws a dim-to-bright pulsing dot in the upper-left using LC3 global gain and
+  an adaptive silence floor.
 - Displays `Tap`, `Double tap`, `Swipe up`, `Swipe down`, and
   `Long press (inferred)`.
 - Shows one live audio summary plus concise connection, gesture, and lifecycle
@@ -479,7 +479,7 @@ Then:
    diarized speaker turns, or **Events** for the 30 most recent in-app events.
 4. Tap **Connect devices**. Work Bench scans for the G2 pair and R1, connects
    them, and releases the temporary R1 setup link after Tri-Sync handoff.
-5. Speak to move the waveform and use the ring to display gestures.
+5. Speak to pulse the dot and use the ring to display gestures.
 6. Tap **Disconnect** to reset the complete wearable connection.
 
 Android's system folder picker gives Work Bench a persistent, scoped read/write

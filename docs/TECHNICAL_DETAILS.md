@@ -29,10 +29,12 @@ audited against MentraOS `dev` commit
 
 ## Hub page and audio
 
-The page contains a 128x24 4-bit grayscale waveform image at the upper-left and
-a gesture text container below it. Audio is kept enabled independently from
-tap and double-tap input. A displayed ring event clears after three seconds;
-each new event cancels and restarts that expiration timer.
+The page contains a 32x24 4-bit grayscale audio pulse image at the upper-left
+and a gesture text container below it. The dot is hidden before streaming,
+dim and small at quiet levels, then grows brighter and larger through six
+quantized activity states. Audio is kept enabled independently from tap and
+double-tap input. A displayed ring event clears after three seconds; each new
+event cancels and restarts that expiration timer.
 
 The microphone notification format observed in MentraOS and on hardware is:
 
@@ -48,22 +50,23 @@ selected Sherpa-ONNX backend: Tiny Whisper, Parakeet 110M CTC, or Parakeet 0.6B
 transducer. No audio or transcript is uploaded. The display still uses the LC3
 spectral global-gain index so rendering never waits for the decoder or models.
 
-The on-glasses image is a codec-level loudness proxy rather than a
-sample-accurate waveform. The phone UI meter uses decoded PCM. See
+The on-glasses pulse is a codec-level loudness proxy rather than a
+sample-accurate amplitude display. The phone UI meter uses decoded PCM. See
 [Local audio pipeline and recovery](LOCAL_AUDIO_PIPELINE.md) for persistence,
 worker boundaries, file layout, and restart behavior.
 
 The image path refreshes at a BLE-safe maximum of roughly three updates per
 second. Near-identical quiet frames are coalesced instead of retransmitted.
 Each visual update still sends a complete uncompressed BMP through the G2
-image-container protocol, so the smaller bitmap reduces a normal waveform
-transfer from about 18 BLE packets to fewer than 10.
+image-container protocol, so the 32x24 bitmap normally fits in fewer than four
+BLE packets. Six-state quantization skips writes while the visible pulse is
+unchanged.
 
 Audio notifications, control notifications, and display writes remain separate
 logical paths. The G2 control characteristic must serialize complete messages,
 so fragment writes cannot safely run on concurrent threads. The write
 scheduler instead prioritizes gesture text and control traffic over queued
-waveform and heartbeat work. It also briefly defers waveform refresh after
+audio-pulse and heartbeat work. It also briefly defers pulse refresh after
 input, allowing tap/swipe feedback to complete first without interrupting LC3
 reception.
 
@@ -122,8 +125,8 @@ BLE rather than through an active `AVAudioSession`.
 Transient lifecycle states never tear down the wearable services. On resume,
 the app reasserts the screen and background-service policies and presents the
 latest BLE state. While backgrounded, UI notifications are coalesced without
-throttling BLE packets, audio reception, reconnect, heartbeats, or the G2
-waveform. Diagnostic history and log-entry size are bounded; an operating
+throttling BLE packets, audio reception, reconnect, heartbeats, or the G2 audio
+pulse. Diagnostic history and log-entry size are bounded; an operating
 system memory-pressure signal trims nonessential state and stale scan results
 without disconnecting either wearable. Home retains only the 30 most recent
 events. Its shared transcript view loads saved entries in 20-item scroll
