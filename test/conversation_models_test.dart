@@ -56,6 +56,36 @@ void main() {
     expect(SpeakerProfile.fromJson(legacyJson).signatures, isEmpty);
   });
 
+  test('signature threshold accepts same-speaker acoustic variation', () {
+    final now = DateTime.utc(2026, 1, 1);
+    final profile = SpeakerProfile(
+      id: 'primary-user',
+      label: 'You',
+      embedding: const <double>[1, 0],
+      sampleCount: 1,
+      createdAt: now,
+      updatedAt: now,
+      isPrimary: true,
+    );
+    final similarity = speakerProfileSimilarity(profile, const <double>[
+      0.645,
+      0.764182,
+    ]);
+
+    expect(similarity, closeTo(0.645, 0.0001));
+    expect(similarity, lessThan(0.65));
+    expect(speakerSignatureMatches(similarity), isTrue);
+    expect(speakerSignatureMatches(0.6390224), isFalse);
+    expect(
+      speakerSignatureMatches(defaultSpeakerSignatureMatchThreshold),
+      isTrue,
+    );
+    expect(
+      () => speakerSignatureMatches(0.9, threshold: 0),
+      throwsArgumentError,
+    );
+  });
+
   test('resetting You retains every non-primary speaker profile', () {
     final now = DateTime.utc(2026, 1, 1);
     final primary = SpeakerProfile(

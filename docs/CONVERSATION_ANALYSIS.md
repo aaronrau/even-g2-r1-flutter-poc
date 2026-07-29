@@ -45,7 +45,8 @@ Each local diarization cluster produces a normalized TitaNet embedding:
 
 - short-turn clustering uses a `0.01` cosine-distance cut, with profile
   matching responsible for reuniting repeated turns;
-- cosine similarity at or above `0.65` reuses a saved profile;
+- cosine similarity at or above the independent `0.64` signature threshold
+  reuses a saved profile;
 - a strong match at or above `0.78` updates its bounded centroid;
 - a weaker match creates `Speaker 2`, `Speaker 3`, and so on;
 - overlapping diarization spans are labeled `Overlapping speakers` instead of
@@ -53,14 +54,16 @@ Each local diarization cluster produces a normalized TitaNet embedding:
 
 Each profile keeps its normalized centroid plus at most six recent signatures.
 Matching uses the best saved signature so normal microphone and room variation
-does not erase a previously good enrollment. Speaker profiles are app-private
-and persist across restarts. The bank keeps one primary profile and the 16
-most recently updated non-primary profiles. When a new unknown speaker arrives
-at that limit, the oldest inactive non-primary profile is evicted; startup also
-compacts profile banks created by older unbounded builds. **Update my voice**
-merges the next enrollment sample into the primary centroid and signature bank.
-**Reset speaker signatures** removes profiles but retains prior conversation
-turns.
+does not erase a previously good enrollment. The lower reuse threshold does
+not update the saved signature bank unless the match also reaches the separate
+`0.78` learning threshold, limiting drift from borderline matches. Speaker
+profiles are app-private and persist across restarts. The bank keeps one
+primary profile and the 16 most recently updated non-primary profiles. When a
+new unknown speaker arrives at that limit, the oldest inactive non-primary
+profile is evicted; startup also compacts profile banks created by older
+unbounded builds. **Update my voice** merges the next enrollment sample into
+the primary centroid and signature bank. **Reset speaker signatures** removes
+profiles but retains prior conversation turns.
 
 ## Output and history
 
@@ -130,7 +133,8 @@ against clean 16 kHz WAVs. The alternating-turn case enrolls `af_maple`, runs
 stable profiles, enforces a per-turn WER ceiling, and kills the worker with its
 first turn in flight to verify queued-job recovery. On Linux, make the
 Sherpa-ONNX Linux library directory available through `LD_LIBRARY_PATH` before
-running the tool.
+running the tool. Its optional `--signature-threshold` argument overrides the
+default `0.64` independently from `--cluster-threshold`.
 
 Physical acoustic testing continues to treat the existing Kokoro `af_maple`
 baseline as the transport/VAD/STT safety contract. Alternating-speaker tests

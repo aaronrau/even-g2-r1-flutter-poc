@@ -45,6 +45,7 @@ final class ConversationAnalysisSupervisor {
     // A low cut keeps alternating synthetic and live voices in separate local
     // clusters; persistent profile matching reunites repeated turns.
     this.clusteringThreshold = 0.01,
+    this.signatureMatchThreshold = defaultSpeakerSignatureMatchThreshold,
   });
 
   final ConversationModelPaths models;
@@ -53,6 +54,7 @@ final class ConversationAnalysisSupervisor {
   final ConversationAnalysisFailureSink onFailure;
   final ConversationAnalysisStatusSink onStatus;
   final double clusteringThreshold;
+  final double signatureMatchThreshold;
   final Map<String, Map<String, Object>> _pending =
       <String, Map<String, Object>>{};
 
@@ -159,6 +161,7 @@ final class ConversationAnalysisSupervisor {
         'models': models.toMessage(),
         'transcription': transcription.toMessage(),
         'clusteringThreshold': clusteringThreshold,
+        'signatureMatchThreshold': signatureMatchThreshold,
       },
       onError: _errors!.sendPort,
       onExit: _exit!.sendPort,
@@ -187,7 +190,9 @@ final class ConversationAnalysisSupervisor {
         }
         onStatus(
           '[WorkBench][Conversation] state=ready provider=cpu '
-          'transcription_model=${transcription.definition.id} isolated=true',
+          'transcription_model=${transcription.definition.id} '
+          'signature_match_threshold='
+          '${signatureMatchThreshold.toStringAsFixed(2)} isolated=true',
         );
         for (final job in _pending.values) {
           _commands!.send(job);
@@ -337,12 +342,17 @@ void _conversationWorker(Map<String, Object> bootstrap) {
   final transcription = (bootstrap['transcription']! as Map<Object?, Object?>)
       .cast<String, Object>();
   final clusteringThreshold = bootstrap['clusteringThreshold']! as double;
+  final signatureMatchThreshold =
+      bootstrap['signatureMatchThreshold']! as double;
   final commands = ReceivePort();
   sherpa.OfflineSpeakerDiarization? diarizer;
   sherpa.SpeakerEmbeddingExtractor? embeddingExtractor;
   sherpa.OfflineRecognizer? recognizer;
 
   try {
+    if (!isValidSpeakerSignatureThreshold(signatureMatchThreshold)) {
+      throw StateError('The speaker signature threshold is invalid.');
+    }
     sherpa.initBindings();
     diarizer = sherpa.OfflineSpeakerDiarization(
       sherpa.OfflineSpeakerDiarizationConfig(
@@ -422,6 +432,7 @@ void _conversationWorker(Map<String, Object> bootstrap) {
             embeddingExtractor: embeddingExtractor!,
             recognizer: recognizer!,
             profiles: profiles,
+            signatureMatchThreshold: signatureMatchThreshold,
           );
           timer.stop();
           events.send(<String, Object>{
@@ -482,6 +493,7 @@ _WorkerAnalysisResult _analyzeConversation({
   required sherpa.SpeakerEmbeddingExtractor embeddingExtractor,
   required sherpa.OfflineRecognizer recognizer,
   required List<SpeakerProfile> profiles,
+  required double signatureMatchThreshold,
 }) {
   const maximumWindowSamples = 30 * 16000;
   profiles = retainBoundedSpeakerProfiles(profiles).toList(growable: true);
@@ -581,7 +593,11 @@ _WorkerAnalysisResult _analyzeConversation({
           best = profile;
         }
       }
-      if (best == null || bestScore < 0.65) {
+      if (best == null ||
+          !speakerSignatureMatches(
+            bestScore,
+            threshold: signatureMatchThreshold,
+          )) {
         final nearestKnownScore = bestScore;
         createdSpeakers++;
         best = SpeakerProfile(
@@ -597,7 +613,7 @@ _WorkerAnalysisResult _analyzeConversation({
           profiles,
         ).toList(growable: true);
         bestScore = nearestKnownScore < 0 ? 0 : nearestKnownScore;
-      } else if (bestScore >= 0.78) {
+      } else if (bestScore >= speakerSignatureLearningThreshold) {
         final index = profiles.indexWhere((profile) => profile.id == best!.id);
         best = best.merge(embedding, now);
         profiles[index] = best;

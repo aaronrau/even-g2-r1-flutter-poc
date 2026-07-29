@@ -2,6 +2,10 @@ import 'dart:convert';
 import 'dart:math';
 
 const int maximumNonPrimarySpeakerProfiles = 16;
+// Lower than the legacy 0.65 cutoff while remaining above the pinned
+// af_maple/af_sol near-collision measured at 0.6390.
+const double defaultSpeakerSignatureMatchThreshold = 0.64;
+const double speakerSignatureLearningThreshold = 0.78;
 
 final class ConversationModelPaths {
   const ConversationModelPaths({
@@ -437,6 +441,23 @@ double speakerProfileSimilarity(
     best = max(best, speakerSimilarity(signature, candidate));
   }
   return best;
+}
+
+bool isValidSpeakerSignatureThreshold(double threshold) =>
+    threshold.isFinite && threshold > 0 && threshold <= 1;
+
+bool speakerSignatureMatches(
+  double similarity, {
+  double threshold = defaultSpeakerSignatureMatchThreshold,
+}) {
+  if (!isValidSpeakerSignatureThreshold(threshold)) {
+    throw ArgumentError.value(
+      threshold,
+      'threshold',
+      'The signature threshold must be greater than 0 and at most 1.',
+    );
+  }
+  return similarity.isFinite && similarity >= threshold;
 }
 
 List<double> normalizeSpeakerEmbedding(List<double> values) {

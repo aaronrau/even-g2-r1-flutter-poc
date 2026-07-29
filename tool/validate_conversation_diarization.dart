@@ -35,6 +35,9 @@ Future<void> main(List<String> arguments) async {
   final root = Directory(options['repository-root'] ?? Directory.current.path);
   final clusteringThreshold =
       double.tryParse(options['cluster-threshold'] ?? '') ?? 0.01;
+  final signatureMatchThreshold =
+      double.tryParse(options['signature-threshold'] ?? '') ??
+      defaultSpeakerSignatureMatchThreshold;
   final minimumSpeakers = int.tryParse(options['minimum-speakers'] ?? '') ?? 2;
   if (clusteringThreshold <= 0 || clusteringThreshold >= 1) {
     throw const FormatException(
@@ -43,6 +46,11 @@ Future<void> main(List<String> arguments) async {
   }
   if (minimumSpeakers < 2) {
     throw const FormatException('--minimum-speakers must be at least 2.');
+  }
+  if (!isValidSpeakerSignatureThreshold(signatureMatchThreshold)) {
+    throw const FormatException(
+      '--signature-threshold must be greater than 0 and at most 1.',
+    );
   }
   final models = ConversationModelPaths(
     segmentation: '${root.path}/models/diarization/segmentation.int8.onnx',
@@ -86,6 +94,7 @@ Future<void> main(List<String> arguments) async {
       }
     },
     clusteringThreshold: clusteringThreshold,
+    signatureMatchThreshold: signatureMatchThreshold,
   );
   try {
     await supervisor.start();
@@ -255,6 +264,7 @@ Future<void> main(List<String> arguments) async {
                 (left, right) => left > right ? left : right,
               ),
         'clusterThreshold': clusteringThreshold,
+        'signatureMatchThreshold': signatureMatchThreshold,
         'minimumSpeakers': minimumSpeakers,
         'workerRestartObserved': status.contains('restarting'),
         'inFlightWorkerRestartObserved': turns.isNotEmpty
@@ -294,7 +304,8 @@ Map<String, String> _parseOptions(List<String> arguments) {
         'Use --enrollment WAV --conversation WAV '
         'or --enrollment WAV --turns WAV,WAV '
         '[--expected-turns "TEXT|TEXT"] [--repository-root DIRECTORY] '
-        '[--cluster-threshold NUMBER] [--minimum-speakers NUMBER].',
+        '[--cluster-threshold NUMBER] [--signature-threshold NUMBER] '
+        '[--minimum-speakers NUMBER].',
       );
     }
     values[key.substring(2)] = arguments[index + 1];
