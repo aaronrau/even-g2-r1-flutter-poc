@@ -149,6 +149,10 @@ batches and refreshes only while that text tab is selected.
 - `lib/src/audio/speech_model_preferences.dart` — persisted Tools selection.
 - `lib/src/audio/transcription_worker.dart` — selected STT isolate and durable
   transcription job ledger.
+- `lib/src/audio/voice_memo_service.dart` — local `Hey Memo` ownership,
+  iterative Gemma revisions, five-second silence finalization, and recovery.
+- `lib/src/audio/voice_memo_store.dart` — atomic app-private memo JSON and text
+  records.
 - `lib/src/audio/conversation_analysis_service.dart` — optional path-only WAV
   consumer, enrollment, durable queue, and supervisor lifecycle.
 - `lib/src/audio/conversation_analysis_worker.dart` — independent pyannote,
@@ -173,8 +177,8 @@ batches and refreshes only while that text tab is selected.
 - `lib/src/ui/home_page.dart` — simplified Home status UI and separate manual
   Tools screen.
 - `lib/src/ui/home_history_panel.dart` — separate Events, Messages, and
-  Conversation views with aligned speaker-labeled turns and color markers only
-  in Conversation.
+  Conversation views with voice memos, aligned speaker-labeled turns, and color
+  markers only in Conversation.
 - `android/.../MainActivity.kt` — scoped Android document-tree access,
   transcript enumeration, and content-URI media playback.
 - `android/.../SharedHistoryCache.kt` — app-private SQLite index for shared

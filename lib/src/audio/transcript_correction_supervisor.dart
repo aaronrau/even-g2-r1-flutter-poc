@@ -596,6 +596,7 @@ final class TranscriptCorrectionSupervisor {
       'brock': <String>['broke', 'block', 'broc'],
       'pike': <String>['bike', 'pipe', 'pyke'],
       'wolf': <String>['woolf', 'woof', 'wolfe'],
+      'hey memo': <String>['hey me mo', 'hey mimo'],
     };
     for (final term in terms) {
       final aliases = knownAliases[term.toLowerCase()];
@@ -603,7 +604,18 @@ final class TranscriptCorrectionSupervisor {
         acousticAliases[term] = aliases;
       }
     }
-    return '$base\nKnown local command names: ${jsonEncode(terms)}. '
+    final hasMemoInvocation = terms.any(
+      (term) => term.toLowerCase() == 'hey memo',
+    );
+    final memoGuidance = hasMemoInvocation
+        ? ' The exact leading local memo invocation is "Hey Memo". Correct a '
+              'plausible leading acoustic variant such as "hey me mo" or '
+              '"hey mimo" to exactly "Hey Memo" when the remaining words are '
+              'dictated memo content or a clear request to take a memo. Never '
+              'rewrite an ordinary use of the word memo, such as "I wrote a '
+              'memo yesterday", into an invocation.'
+        : '';
+    return '$base\nKnown local command names: ${jsonEncode(terms)}.$memoGuidance '
         'The first one to three words may be a spoken command name even when '
         'the attention word "hey" was dropped by ASR. When the remaining words '
         'form a plausible imperative command or request, replace an obvious '

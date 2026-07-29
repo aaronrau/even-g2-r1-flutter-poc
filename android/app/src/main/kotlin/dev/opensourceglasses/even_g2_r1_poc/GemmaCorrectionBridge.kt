@@ -116,6 +116,8 @@ internal class GemmaCorrectionBridge(private val context: Context) :
         val instructions = call.argument<String>("instructions")
         val transcript = call.argument<String>("transcript")
         val timeoutMs = call.argument<Number>("timeoutMs")?.toLong()
+        val task =
+            call.argument<String>("task") ?: "transcript_correction"
         if (modelPath == null ||
             modelId == null ||
             instructions == null ||
@@ -141,6 +143,7 @@ internal class GemmaCorrectionBridge(private val context: Context) :
                 )
                 putString(GemmaCorrectionProtocol.KEY_TRANSCRIPT, transcript)
                 putLong(GemmaCorrectionProtocol.KEY_TIMEOUT_MS, timeoutMs)
+                putString(GemmaCorrectionProtocol.KEY_TASK, task)
             }
         val message =
             Message.obtain(

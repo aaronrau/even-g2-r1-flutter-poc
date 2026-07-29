@@ -10,6 +10,21 @@ import 'nnapi_attestation.dart';
 
 typedef VadStatusSink = void Function(String message, {bool isError});
 typedef SpeechSegmentSink = void Function(String id, String wavPath);
+typedef VadSpeechEventSink = void Function(VadSpeechEvent event);
+
+enum VadSpeechEventType { started, ended }
+
+final class VadSpeechEvent {
+  const VadSpeechEvent({
+    required this.type,
+    required this.segmentId,
+    this.endpointAudioMs = 0,
+  });
+
+  final VadSpeechEventType type;
+  final String segmentId;
+  final int endpointAudioMs;
+}
 
 const Duration vadPreRollDuration = Duration(seconds: 2);
 const Duration vadDetectorSilenceDuration = Duration(milliseconds: 500);
@@ -92,6 +107,7 @@ final class VadSupervisor {
     required this.providers,
     required this.onSegment,
     required this.onStatus,
+    this.onSpeechEvent,
   });
 
   final String modelPath;
@@ -99,6 +115,7 @@ final class VadSupervisor {
   final List<String> providers;
   final SpeechSegmentSink onSegment;
   final VadStatusSink onStatus;
+  final VadSpeechEventSink? onSpeechEvent;
 
   ReceivePort? _events;
   ReceivePort? _errors;
@@ -229,10 +246,14 @@ final class VadSupervisor {
         }
         return;
       case 'speech_started':
+        final id = event['id']! as String;
         onStatus(
-          '[WorkBench][VAD] state=speech_started segment=${event['id']} '
+          '[WorkBench][VAD] state=speech_started segment=$id '
           'pre_roll_ms=${event['preRollMs']} '
           'pre_roll_bytes=${event['preRollBytes']}',
+        );
+        onSpeechEvent?.call(
+          VadSpeechEvent(type: VadSpeechEventType.started, segmentId: id),
         );
         return;
       case 'speech_ending':
@@ -249,9 +270,17 @@ final class VadSupervisor {
         return;
       case 'segment':
         final id = event['id']! as String;
+        final endpointAudioMs = event['endpointAudioMs']! as int;
         onStatus(
           '[WorkBench][VAD] state=speech_ended segment=$id '
-          'audio_ms=${event['endpointAudioMs']}',
+          'audio_ms=$endpointAudioMs',
+        );
+        onSpeechEvent?.call(
+          VadSpeechEvent(
+            type: VadSpeechEventType.ended,
+            segmentId: id,
+            endpointAudioMs: endpointAudioMs,
+          ),
         );
         onSegment(id, event['path']! as String);
         return;

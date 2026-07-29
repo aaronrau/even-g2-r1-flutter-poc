@@ -11,6 +11,7 @@ internal object GemmaCorrectionProtocol {
     const val KEY_INSTRUCTIONS = "instructions"
     const val KEY_TRANSCRIPT = "transcript"
     const val KEY_TIMEOUT_MS = "timeoutMs"
+    const val KEY_TASK = "task"
     const val KEY_CORRECTED_TEXT = "correctedText"
     const val KEY_PROVIDER = "provider"
     const val KEY_ENGINE_LOAD_MS = "engineLoadMs"

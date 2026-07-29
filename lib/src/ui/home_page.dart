@@ -413,6 +413,7 @@ final class _HomePageState extends State<HomePage> {
       child: HomeHistoryPanel(
         events: controller.eventLogs,
         conversations: controller.conversations,
+        voiceMemos: controller.voiceMemos,
         messages: controller.sharedWebSocketMessages,
         transcriptions: controller.sharedTranscripts,
         supportsSharedFolder: controller.supportsSharedAudioFolder,

@@ -36,6 +36,7 @@ final class AudioPipelineCoordinator {
     this.onQueuedTranscript,
     this.onFinalTranscript,
     this.onFinalizedSpeechSegment,
+    this.onVadSpeechEvent,
     this.correctionTermsProvider,
     ModelAssetStore? modelStore,
     GemmaModelStore? gemmaModelStore,
@@ -67,6 +68,7 @@ final class AudioPipelineCoordinator {
   final TranscriptHandler? onQueuedTranscript;
   final TranscriptHandler? onFinalTranscript;
   final FinalizedSpeechSegmentHandler? onFinalizedSpeechSegment;
+  final VadSpeechEventSink? onVadSpeechEvent;
   final CorrectionTermsProvider? correctionTermsProvider;
   final ModelAssetStore _modelStore;
   final GemmaModelStore _gemmaModelStore;
@@ -195,6 +197,7 @@ final class AudioPipelineCoordinator {
         providers: capabilities.providers,
         onSegment: _onSpeechSegment,
         onStatus: _vadStatus,
+        onSpeechEvent: onVadSpeechEvent,
       );
       activeVadProvider = await _vad!.start();
       _vadWasReady = true;
@@ -831,6 +834,10 @@ final class AudioPipelineCoordinator {
 
   Future<void> restartVadForTest() async {
     await _vad?.restartForTest();
+  }
+
+  void flushCurrentSpeech() {
+    _vad?.flush();
   }
 
   Future<void> selectTranscriptionModel(

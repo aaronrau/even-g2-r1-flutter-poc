@@ -116,6 +116,9 @@ class GemmaCorrectionService : Service() {
         val instructions =
             data.getString(GemmaCorrectionProtocol.KEY_INSTRUCTIONS).orEmpty()
         val transcript = data.getString(GemmaCorrectionProtocol.KEY_TRANSCRIPT).orEmpty()
+        val task =
+            data.getString(GemmaCorrectionProtocol.KEY_TASK)
+                ?: TASK_TRANSCRIPT_CORRECTION
         val timeoutMs =
             data.getLong(GemmaCorrectionProtocol.KEY_TIMEOUT_MS, DEFAULT_TIMEOUT_MS)
                 .coerceIn(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
@@ -126,7 +129,8 @@ class GemmaCorrectionService : Service() {
             instructions.isBlank() ||
             instructions.length > MAX_INSTRUCTION_CHARACTERS ||
             transcript.isBlank() ||
-            transcript.length > MAX_TRANSCRIPT_CHARACTERS
+            transcript.length > MAX_TRANSCRIPT_CHARACTERS ||
+            task !in SUPPORTED_TASKS
         ) {
             replyError(
                 replyTo,
@@ -174,11 +178,15 @@ class GemmaCorrectionService : Service() {
                         TimeUnit.MILLISECONDS,
                     )
                 val inferenceStart = android.os.SystemClock.elapsedRealtime()
-                val response =
-                    conversation.sendMessage(
+                val userMessage =
+                    if (task == TASK_MEMO_REVISION) {
+                        "Revise the voice memo using the JSON source below. " +
+                            "Return only the complete updated memo text.\n\n$transcript"
+                    } else {
                         "Correct the ASR transcript below. Return only the corrected " +
-                            "transcript text.\n\n<transcript>\n$transcript\n</transcript>",
-                    )
+                            "transcript text.\n\n<transcript>\n$transcript\n</transcript>"
+                    }
+                val response = conversation.sendMessage(userMessage)
                 val inferenceMs =
                     android.os.SystemClock.elapsedRealtime() - inferenceStart
                 if (completed.get()) {
@@ -244,7 +252,7 @@ class GemmaCorrectionService : Service() {
                 Log.i(
                     "WorkBench",
                     "[WorkBench][CorrectionNative] state=completed model=$modelId " +
-                        "provider=gpu engine_load_ms=$engineLoadMs " +
+                        "provider=gpu task=$task engine_load_ms=$engineLoadMs " +
                         "inference_ms=$inferenceMs total_ms=" +
                         (android.os.SystemClock.elapsedRealtime() - totalTimer) +
                         " ttft_ms=" +
@@ -274,7 +282,7 @@ class GemmaCorrectionService : Service() {
             Log.e(
                 "WorkBench",
                 "[WorkBench][CorrectionNative] state=failed model=$modelId " +
-                    "provider=gpu code=$code error=${oneLine(error)}",
+                    "provider=gpu task=$task code=$code error=${oneLine(error)}",
             )
             replyError(replyTo, requestId, code, oneLine(error))
         }
@@ -409,6 +417,10 @@ class GemmaCorrectionService : Service() {
         // appends bounded agent names and acoustic aliases per live segment.
         private const val MAX_INSTRUCTION_CHARACTERS = 16_000
         private const val MAX_TRANSCRIPT_CHARACTERS = 6_000
+        private const val TASK_TRANSCRIPT_CORRECTION = "transcript_correction"
+        private const val TASK_MEMO_REVISION = "memo_revision"
+        private val SUPPORTED_TASKS =
+            setOf(TASK_TRANSCRIPT_CORRECTION, TASK_MEMO_REVISION)
         private const val RUNNING_LOW_MEMORY_LEVEL = 10
         private const val RUNNING_CRITICAL_MEMORY_LEVEL = 15
         private const val ENGINE_IDLE_TIMEOUT_SECONDS = 30L

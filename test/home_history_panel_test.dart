@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:even_g2_r1_poc/src/audio/shared_audio_export_store.dart';
+import 'package:even_g2_r1_poc/src/audio/voice_memo_models.dart';
 import 'package:even_g2_r1_poc/src/ble/ble_models.dart';
 import 'package:even_g2_r1_poc/src/ui/home_history_panel.dart';
 import 'package:even_g2_r1_poc/src/ui/workbench_theme.dart';
@@ -320,7 +321,10 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Loading conversations…'), findsOneWidget);
-    expect(find.text('No speaker-labeled conversations yet.'), findsNothing);
+    expect(
+      find.textContaining('No conversations or voice memos'),
+      findsNothing,
+    );
 
     conversationsLoaded.complete();
     await tester.pumpAndSettle();
@@ -328,7 +332,10 @@ void main() {
       find.byKey(const ValueKey<String>('conversations-loading')),
       findsNothing,
     );
-    expect(find.text('No speaker-labeled conversations yet.'), findsOneWidget);
+    expect(
+      find.textContaining('No conversations or voice memos'),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 
@@ -397,6 +404,64 @@ void main() {
 
     expect(find.textContaining('Speak one clear sentence'), findsOneWidget);
     expect(find.textContaining('“You” voice signature'), findsOneWidget);
+  });
+
+  testWidgets('shows live and saved voice memos in Conversation', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final now = DateTime(2026, 1, 2, 3, 4);
+    await tester.pumpWidget(
+      _app(
+        HomeHistoryPanel(
+          events: const <PooledLog>[],
+          conversations: const <SharedConversationTurn>[],
+          voiceMemos: <VoiceMemoRecord>[
+            VoiceMemoRecord(
+              id: 'memo-live',
+              status: VoiceMemoStatus.revising,
+              note: 'Project idea\n- Preserve the important details.',
+              sources: const <VoiceMemoSource>[
+                VoiceMemoSource(
+                  segmentId: 'segment-synthetic',
+                  rawTranscript: 'Synthetic source',
+                  memoText: 'Preserve the important details.',
+                ),
+              ],
+              revision: 1,
+              createdAt: now,
+              updatedAt: now,
+            ),
+          ],
+          analysisEnabled: false,
+          needsEnrollment: false,
+          analysisState: 'disabled',
+          knownSpeakerCount: 0,
+          pendingConversationCount: 0,
+          isLoadingConversations: false,
+          isStorageBusy: false,
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Conversation'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Voice memo'), findsOneWidget);
+    expect(
+      find.text('Project idea\n- Preserve the important details.'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Updating · 1 utterance'), findsOneWidget);
+    expect(find.textContaining('1 voice memo'), findsOneWidget);
+    final memo = find.byKey(const ValueKey<String>('voice-memo-memo-live'));
+    expect(memo, findsOneWidget);
+    final memoBounds = tester.widget<ConstrainedBox>(
+      find.descendant(of: memo, matching: find.byType(ConstrainedBox)).first,
+    );
+    expect(memoBounds.constraints.maxWidth, 360);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('shows only the thirty most recent supplied events', (

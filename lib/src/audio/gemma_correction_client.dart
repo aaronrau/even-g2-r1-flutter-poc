@@ -2,6 +2,15 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 
+enum GemmaTextTask {
+  transcriptCorrection('transcript_correction'),
+  memoRevision('memo_revision');
+
+  const GemmaTextTask(this.wireName);
+
+  final String wireName;
+}
+
 final class GemmaCorrectionRequest {
   const GemmaCorrectionRequest({
     required this.modelPath,
@@ -9,6 +18,7 @@ final class GemmaCorrectionRequest {
     required this.instructions,
     required this.transcript,
     required this.timeoutMs,
+    this.task = GemmaTextTask.transcriptCorrection,
   });
 
   final String modelPath;
@@ -16,6 +26,7 @@ final class GemmaCorrectionRequest {
   final String instructions;
   final String transcript;
   final int timeoutMs;
+  final GemmaTextTask task;
 }
 
 final class GemmaCorrectionResult {
@@ -71,6 +82,7 @@ final class PlatformGemmaCorrectionClient implements GemmaCorrectionClient {
           'instructions': request.instructions,
           'transcript': request.transcript,
           'timeoutMs': request.timeoutMs,
+          'task': request.task.wireName,
         })
         .timeout(Duration(milliseconds: request.timeoutMs + 10000));
     final correctedText = response?['correctedText'];

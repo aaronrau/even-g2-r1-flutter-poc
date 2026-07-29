@@ -818,6 +818,27 @@ final class G2Protocol {
     );
   }
 
+  Uint8List createMemoPage(String note, {required String status}) {
+    return createTextPage(memoPageContent(note, status: status));
+  }
+
+  Uint8List updateMemoPage(String note, {required String status}) {
+    return updateText(memoPageContent(note, status: status));
+  }
+
+  static String memoPageContent(String note, {required String status}) {
+    final normalizedStatus = status.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final normalizedNote = note
+        .replaceAll(
+          RegExp(r'[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]'),
+          '',
+        )
+        .trim();
+    return '[ Double Tap to finish ]\n'
+        '$normalizedStatus\n\n'
+        '$normalizedNote';
+  }
+
   Uint8List updateText(String content) {
     final update = ProtoWriter()
       ..writeInt32(1, 1)

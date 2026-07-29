@@ -142,6 +142,19 @@ void main() {
     );
   });
 
+  test('adds conservative Hey Memo correction guidance', () {
+    final instructions =
+        TranscriptCorrectionSupervisor.buildCorrectionInstructions(
+          'Correct only clear ASR errors.',
+          const <String>['Hey Memo'],
+        );
+
+    expect(instructions, contains('exactly "Hey Memo"'));
+    expect(instructions, contains('hey me mo'));
+    expect(instructions, contains('I wrote a memo yesterday'));
+    expect(instructions, contains('Never rewrite an ordinary use'));
+  });
+
   test(
     'adds known command names and marks a live correction routable',
     () async {

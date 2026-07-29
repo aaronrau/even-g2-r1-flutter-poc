@@ -288,6 +288,54 @@ void main() {
     queue.dispose();
   });
 
+  testWidgets('memo ownership suppresses and clears ordinary display state', (
+    tester,
+  ) async {
+    final display = <String>[];
+    final logs = <String>[];
+    final queue = _queue(display: display, logs: logs);
+
+    await queue.queueTranscript(segmentId: 'segment-1', transcript: 'Raw.');
+    await tester.pump();
+    queue.setPaused(true);
+    await queue.completeTranscript(
+      segmentId: 'segment-1',
+      transcript: 'Corrected.',
+      outcome: GlassesTranscriptOutcome.saved,
+    );
+    await queue.queueTransient(prefix: 'Received', message: 'Agent response.');
+    await tester.pump();
+
+    expect(display, <String>['Queued: Raw.']);
+    expect(queue.pendingCount, 0);
+    expect(
+      logs,
+      contains('[WorkBench][GlassesStatus] state=paused owner=memo pending=0'),
+    );
+
+    queue.setPaused(false);
+    await queue.queueTransient(prefix: 'Memo', message: 'Saved');
+    await tester.pump();
+    expect(display.last, 'Memo: Saved');
+
+    queue.dispose();
+  });
+
+  testWidgets('dispose remains final while memo ownership is paused', (
+    tester,
+  ) async {
+    final display = <String>[];
+    final queue = _queue(display: display);
+
+    queue.setPaused(true);
+    queue.dispose();
+    queue.setPaused(false);
+    await queue.queueTransient(prefix: 'Memo', message: 'Should not display');
+    await tester.pump();
+
+    expect(display, isEmpty);
+  });
+
   testWidgets('normalizes and bounds private glasses text', (tester) async {
     final display = <String>[];
     final queue = _queue(display: display);

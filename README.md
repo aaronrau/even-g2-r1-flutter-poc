@@ -90,6 +90,7 @@ expose for a true locked Hub mode.
 | Durable LC3 capture, VAD, and selectable local Whisper/Parakeet STT | Implemented on Android |
 | Optional independent speaker diarization and conversation history | Implemented on Android; disabled by default |
 | Gemma 4 post-STT correction with separate original/corrected files | Implemented on Android; GPU-qualified on the representative RedMagic phone |
+| Local `Hey Memo` iterative voice notes with G2 double-tap finish | Implemented on Android |
 | On-device intent, task context, and approval policy | Planned |
 | Authenticated WebSocket bridge to the user's computer | Implemented; local `ws://` transport |
 | Claude Code and Codex terminal adapters | Planned |
@@ -118,6 +119,12 @@ expose for a true locked Hub mode.
 - Runs Gemma 4 E4B correction through pinned LiteRT-LM in a dedicated Android
   process after Parakeet commits the raw transcript. The correction queue is
   durable and never blocks capture, VAD, or STT.
+- Recognizes a leading `Hey Memo` locally, including conservative Gemma
+  correction of plausible acoustic variants, and consumes the following live
+  turns without sending them to the agent WebSocket. Gemma revises the
+  app-private memo after each corrected utterance. The Conversation tab shows
+  the live and saved note, five seconds of total silence finalizes it, and the
+  G2 page keeps `Double Tap to finish` above the bounded live draft.
 - Saves an authenticated local WebSocket endpoint, secret, upgrade-header mode,
   and agent names under **Tools → Agent connection**. Gemma uses those names as
   correction vocabulary, and only the corrected live transcript is matched
@@ -502,6 +509,8 @@ shared folder.
 - [Gemma transcript correction](docs/GEMMA_TRANSCRIPT_CORRECTION.md) — process
   isolation, hot configuration, persistence, timing, GPU qualification, and
   continuous-run acceptance.
+- [Hey Memo voice notes](docs/VOICE_MEMO.md) — local invocation correction,
+  iterative note revisions, G2 display ownership, and five-second finalization.
 - [Voice WebSocket bridge](docs/VOICE_WEBSOCKET.md) — authentication,
   transcript routing, acknowledgements, reconnect resume, G2 status, and
   privacy boundaries.

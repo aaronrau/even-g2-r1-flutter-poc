@@ -9,6 +9,8 @@ import '../protocol/g2_protocol.dart';
 import '../util/hex.dart';
 import 'ble_models.dart';
 
+typedef G2GestureConsumer = bool Function(G2GestureEvent event);
+
 final class G2PairingException implements Exception {
   const G2PairingException(this.side);
 
@@ -35,12 +37,14 @@ final class G2Connection {
     required void Function() onAudioChanged,
     required void Function(Uint8List bytes) onLc3Audio,
     required void Function(String side) onUnexpectedDisconnect,
+    G2GestureConsumer? onGesture,
   }) : _ble = ble,
        _log = log,
        _onChanged = onChanged,
        _onAudioChanged = onAudioChanged,
        _onLc3Audio = onLc3Audio,
-       _onUnexpectedDisconnect = onUnexpectedDisconnect {
+       _onUnexpectedDisconnect = onUnexpectedDisconnect,
+       _onGesture = onGesture {
     _audioAnalysisWorker = G2AudioAnalysisWorker(
       onSnapshot: _handleAudioAnalysis,
     );
@@ -53,6 +57,7 @@ final class G2Connection {
   final void Function() _onAudioChanged;
   final void Function(Uint8List bytes) _onLc3Audio;
   final void Function(String side) _onUnexpectedDisconnect;
+  final G2GestureConsumer? _onGesture;
   late final G2AudioAnalysisWorker _audioAnalysisWorker;
   final G2Protocol _protocol = G2Protocol();
   final G2ReceiveAssembler _receiveAssembler = G2ReceiveAssembler();
@@ -71,6 +76,9 @@ final class G2Connection {
   bool _manualDisconnect = false;
   bool _pageCreated = false;
   String _lastPageContent = '';
+  bool _memoDisplayActive = false;
+  String _memoDisplayNote = '';
+  String _memoDisplayStatus = '';
   Uint8List? _lastAudioPacket;
   String? _activeAudioSource;
   DateTime? _lastAudioSummaryAt;
@@ -146,6 +154,7 @@ final class G2Connection {
   String pulseStatus = 'waiting for LC3 audio';
 
   bool get isConnected => state == LinkState.connected;
+  bool get isMemoDisplayActive => _memoDisplayActive;
   String? get leftMac => _target?.leftMac;
   String? get rightMac => _target?.rightMac;
 
@@ -488,6 +497,10 @@ final class G2Connection {
   }
 
   Future<void> _createPage(String content) async {
+    if (_memoDisplayActive) {
+      await _createMemoPage();
+      return;
+    }
     await _sendPayload(
       G2Ids.serviceEvenHub,
       _protocol.createTextPage(''),
@@ -509,6 +522,13 @@ final class G2Connection {
 
   Future<void> sendText(String content) async {
     _requireConnected();
+    if (_memoDisplayActive) {
+      _log(
+        'G2 TX',
+        'Text update suppressed while the private memo page owns the display',
+      );
+      return;
+    }
     _lastPageContent = content;
     if (!_pageCreated) {
       await _createPage(content);
@@ -528,6 +548,13 @@ final class G2Connection {
 
   Future<void> clearText() async {
     _requireConnected();
+    if (_memoDisplayActive) {
+      _log(
+        'G2 TX',
+        'Text clear suppressed while the private memo page owns the display',
+      );
+      return;
+    }
     if (!_pageCreated) {
       return;
     }
@@ -543,6 +570,87 @@ final class G2Connection {
     }
     _lastPageContent = '';
     _log('G2 TX', 'Text cleared');
+  }
+
+  Future<void> showMemo({required String note, required String status}) async {
+    _requireConnected();
+    _memoDisplayNote = _boundedMemoText(note);
+    _memoDisplayStatus = status.replaceAll(RegExp(r'\s+'), ' ').trim();
+    _pulseTimer?.cancel();
+    _pulseTimer = null;
+    _visibleGestureTimer?.cancel();
+    _visibleGestureTimer = null;
+    _visibleGesturePageLabel = null;
+    if (!_memoDisplayActive || !_pageCreated) {
+      _memoDisplayActive = true;
+      await _createMemoPage();
+    } else {
+      await _sendPayload(
+        G2Ids.serviceEvenHub,
+        _protocol.updateMemoPage(_memoDisplayNote, status: _memoDisplayStatus),
+        reserveFlag: true,
+        priority: AsyncWritePriority.high,
+      );
+      _lastPageContent = G2Protocol.memoPageContent(
+        _memoDisplayNote,
+        status: _memoDisplayStatus,
+      );
+    }
+    _log(
+      'G2 TX',
+      'Memo page updated (${_memoDisplayNote.runes.length} private characters)',
+    );
+  }
+
+  Future<void> exitMemo() async {
+    if (!_memoDisplayActive) {
+      return;
+    }
+    _memoDisplayActive = false;
+    _memoDisplayNote = '';
+    _memoDisplayStatus = '';
+    _lastPageContent = '';
+    if (!isConnected || terminalModeEnabled) {
+      _pageCreated = false;
+      return;
+    }
+    _pageCreated = false;
+    await _createPage('');
+    _log('G2 TX', 'Memo page closed and the audio visualizer was restored');
+  }
+
+  Future<void> _createMemoPage() async {
+    await _sendPayload(
+      G2Ids.serviceEvenHub,
+      _protocol.createMemoPage(_memoDisplayNote, status: _memoDisplayStatus),
+      reserveFlag: true,
+      priority: AsyncWritePriority.high,
+    );
+    _lastPageContent = G2Protocol.memoPageContent(
+      _memoDisplayNote,
+      status: _memoDisplayStatus,
+    );
+    _pageCreated = true;
+    pageSessionStatus = 'memo page created';
+    _onChanged();
+  }
+
+  static String _boundedMemoText(String value) {
+    const maximumPageCharacters = 512;
+    const reservedHeaderCharacters = 48;
+    final normalized = value
+        .replaceAll(
+          RegExp(r'[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]'),
+          '',
+        )
+        .trim();
+    final runes = normalized.runes.toList(growable: false);
+    final maximumNoteCharacters =
+        maximumPageCharacters - reservedHeaderCharacters;
+    if (runes.length <= maximumNoteCharacters) {
+      return normalized;
+    }
+    return '${String.fromCharCodes(runes.take(maximumNoteCharacters - 1))}…';
   }
 
   Future<void> sendTestDrawing() async {
@@ -820,7 +928,11 @@ final class G2Connection {
     }
     _cancelInferredHoldAudio();
     if (enabled && !_pageCreated) {
-      await _createPage(_lastPageContent);
+      if (_memoDisplayActive) {
+        await _createMemoPage();
+      } else {
+        await _createPage(_lastPageContent);
+      }
       await Future<void>.delayed(const Duration(milliseconds: 300));
     }
     await _sendPayload(
@@ -1080,7 +1192,19 @@ final class G2Connection {
         _lastGestureSignature = signature;
         _lastGestureEventAt = now;
         if (!duplicate) {
+          var consumed = false;
           if (!event.isLifecycle) {
+            try {
+              consumed = _onGesture?.call(event) ?? false;
+            } on Object catch (error) {
+              _log(
+                'G2 gesture',
+                'Application gesture handler failed: $error',
+                isError: true,
+              );
+            }
+          }
+          if (!event.isLifecycle && !consumed) {
             _setVisibleGesture(
               event.name,
               source: eventSource,
@@ -1098,12 +1222,13 @@ final class G2Connection {
           _log(
             event.isFromR1 ? 'R1 gesture via G2' : 'G2 gesture',
             '${event.name} • $eventSource • type=${event.type} • '
-            'path=${event.path.name}',
+            'path=${event.path.name} • consumed=$consumed',
           );
-          if (!event.isLifecycle) {
+          if (!event.isLifecycle && !consumed) {
             _showGestureOnVisualizer(event.type, receivedAt: now);
           }
-          if (inferredHoldAudioActive &&
+          if (!consumed &&
+              inferredHoldAudioActive &&
               !event.isLifecycle &&
               (event.type == 0 || event.type == 3)) {
             unawaited(
@@ -1111,7 +1236,8 @@ final class G2Connection {
                 '${event.name} received after inferred hold',
               ),
             );
-          } else if (doubleTapTogglesHubAudio &&
+          } else if (!consumed &&
+              doubleTapTogglesHubAudio &&
               !terminalModeEnabled &&
               event.type == 3) {
             unawaited(_toggleHubAudioFromDoubleTap(eventSource));
@@ -1123,6 +1249,9 @@ final class G2Connection {
   }
 
   void _showGestureOnVisualizer(int type, {required DateTime receivedAt}) {
+    if (_memoDisplayActive) {
+      return;
+    }
     final label = switch (type) {
       0 => 'Tap',
       1 => 'Swipe up',
@@ -1581,7 +1710,11 @@ final class G2Connection {
         reserveFlag: true,
       );
       await Future<void>.delayed(const Duration(milliseconds: 120));
-      await _createPage(_lastPageContent);
+      if (_memoDisplayActive) {
+        await _createMemoPage();
+      } else {
+        await _createPage(_lastPageContent);
+      }
       final shouldStartAudio = audioEnabled || startAudioAfterRestore;
       if (shouldStartAudio) {
         await Future<void>.delayed(const Duration(milliseconds: 120));
@@ -1707,6 +1840,9 @@ final class G2Connection {
       _onChanged();
 
       if (pageLabel == null || _lastPageContent != pageLabel) {
+        return;
+      }
+      if (_memoDisplayActive) {
         return;
       }
       _lastPageContent = '';
@@ -1850,6 +1986,7 @@ final class G2Connection {
     if (!isConnected ||
         !audioEnabled ||
         !_pageCreated ||
+        _memoDisplayActive ||
         terminalModeEnabled ||
         _pulseTimer != null) {
       return;
@@ -1887,6 +2024,7 @@ final class G2Connection {
   Future<void> _sendPulse({bool force = false}) async {
     if ((!isConnected && !force) ||
         !_pageCreated ||
+        _memoDisplayActive ||
         terminalModeEnabled ||
         (!audioEnabled && !force)) {
       return;
@@ -2125,6 +2263,9 @@ final class G2Connection {
     batteryCharging = null;
     _resetPulseState();
     _pageCreated = false;
+    _memoDisplayActive = false;
+    _memoDisplayNote = '';
+    _memoDisplayStatus = '';
     _nativeMenuOpen = false;
     _awaitingNativeMenuOpenConfirm = false;
     _lastR1SourceActivityAt = null;

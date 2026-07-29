@@ -23,13 +23,22 @@ G2 BLE notifications
         ▼
  selected STT isolate ─────────────► atomic transcript + JSONL index
                                                │
-                                               └──► selected shared folder
+                                               ├──► selected shared folder
+                                               └──► local Hey Memo consumer
+                                                        │
+                                                        ▼
+                                                 Gemma memo revisions
 ```
 
 The capture journal, decoder, VAD, transcription, BLE callbacks, and Flutter
 rendering do not share a work queue. A slow model or UI frame cannot block raw
 audio persistence. Flutter repaints at up to 30 FPS while every BLE audio
 packet continues through the capture path.
+
+The local `Hey Memo` consumer claims only live finalized transcript segments
+after their raw text is durable. It never owns LC3, PCM, VAD, or STT work and
+never routes memo dictation to the Voice WebSocket. See
+[Hey Memo voice notes](VOICE_MEMO.md).
 
 ## Startup contract
 

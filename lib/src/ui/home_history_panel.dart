@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import '../audio/shared_audio_export_store.dart';
+import '../audio/voice_memo_models.dart';
 import '../ble/ble_models.dart';
 import 'workbench_theme.dart';
 
@@ -13,6 +14,7 @@ final class HomeHistoryPanel extends StatefulWidget {
   const HomeHistoryPanel({
     required this.events,
     required this.conversations,
+    this.voiceMemos = const <VoiceMemoRecord>[],
     required this.analysisEnabled,
     required this.needsEnrollment,
     required this.analysisState,
@@ -42,6 +44,7 @@ final class HomeHistoryPanel extends StatefulWidget {
 
   final List<PooledLog> events;
   final List<SharedConversationTurn> conversations;
+  final List<VoiceMemoRecord> voiceMemos;
   final bool analysisEnabled;
   final bool needsEnrollment;
   final String analysisState;
@@ -106,7 +109,8 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         oldWidget.transcriptions.length != widget.transcriptions.length) {
       _visibleMessageCount = _messagePageSize;
     }
-    if (oldWidget.conversations.length != widget.conversations.length) {
+    if (oldWidget.conversations.length != widget.conversations.length ||
+        oldWidget.voiceMemos.length != widget.voiceMemos.length) {
       _visibleConversationCount = _conversationPageSize;
     }
   }
@@ -515,11 +519,16 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
 
   Widget _buildConversations(BuildContext context) {
     final theme = Theme.of(context);
-    final allChronological = widget.conversations.toList(growable: false)
-      ..sort((left, right) {
-        final byTime = left.updatedAt.compareTo(right.updatedAt);
-        return byTime != 0 ? byTime : left.id.compareTo(right.id);
-      });
+    final allChronological =
+        <_ConversationHistoryEntry>[
+          for (final turn in widget.conversations)
+            _ConversationHistoryEntry.turn(turn),
+          for (final memo in widget.voiceMemos)
+            _ConversationHistoryEntry.memo(memo),
+        ]..sort((left, right) {
+          final byTime = left.updatedAt.compareTo(right.updatedAt);
+          return byTime != 0 ? byTime : left.id.compareTo(right.id);
+        });
     final chronological = allChronological.length <= _conversationPageSize
         ? allChronological
         : allChronological.sublist(
@@ -580,8 +589,10 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
             children: <Widget>[
               Text(
                 widget.analysisEnabled
-                    ? 'No speaker-labeled conversations yet.'
-                    : 'Enable Conversation analysis in Tools to identify '
+                    ? 'No conversations or voice memos yet. Say “Hey Memo” '
+                          'to start a memo.'
+                    : 'Say “Hey Memo” to create a note here. Enable '
+                          'Conversation analysis in Tools to also identify '
                           'speakers. Messages and ordinary transcripts remain '
                           'in the separate Messages tab.',
                 textAlign: TextAlign.center,
@@ -612,8 +623,12 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
           widget.analysisEnabled
               ? '${widget.knownSpeakerCount} saved speakers · '
                     '${widget.pendingConversationCount} pending · '
+                    '${widget.voiceMemos.length} '
+                    '${widget.voiceMemos.length == 1 ? 'memo' : 'memos'} · '
                     '${_stateLabel(widget.analysisState)}'
-              : 'Saved speaker-labeled conversations · analysis disabled',
+              : '${widget.voiceMemos.length} voice '
+                    '${widget.voiceMemos.length == 1 ? 'memo' : 'memos'} · '
+                    'speaker analysis disabled',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: theme.textTheme.bodySmall,
@@ -644,7 +659,11 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
               padding: const EdgeInsets.only(bottom: 8),
               separatorBuilder: (_, _) => const SizedBox(height: 8),
               itemBuilder: (context, index) {
-                return _buildConversationTurn(context, visible[index]);
+                final entry = visible[index];
+                final memo = entry.memo;
+                return memo == null
+                    ? _buildConversationTurn(context, entry.turn!)
+                    : _buildVoiceMemo(context, memo);
               },
             ),
           ),
@@ -770,6 +789,43 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     );
   }
 
+  Widget _buildVoiceMemo(BuildContext context, VoiceMemoRecord memo) {
+    final theme = Theme.of(context);
+    final note = memo.note.trim().isEmpty
+        ? 'Waiting for dictated content…'
+        : memo.note.trim();
+    return Semantics(
+      label: 'Voice memo ${memo.status.label}: $note',
+      child: Align(
+        key: ValueKey<String>('voice-memo-${memo.id}'),
+        alignment: Alignment.centerLeft,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 360),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text('Voice memo', style: theme.textTheme.titleSmall),
+                const SizedBox(height: 4),
+                Text(note, style: theme.textTheme.bodyMedium),
+                const SizedBox(height: 4),
+                Text(
+                  '${memo.status.label} · '
+                  '${memo.sources.length} '
+                  '${memo.sources.length == 1 ? 'utterance' : 'utterances'} · '
+                  '${_savedLabel(context, memo.updatedAt)}'
+                  '${memo.errorCode == null ? '' : ' · original retained'}',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   bool _loadMoreMessages(ScrollNotification notification, int historyLength) {
     if (notification is! ScrollEndNotification ||
         notification.metrics.extentAfter > 160 ||
@@ -857,4 +913,32 @@ final class _MessageHistoryEntry {
   final DateTime updatedAt;
   final SharedWebSocketMessage? message;
   final SharedTranscript? transcript;
+}
+
+final class _ConversationHistoryEntry {
+  const _ConversationHistoryEntry._({
+    required this.id,
+    required this.updatedAt,
+    this.turn,
+    this.memo,
+  });
+
+  factory _ConversationHistoryEntry.turn(SharedConversationTurn value) =>
+      _ConversationHistoryEntry._(
+        id: 'turn-${value.id}',
+        updatedAt: value.updatedAt,
+        turn: value,
+      );
+
+  factory _ConversationHistoryEntry.memo(VoiceMemoRecord value) =>
+      _ConversationHistoryEntry._(
+        id: 'memo-${value.id}',
+        updatedAt: value.updatedAt,
+        memo: value,
+      );
+
+  final String id;
+  final DateTime updatedAt;
+  final SharedConversationTurn? turn;
+  final VoiceMemoRecord? memo;
 }

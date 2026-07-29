@@ -101,6 +101,24 @@ void main() {
       expect(update, containsAllInOrder(utf8.encode('world')));
     });
 
+    test('builds a memo page with a persistent double-tap action header', () {
+      final protocol = G2Protocol();
+      final create = protocol.createMemoPage(
+        'Project note\nRemember the second item.',
+        status: 'Updating',
+      );
+      final update = protocol.updateMemoPage(
+        'Project note\nRemember the final item.',
+        status: 'Finalizing',
+      );
+
+      expect(create, containsAllInOrder(utf8.encode('Double Tap to finish')));
+      expect(create, containsAllInOrder(utf8.encode('Updating')));
+      expect(create, containsAllInOrder(utf8.encode('Remember the second')));
+      expect(update, containsAllInOrder(utf8.encode('Finalizing')));
+      expect(update, containsAllInOrder(utf8.encode('Remember the final')));
+    });
+
     test('clears text with the firmware-compatible newline update', () {
       final protocol = G2Protocol();
       final command = protocol.clearText();

@@ -12,12 +12,16 @@ import 'audio/shared_audio_export_store.dart';
 import 'audio/speech_model.dart';
 import 'audio/speech_model_preferences.dart';
 import 'audio/transcript_correction_config.dart';
+import 'audio/vad_worker.dart';
+import 'audio/voice_memo_models.dart';
+import 'audio/voice_memo_service.dart';
 import 'background/app_runtime_coordinator.dart';
 import 'background/background_service.dart';
 import 'ble/ble_models.dart';
 import 'ble/g2_connection.dart';
 import 'ble/glasses_status_queue.dart';
 import 'ble/r1_connection.dart';
+import 'protocol/g2_protocol.dart';
 import 'util/hex.dart';
 import 'startup/startup_state.dart';
 import 'websocket/voice_websocket_client.dart';
@@ -51,6 +55,7 @@ final class WearableController extends ChangeNotifier
       onChanged: _safeNotify,
       sharedAudioExportStore: _sharedAudioExportStore,
     );
+    _voiceMemo = VoiceMemoService(log: addLog, onChanged: _memoChanged);
     _audioPipeline = AudioPipelineCoordinator(
       log: addLog,
       onChanged: _safeNotify,
@@ -58,7 +63,11 @@ final class WearableController extends ChangeNotifier
       onQueuedTranscript: _handleQueuedTranscript,
       onFinalTranscript: _handleFinalTranscript,
       onFinalizedSpeechSegment: _conversationAnalysis.acceptFinalizedSegment,
-      correctionTermsProvider: () => _voiceWebSocket.config.agentNames,
+      onVadSpeechEvent: _handleVadSpeechEvent,
+      correctionTermsProvider: () => <String>[
+        VoiceMemoService.wakePhrase,
+        ..._voiceWebSocket.config.agentNames,
+      ],
       sharedAudioExportStore: _sharedAudioExportStore,
     );
     g2 = G2Connection(
@@ -68,6 +77,7 @@ final class WearableController extends ChangeNotifier
       onAudioChanged: _audioChanged,
       onLc3Audio: _audioPipeline.acceptLc3,
       onUnexpectedDisconnect: _unexpectedG2Disconnect,
+      onGesture: _handleG2Gesture,
     );
     _glassesStatusQueue = GlassesStatusQueue(
       isConnected: () => g2.isConnected,
@@ -86,6 +96,7 @@ final class WearableController extends ChangeNotifier
   late final AppRuntimeCoordinator _runtime;
   late final VoiceWebSocketClient _voiceWebSocket;
   late final ConversationAnalysisService _conversationAnalysis;
+  late final VoiceMemoService _voiceMemo;
   late final AudioPipelineCoordinator _audioPipeline;
   late final G2Connection g2;
   late final GlassesStatusQueue _glassesStatusQueue;
@@ -96,12 +107,14 @@ final class WearableController extends ChangeNotifier
   Timer? _notifyTimer;
   Timer? _audioNotifyTimer;
   Timer? _backgroundNotifyTimer;
+  Future<void> _memoDisplayTail = Future<void>.value();
   bool _disposed = false;
   bool _g2UnexpectedlyDisconnected = false;
   bool _linkingController = false;
   bool _sharedMessageViewActive = false;
   bool? _runtimeSessionActive;
   String? _lastControllerLinkKey;
+  String? _announcedFinalizedMemoId;
   SpeechModelDefinition _selectedSpeechModel = defaultSpeechModel();
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
 
@@ -176,6 +189,8 @@ final class WearableController extends ChangeNotifier
   int get pendingConversationCount => _conversationAnalysis.pendingCount;
   int get completedConversations =>
       _conversationAnalysis.completedConversations;
+  List<VoiceMemoRecord> get voiceMemos => _voiceMemo.records;
+  bool get voiceMemoActive => _voiceMemo.isActive;
 
   List<G2PairCandidate> get g2Candidates {
     final values = _g2ByKey.values.toList(growable: false);
@@ -226,6 +241,16 @@ final class WearableController extends ChangeNotifier
         'WebSocket',
         '[WorkBench][VoiceWebSocket] state=unavailable '
             'action=check_app_storage',
+        isError: true,
+      );
+    }
+    try {
+      await _voiceMemo.initialize();
+    } on Object {
+      addLog(
+        'Memo',
+        '[WorkBench][Memo] state=storage_unavailable '
+            'capture=unaffected transcription=unaffected',
         isError: true,
       );
     }
@@ -386,6 +411,7 @@ final class WearableController extends ChangeNotifier
     await g2.disconnect();
     _lastControllerLinkKey = null;
     _audioPipeline.handleWearableDisconnect(expected: true);
+    _voiceMemo.handleWearableDisconnect();
     await _syncBackgroundService();
   }
 
@@ -404,6 +430,7 @@ final class WearableController extends ChangeNotifier
     // handoff and leaves Android directly attached to R1.
     _lastControllerLinkKey = null;
     _audioPipeline.handleWearableDisconnect(expected: true);
+    _voiceMemo.handleWearableDisconnect();
     await _syncBackgroundService();
   }
 
@@ -719,6 +746,7 @@ final class WearableController extends ChangeNotifier
     }
     _safeNotify();
     _glassesStatusQueue.connectionChanged();
+    _queueMemoDisplaySync();
     final active = _hasWearableSession;
     if (_runtimeSessionActive != active) {
       _runtimeSessionActive = active;
@@ -734,10 +762,88 @@ final class WearableController extends ChangeNotifier
     _safeNotify();
   }
 
+  void _memoChanged() {
+    if (_voiceMemo.isActive) {
+      _glassesStatusQueue.setPaused(true);
+    }
+    _safeNotify();
+    _queueMemoDisplaySync();
+  }
+
+  void _queueMemoDisplaySync() {
+    final operation = _memoDisplayTail.then((_) => _syncMemoDisplay());
+    _memoDisplayTail = operation.then<void>(
+      (_) {},
+      onError: (Object error) {
+        addLog(
+          'Memo',
+          '[WorkBench][MemoDisplay] state=failed '
+              'error=${_oneLine(error)}',
+          isError: true,
+        );
+      },
+    );
+  }
+
+  Future<void> _syncMemoDisplay() async {
+    if (_disposed) {
+      return;
+    }
+    final active = _voiceMemo.activeMemo;
+    if (active != null) {
+      _glassesStatusQueue.setPaused(true);
+      if (g2.isConnected) {
+        await g2.showMemo(
+          note: _voiceMemo.displayText,
+          status: active.status.label,
+        );
+      }
+      return;
+    }
+    if (g2.isConnected && g2.isMemoDisplayActive) {
+      await g2.exitMemo();
+    }
+    _glassesStatusQueue.setPaused(false);
+    final finalizedId = _voiceMemo.lastFinalizedId;
+    if (finalizedId != null && finalizedId != _announcedFinalizedMemoId) {
+      _announcedFinalizedMemoId = finalizedId;
+      await _glassesStatusQueue.queueTransient(
+        prefix: 'Memo',
+        message: 'Saved',
+      );
+    }
+  }
+
+  void _handleVadSpeechEvent(VadSpeechEvent event) {
+    switch (event.type) {
+      case VadSpeechEventType.started:
+        _voiceMemo.speechStarted(event.segmentId);
+      case VadSpeechEventType.ended:
+        _voiceMemo.speechEnded(event.segmentId);
+    }
+  }
+
+  bool _handleG2Gesture(G2GestureEvent event) {
+    if (event.type != 3 || !_voiceMemo.isActive) {
+      return false;
+    }
+    _audioPipeline.flushCurrentSpeech();
+    _voiceMemo.requestFinalize(reason: 'double_tap');
+    return true;
+  }
+
   Future<void> _handleFinalTranscript(
     String segmentId,
     String transcript,
   ) async {
+    if (await _voiceMemo.acceptFinalTranscript(segmentId, transcript)) {
+      addLog(
+        'Memo',
+        '[WorkBench][Memo] state=transcript_consumed stage=final '
+            'websocket=skipped',
+      );
+      return;
+    }
     final route = _voiceWebSocket.routeForTranscript(transcript);
     if (route == null) {
       await _glassesStatusQueue.completeTranscript(
@@ -776,11 +882,23 @@ final class WearableController extends ChangeNotifier
     );
   }
 
-  Future<void> _handleQueuedTranscript(String segmentId, String transcript) =>
-      _glassesStatusQueue.queueTranscript(
-        segmentId: segmentId,
-        transcript: transcript,
+  Future<void> _handleQueuedTranscript(
+    String segmentId,
+    String transcript,
+  ) async {
+    if (_voiceMemo.acceptRawTranscript(segmentId, transcript)) {
+      addLog(
+        'Memo',
+        '[WorkBench][Memo] state=transcript_consumed stage=raw '
+            'websocket=skipped',
       );
+      return;
+    }
+    await _glassesStatusQueue.queueTranscript(
+      segmentId: segmentId,
+      transcript: transcript,
+    );
+  }
 
   Future<void> _handleInboundWebSocketMessage(String message) async {
     Object? persistenceError;
@@ -912,6 +1030,7 @@ final class WearableController extends ChangeNotifier
       isError: true,
     );
     _audioPipeline.handleWearableDisconnect(expected: false);
+    _voiceMemo.handleWearableDisconnect();
   }
 
   void _handleUnsafeCapture() {
@@ -966,6 +1085,9 @@ final class WearableController extends ChangeNotifier
     });
   }
 
+  static String _oneLine(Object value) =>
+      '$value'.replaceAll(RegExp(r'\s+'), ' ').trim();
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _lifecycleState = state;
@@ -1006,6 +1128,7 @@ final class WearableController extends ChangeNotifier
     );
     unawaited(_audioPipeline.handleMemoryPressure());
     unawaited(_conversationAnalysis.handleMemoryPressure());
+    unawaited(_voiceMemo.handleMemoryPressure());
   }
 
   @override
@@ -1025,6 +1148,7 @@ final class WearableController extends ChangeNotifier
     unawaited(g2.dispose());
     unawaited(r1.dispose());
     unawaited(_conversationAnalysis.dispose());
+    unawaited(_voiceMemo.dispose());
     unawaited(_audioPipeline.dispose());
     unawaited(_voiceWebSocket.close());
     unawaited(_runtime.dispose());

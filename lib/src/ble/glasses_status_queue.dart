@@ -35,6 +35,7 @@ final class GlassesStatusQueue {
   String? _latestTranscriptId;
   bool _pumping = false;
   bool _pumpRequested = false;
+  bool _paused = false;
   bool _disposed = false;
   int _revision = 0;
   int _transientSequence = 0;
@@ -48,7 +49,10 @@ final class GlassesStatusQueue {
     required String segmentId,
     required String transcript,
   }) async {
-    if (_disposed) {
+    if (_disposed || _paused) {
+      if (_paused) {
+        _log('[WorkBench][GlassesStatus] state=suppressed owner=memo');
+      }
       return;
     }
     _latestTranscriptId = segmentId;
@@ -68,7 +72,10 @@ final class GlassesStatusQueue {
     required String transcript,
     required GlassesTranscriptOutcome outcome,
   }) async {
-    if (_disposed) {
+    if (_disposed || _paused) {
+      if (_paused) {
+        _log('[WorkBench][GlassesStatus] state=suppressed owner=memo');
+      }
       return;
     }
     var current = _current;
@@ -103,7 +110,10 @@ final class GlassesStatusQueue {
     required String prefix,
     required String message,
   }) async {
-    if (_disposed) {
+    if (_disposed || _paused) {
+      if (_paused) {
+        _log('[WorkBench][GlassesStatus] state=suppressed owner=memo');
+      }
       return;
     }
     _transientSequence++;
@@ -126,6 +136,23 @@ final class GlassesStatusQueue {
     if (!_disposed && _isConnected()) {
       _startPump();
     }
+  }
+
+  void setPaused(bool paused) {
+    if (_disposed || _paused == paused) {
+      return;
+    }
+    _paused = paused;
+    if (paused) {
+      _cancelHold();
+      _current = null;
+      _deferredTransient = null;
+      _latestTranscriptId = null;
+      _revision++;
+      _log('[WorkBench][GlassesStatus] state=paused owner=memo pending=0');
+      return;
+    }
+    _log('[WorkBench][GlassesStatus] state=resumed owner=normal pending=0');
   }
 
   void dispose() {
@@ -162,7 +189,7 @@ final class GlassesStatusQueue {
   }
 
   Future<void> _pump() async {
-    if (_disposed || _pumping) {
+    if (_disposed || _paused || _pumping) {
       return;
     }
     _pumping = true;
