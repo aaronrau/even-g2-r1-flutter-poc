@@ -136,10 +136,14 @@ live raw transcript to route as a documented fallback.
 The item resolves to `Sent:` only after a positive modern acknowledgement.
 Every other outcome resolves to `Saved:`. The terminal state remains visible
 for two seconds, is cleared with redundant EvenHub writes, and then yields to
-the next FIFO item. Up to 64 display items are bounded in memory; this visual
-queue is independent of the durable transcription and correction ledgers, so
-a display backlog cannot block or discard audio, files, correction, or
-WebSocket routing.
+the latest deferred inbound item. If an inbound event arrives before the
+acknowledgement, the latest transcript's `Sent:` or `Saved:` state restores the
+terminal display instead of being discarded as superseded. If an inbound event
+arrives during the terminal hold, only the newest inbound item waits. The
+active item plus that one deferred item are the complete in-memory display
+bound. This visual scheduler is independent of the durable transcription and
+correction ledgers, so display timing cannot block or discard audio, files,
+correction, or WebSocket routing.
 
 The agent server's `message.progress` and `message.completed` events carry
 their concise user-facing text under `payload.summary` or

@@ -132,7 +132,7 @@ void main() {
     queue.dispose();
   });
 
-  testWidgets('a received message supersedes stale transcript status', (
+  testWidgets('a received message waits for the Sent display lifecycle', (
     tester,
   ) async {
     final display = <String>[];
@@ -147,9 +147,19 @@ void main() {
     );
     await queue.queueTransient(prefix: 'Received', message: 'Agent response.');
     await tester.pump();
+    expect(display, <String>['Queued: Raw.', 'Sent: Corrected.']);
+    expect(queue.pendingCount, 2);
+    expect(
+      logs,
+      contains('[WorkBench][GlassesStatus] state=received_deferred pending=2'),
+    );
+
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump();
     expect(display, <String>[
       'Queued: Raw.',
       'Sent: Corrected.',
+      '<clear>',
       'Received: Agent response.',
     ]);
     expect(
@@ -159,18 +169,51 @@ void main() {
 
     await tester.pump(const Duration(seconds: 2));
     await tester.pump();
+    expect(display.last, '<clear>');
+
+    queue.dispose();
+  });
+
+  testWidgets('a delayed Sent completion replaces an inbound status', (
+    tester,
+  ) async {
+    final display = <String>[];
+    final logs = <String>[];
+    final queue = _queue(display: display, logs: logs);
+
+    await queue.queueTranscript(segmentId: 'segment-1', transcript: 'Raw.');
+    await tester.pump();
+    await queue.queueTransient(
+      prefix: 'Received',
+      message: 'Early agent response.',
+    );
+    await tester.pump();
+    await queue.completeTranscript(
+      segmentId: 'segment-1',
+      transcript: 'Corrected.',
+      outcome: GlassesTranscriptOutcome.sent,
+    );
+    await tester.pump();
+
     expect(display, <String>[
       'Queued: Raw.',
+      'Received: Early agent response.',
       'Sent: Corrected.',
-      'Received: Agent response.',
-      '<clear>',
     ]);
     expect(
       logs,
-      contains('[WorkBench][GlassesStatus] state=received_displayed pending=1'),
+      isNot(
+        contains(
+          '[WorkBench][GlassesStatus] '
+          'state=completion_superseded outcome=sent',
+        ),
+      ),
     );
 
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump();
     expect(display.last, '<clear>');
+    expect(queue.pendingCount, 0);
 
     queue.dispose();
   });

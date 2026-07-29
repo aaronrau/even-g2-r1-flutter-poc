@@ -434,16 +434,13 @@ final class _HomePageState extends State<HomePage> {
         onRefreshMessages: () =>
             _run(() => controller.refreshSharedMessages(reconcileShared: true)),
         onRefreshConversations: () => _run(controller.refreshConversations),
+        onLoadMessages: controller.refreshSharedMessages,
+        onLoadConversations: controller.refreshConversations,
         onResetPrimarySpeaker: () =>
             _run(controller.resetConversationPrimarySpeaker),
         onTabChanged: (tab) {
           final messagesSelected = tab == HomeHistoryTab.messages;
           controller.setSharedMessageViewActive(messagesSelected);
-          if (messagesSelected) {
-            _run(controller.refreshSharedMessages);
-          } else if (tab == HomeHistoryTab.conversations) {
-            _run(controller.refreshConversations);
-          }
         },
         isPlayingTranscript: controller.isPlayingTranscript,
         onToggleTranscriptAudio: (transcript) {

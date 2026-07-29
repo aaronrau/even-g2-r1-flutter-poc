@@ -292,7 +292,7 @@ void main() {
       expect(update, containsAllInOrder(bitmap));
     });
 
-    test('builds the blank visualizer page with gesture text below audio', () {
+    test('builds the blank visualizer page with text right of the pulse', () {
       final protocol = G2Protocol();
       final command = protocol.rebuildAudioVisualizerPage();
       final outer = ProtoReader(command).readFields();
@@ -302,15 +302,20 @@ void main() {
 
       expect(outer[1], 7);
       expect(page[1], 3);
-      expect(gesture[1], 16);
-      expect(gesture[2], G2Protocol.visualizerGestureY);
-      expect(gesture[3], 544);
-      expect(gesture[4], 64);
+      expect(gesture[1], G2Protocol.visualizerTextX);
+      expect(gesture[2], G2Protocol.visualizerTextY);
+      expect(gesture[3], G2Protocol.visualizerTextWidth);
+      expect(gesture[4], G2Protocol.visualizerTextHeight);
       expect(utf8.decode(gesture[12]! as Uint8List), isEmpty);
-      expect(image[1], 16);
-      expect(image[2], 12);
+      expect(image[1], G2Protocol.visualizerPulseX);
+      expect(image[2], G2Protocol.visualizerPulseY);
       expect(image[3], G2Protocol.visualizerPulseWidth);
       expect(image[4], G2Protocol.visualizerPulseHeight);
+      expect(
+        gesture[1]! as int,
+        greaterThanOrEqualTo((image[1]! as int) + (image[3]! as int)),
+      );
+      expect(gesture[2], image[2]);
     });
 
     test('renders a dim-to-bright quantized LC3 activity pulse', () {

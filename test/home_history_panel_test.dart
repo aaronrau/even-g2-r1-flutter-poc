@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:even_g2_r1_poc/src/audio/shared_audio_export_store.dart';
 import 'package:even_g2_r1_poc/src/ble/ble_models.dart';
 import 'package:even_g2_r1_poc/src/ui/home_history_panel.dart';
@@ -245,6 +247,132 @@ void main() {
     expect(chooseButton, findsOneWidget);
     await tester.tap(chooseButton);
     expect(chooseCount, 1);
+  });
+
+  testWidgets('shows first-load indicators for Messages and Conversation', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final messagesLoaded = Completer<void>();
+    final conversationsLoaded = Completer<void>();
+    var messageLoads = 0;
+    var conversationLoads = 0;
+
+    await tester.pumpWidget(
+      _app(
+        HomeHistoryPanel(
+          events: const <PooledLog>[],
+          conversations: const <SharedConversationTurn>[],
+          messages: const <SharedWebSocketMessage>[],
+          transcriptions: const <SharedTranscript>[],
+          supportsSharedFolder: true,
+          sharedFolderName: 'Work Bench Audio',
+          isLoadingMessages: false,
+          analysisEnabled: true,
+          needsEnrollment: false,
+          analysisState: 'ready',
+          knownSpeakerCount: 1,
+          pendingConversationCount: 0,
+          isLoadingConversations: false,
+          isStorageBusy: false,
+          onLoadMessages: () {
+            messageLoads++;
+            return messagesLoaded.future;
+          },
+          onLoadConversations: () {
+            conversationLoads++;
+            return conversationsLoaded.future;
+          },
+        ),
+      ),
+    );
+
+    tester.widget<TabBar>(find.byType(TabBar)).controller!.index =
+        HomeHistoryTab.messages.index;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(messageLoads, 1);
+    expect(
+      find.byKey(const ValueKey<String>('messages-loading')),
+      findsOneWidget,
+    );
+    expect(find.text('Loading messages…'), findsOneWidget);
+    expect(find.textContaining('No saved messages'), findsNothing);
+
+    messagesLoaded.complete();
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey<String>('messages-loading')),
+      findsNothing,
+    );
+    expect(find.textContaining('No saved messages'), findsOneWidget);
+
+    tester.widget<TabBar>(find.byType(TabBar)).controller!.index =
+        HomeHistoryTab.conversations.index;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(conversationLoads, 1);
+    expect(
+      find.byKey(const ValueKey<String>('conversations-loading')),
+      findsOneWidget,
+    );
+    expect(find.text('Loading conversations…'), findsOneWidget);
+    expect(find.text('No speaker-labeled conversations yet.'), findsNothing);
+
+    conversationsLoaded.complete();
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey<String>('conversations-loading')),
+      findsNothing,
+    );
+    expect(find.text('No speaker-labeled conversations yet.'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('keeps a fast first-load indicator visible through tab entry', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      _app(
+        HomeHistoryPanel(
+          events: const <PooledLog>[],
+          conversations: const <SharedConversationTurn>[],
+          messages: const <SharedWebSocketMessage>[],
+          transcriptions: const <SharedTranscript>[],
+          supportsSharedFolder: true,
+          sharedFolderName: 'Work Bench Audio',
+          isLoadingMessages: false,
+          analysisEnabled: false,
+          needsEnrollment: false,
+          analysisState: 'disabled',
+          knownSpeakerCount: 0,
+          pendingConversationCount: 0,
+          isLoadingConversations: false,
+          isStorageBusy: false,
+          onLoadMessages: () async {},
+        ),
+      ),
+    );
+
+    tester.widget<TabBar>(find.byType(TabBar)).controller!.index =
+        HomeHistoryTab.messages.index;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+
+    expect(find.text('Loading messages…'), findsOneWidget);
+    expect(find.textContaining('No saved messages'), findsNothing);
+
+    await tester.pump(const Duration(milliseconds: 150));
+    await tester.pumpAndSettle();
+    expect(find.text('Loading messages…'), findsNothing);
+    expect(find.textContaining('No saved messages'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('asks for one clear enrollment sentence', (tester) async {

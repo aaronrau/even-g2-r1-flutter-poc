@@ -30,11 +30,12 @@ audited against MentraOS `dev` commit
 ## Hub page and audio
 
 The page contains a 32x24 4-bit grayscale audio pulse image at the upper-left
-and a gesture text container below it. The dot is hidden before streaming,
-dim and small at quiet levels, then grows brighter and larger through six
-quantized activity states. Audio is kept enabled independently from tap and
-double-tap input. A displayed ring event clears after three seconds; each new
-event cancels and restarts that expiration timer.
+with the gesture text container immediately to its right on the same row. The
+dot is hidden before streaming, dim and small at quiet levels, then grows
+brighter and larger through six quantized activity states. Audio is kept
+enabled independently from tap and double-tap input. A displayed ring event
+clears after three seconds; each new event cancels and restarts that expiration
+timer.
 
 The microphone notification format observed in MentraOS and on hardware is:
 

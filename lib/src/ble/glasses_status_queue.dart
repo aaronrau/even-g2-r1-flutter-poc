@@ -31,6 +31,8 @@ final class GlassesStatusQueue {
   final Duration _terminalDisplayDuration;
 
   _GlassesStatusEntry? _current;
+  _GlassesStatusEntry? _deferredTransient;
+  String? _latestTranscriptId;
   bool _pumping = false;
   bool _pumpRequested = false;
   bool _disposed = false;
@@ -39,7 +41,8 @@ final class GlassesStatusQueue {
   Timer? _holdTimer;
   Completer<void>? _holdCompleter;
 
-  int get pendingCount => _current == null ? 0 : 1;
+  int get pendingCount =>
+      (_current == null ? 0 : 1) + (_deferredTransient == null ? 0 : 1);
 
   Future<void> queueTranscript({
     required String segmentId,
@@ -48,6 +51,8 @@ final class GlassesStatusQueue {
     if (_disposed) {
       return;
     }
+    _latestTranscriptId = segmentId;
+    _deferredTransient = null;
     final current = _current;
     if (current?.isTransient == false && current?.id == segmentId) {
       return;
@@ -66,7 +71,18 @@ final class GlassesStatusQueue {
     if (_disposed) {
       return;
     }
-    final current = _current;
+    var current = _current;
+    if ((current == null || current.isTransient) &&
+        _latestTranscriptId == segmentId) {
+      _replaceCurrent(
+        _GlassesStatusEntry.completedTranscript(
+          id: segmentId,
+          text: transcript,
+          outcome: outcome,
+        ),
+      );
+      current = _current;
+    }
     if (current == null || current.isTransient || current.id != segmentId) {
       _log(
         '[WorkBench][GlassesStatus] state=completion_superseded '
@@ -91,13 +107,18 @@ final class GlassesStatusQueue {
       return;
     }
     _transientSequence++;
-    _replaceCurrent(
-      _GlassesStatusEntry.transient(
-        id: 'transient-$_transientSequence',
-        initialPrefix: prefix,
-        text: message,
-      ),
+    final entry = _GlassesStatusEntry.transient(
+      id: 'transient-$_transientSequence',
+      initialPrefix: prefix,
+      text: message,
     );
+    final current = _current;
+    if (current != null && !current.isTransient && current.outcome != null) {
+      _deferredTransient = entry;
+      _log('[WorkBench][GlassesStatus] state=received_deferred pending=2');
+      return;
+    }
+    _replaceCurrent(entry);
     _log('[WorkBench][GlassesStatus] state=received_queued pending=1');
   }
 
@@ -114,6 +135,8 @@ final class GlassesStatusQueue {
     _disposed = true;
     _cancelHold();
     _current = null;
+    _deferredTransient = null;
+    _latestTranscriptId = null;
   }
 
   void _replaceCurrent(_GlassesStatusEntry entry) {
@@ -218,8 +241,21 @@ final class GlassesStatusQueue {
           continue;
         }
         _current = null;
+        if (!entry.isTransient && _latestTranscriptId == entry.id) {
+          _latestTranscriptId = null;
+        }
         _revision++;
         _log('[WorkBench][GlassesStatus] state=cleared pending=0');
+        final deferred = _deferredTransient;
+        if (deferred != null) {
+          _deferredTransient = null;
+          _current = deferred;
+          _revision++;
+          _log(
+            '[WorkBench][GlassesStatus] '
+            'state=received_queued pending=1',
+          );
+        }
       }
     } finally {
       _pumping = false;
@@ -315,6 +351,14 @@ final class _GlassesStatusEntry {
   _GlassesStatusEntry.transcript({required this.id, required this.text})
     : initialPrefix = 'Queued',
       isTransient = false;
+
+  _GlassesStatusEntry.completedTranscript({
+    required this.id,
+    required this.text,
+    required this.outcome,
+  }) : initialPrefix = 'Queued',
+       isTransient = false,
+       initialShown = true;
 
   _GlassesStatusEntry.transient({
     required this.id,

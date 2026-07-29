@@ -91,6 +91,24 @@ Tools-page examples in the same change. Before finishing UI work, run
 `flutter analyze`, `flutter test`, and inspect the result on a representative
 phone-sized viewport.
 
+## Android build numbering
+
+Increment the numeric build suffix in `pubspec.yaml` before every invocation
+that produces a new Android APK or app bundle. Never reuse an Android build
+number for a newly built artifact, including validation rebuilds.
+
+- This applies to `flutter build`, direct Gradle APK/app-bundle tasks,
+  `flutter run`, and any install helper that triggers an Android build.
+- Increment again before retrying another Android build invocation, even when
+  the prior build failed or the source did not otherwise change.
+- A helper invocation that installs an explicitly supplied, already-built APK
+  does not require another increment because it creates no new artifact.
+- Keep the incremented `version: <name>+<build>` value in the committed
+  `pubspec.yaml`; do not hide the build number in an uncommitted command-line
+  override.
+- After installation, verify Android reports the expected `versionName` and
+  `versionCode` before accepting the build.
+
 ## Audio test source of truth
 
 Use the checked-in

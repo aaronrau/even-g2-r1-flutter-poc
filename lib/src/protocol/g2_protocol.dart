@@ -545,9 +545,15 @@ final class G2ReceiveAssembler {
 
 /// Builds the subset of G2 commands needed by this transport POC.
 final class G2Protocol {
+  static const int visualizerPulseX = 16;
+  static const int visualizerPulseY = 12;
   static const int visualizerPulseWidth = 32;
   static const int visualizerPulseHeight = 24;
-  static const int visualizerGestureY = 52;
+  static const int visualizerTextX =
+      visualizerPulseX + visualizerPulseWidth + 8;
+  static const int visualizerTextY = visualizerPulseY;
+  static const int visualizerTextWidth = 576 - visualizerTextX;
+  static const int visualizerTextHeight = 64;
 
   int _syncId = 0;
   int _magicRandom = 0;
@@ -889,18 +895,18 @@ final class G2Protocol {
     );
   }
 
-  /// Rebuilds the Hub page as a pulse with an initially blank gesture line.
+  /// Rebuilds the Hub page with gesture text to the right of the audio pulse.
   Uint8List rebuildAudioVisualizerPage({String gesture = ''}) {
     return rebuildPageWithImage(
       content: gesture,
-      imageX: 16,
-      imageY: 12,
+      imageX: visualizerPulseX,
+      imageY: visualizerPulseY,
       imageWidth: visualizerPulseWidth,
       imageHeight: visualizerPulseHeight,
-      textX: 16,
-      textY: visualizerGestureY,
-      textWidth: 544,
-      textHeight: 64,
+      textX: visualizerTextX,
+      textY: visualizerTextY,
+      textWidth: visualizerTextWidth,
+      textHeight: visualizerTextHeight,
     );
   }
 

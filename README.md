@@ -49,7 +49,7 @@ still use whichever hosted model services the user configures.
 
 This build keeps a custom EvenHub page active with continuous microphone
 streaming. The page starts without text, shows a voice-responsive grayscale
-pulse, and displays R1 gestures beneath it.
+pulse, and displays R1 gestures to its right.
 
 It is a best-effort **soft kiosk**, not a firmware-level locked mode. The app
 can restore its page and audio stream after recoverable interruptions, but the

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -30,6 +31,8 @@ final class HomeHistoryPanel extends StatefulWidget {
     this.onChooseFolder,
     this.onRefreshMessages,
     this.onRefreshConversations,
+    this.onLoadMessages,
+    this.onLoadConversations,
     this.onResetPrimarySpeaker,
     this.onTabChanged,
     this.onToggleTranscriptAudio,
@@ -57,6 +60,8 @@ final class HomeHistoryPanel extends StatefulWidget {
   final VoidCallback? onChooseFolder;
   final VoidCallback? onRefreshMessages;
   final VoidCallback? onRefreshConversations;
+  final Future<void> Function()? onLoadMessages;
+  final Future<void> Function()? onLoadConversations;
   final VoidCallback? onResetPrimarySpeaker;
   final ValueChanged<HomeHistoryTab>? onTabChanged;
   final ValueChanged<SharedTranscript>? onToggleTranscriptAudio;
@@ -70,11 +75,16 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     with SingleTickerProviderStateMixin {
   static const int _messagePageSize = 20;
   static const int _conversationPageSize = 100;
+  static const Duration _minimumFirstLoadDuration = Duration(milliseconds: 500);
 
   late final TabController _tabController;
   int _visibleMessageCount = _messagePageSize;
   int _visibleConversationCount = _conversationPageSize;
   HomeHistoryTab _reportedTab = HomeHistoryTab.events;
+  bool _isLoadingMessagesForTab = false;
+  bool _isLoadingConversationsForTab = false;
+  bool _messagesLoadedOnce = false;
+  bool _conversationsLoadedOnce = false;
 
   HomeHistoryTab get _selectedTab =>
       HomeHistoryTab.values[_tabController.index];
@@ -120,8 +130,62 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     if (selectedTab != _reportedTab) {
       _reportedTab = selectedTab;
       widget.onTabChanged?.call(selectedTab);
+      _startTabLoad(selectedTab);
     }
     setState(() {});
+  }
+
+  void _startTabLoad(HomeHistoryTab tab) {
+    final loader = switch (tab) {
+      HomeHistoryTab.messages => widget.onLoadMessages,
+      HomeHistoryTab.conversations => widget.onLoadConversations,
+      HomeHistoryTab.events => null,
+    };
+    if (loader == null) {
+      return;
+    }
+    if (tab == HomeHistoryTab.messages) {
+      if (_isLoadingMessagesForTab) {
+        return;
+      }
+      _isLoadingMessagesForTab = true;
+    } else {
+      if (_isLoadingConversationsForTab) {
+        return;
+      }
+      _isLoadingConversationsForTab = true;
+    }
+    final firstLoad = tab == HomeHistoryTab.messages
+        ? !_messagesLoadedOnce
+        : !_conversationsLoadedOnce;
+    unawaited(_runTabLoad(tab, loader, firstLoad: firstLoad));
+  }
+
+  Future<void> _runTabLoad(
+    HomeHistoryTab tab,
+    Future<void> Function() loader, {
+    required bool firstLoad,
+  }) async {
+    try {
+      await Future.wait<void>(<Future<void>>[
+        loader(),
+        if (firstLoad) Future<void>.delayed(_minimumFirstLoadDuration),
+      ]);
+    } on Object {
+      // The parent-provided error state replaces the loading indicator.
+    } finally {
+      if (mounted) {
+        setState(() {
+          if (tab == HomeHistoryTab.messages) {
+            _isLoadingMessagesForTab = false;
+            _messagesLoadedOnce = true;
+          } else {
+            _isLoadingConversationsForTab = false;
+            _conversationsLoadedOnce = true;
+          }
+        });
+      }
+    }
   }
 
   @override
@@ -162,6 +226,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                 tooltip: 'Refresh messages',
                 onPressed:
                     widget.sharedFolderName == null ||
+                        _isLoadingMessagesForTab ||
                         widget.isLoadingMessages ||
                         widget.isStorageBusy
                     ? null
@@ -175,7 +240,10 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
             else
               IconButton(
                 tooltip: 'Refresh conversations',
-                onPressed: widget.isLoadingConversations || widget.isStorageBusy
+                onPressed:
+                    _isLoadingConversationsForTab ||
+                        widget.isLoadingConversations ||
+                        widget.isStorageBusy
                     ? null
                     : widget.onRefreshConversations,
                 icon: const Icon(Icons.refresh),
@@ -266,8 +334,14 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         ),
       );
     }
-    if (widget.isLoadingMessages) {
-      return const Center(child: CircularProgressIndicator());
+    final history = _messageHistory();
+    if ((_isLoadingMessagesForTab || widget.isLoadingMessages) &&
+        history.isEmpty) {
+      return _buildLoadingState(
+        context,
+        key: const ValueKey<String>('messages-loading'),
+        label: 'Loading messages…',
+      );
     }
     final error = widget.messageError;
     if (error != null) {
@@ -294,7 +368,6 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         ),
       );
     }
-    final history = _messageHistory();
     if (history.isEmpty) {
       return Center(
         child: Text(
@@ -452,8 +525,13 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         : allChronological.sublist(
             allChronological.length - _conversationPageSize,
           );
-    if (widget.isLoadingConversations && chronological.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+    if ((_isLoadingConversationsForTab || widget.isLoadingConversations) &&
+        chronological.isEmpty) {
+      return _buildLoadingState(
+        context,
+        key: const ValueKey<String>('conversations-loading'),
+        label: 'Loading conversations…',
+      );
     }
     if (widget.needsEnrollment && chronological.isEmpty) {
       return Center(
@@ -578,6 +656,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
   Widget _buildResetPrimarySpeakerButton() {
     final blocked =
         widget.isStorageBusy ||
+        _isLoadingConversationsForTab ||
         widget.isLoadingConversations ||
         widget.pendingConversationCount > 0;
     return OutlinedButton.icon(
@@ -585,6 +664,31 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
       onPressed: blocked ? null : widget.onResetPrimarySpeaker,
       icon: const Icon(Icons.person_remove_outlined),
       label: const Text('Reset You signature'),
+    );
+  }
+
+  Widget _buildLoadingState(
+    BuildContext context, {
+    required Key key,
+    required String label,
+  }) {
+    return Center(
+      key: key,
+      child: Semantics(
+        liveRegion: true,
+        label: label,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const SizedBox.square(
+              dimension: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 8),
+            Text(label, style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ),
+      ),
     );
   }
 
