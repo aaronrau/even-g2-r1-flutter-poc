@@ -5,6 +5,7 @@ import '../ble/ble_models.dart';
 import '../startup/startup_state.dart';
 import '../util/hex.dart';
 import '../wearable_controller.dart';
+import 'app_version_label.dart';
 import 'home_history_panel.dart';
 import 'transcript_correction_settings.dart';
 import 'voice_websocket_settings.dart';
@@ -137,6 +138,7 @@ final class _HomePageState extends State<HomePage> {
                     ),
               actions: <Widget>[
                 if (!_showTools) ...<Widget>[
+                  const AppVersionLabel(),
                   IconButton(
                     tooltip: 'Tools',
                     onPressed: () => setState(() => _showTools = true),
