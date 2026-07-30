@@ -173,7 +173,7 @@ void main() {
       addTearDown(supervisor.dispose);
       await supervisor.start();
       final raw = File('${speech.path}/live.raw.txt')
-        ..writeAsStringSync('Plus, for the latest changes.\n');
+        ..writeAsStringSync('Hey flex, pull the latest changes.\n');
 
       await supervisor.queue(
         TranscriptCorrectionJob(
@@ -200,7 +200,11 @@ void main() {
       );
       expect(
         client.instructions.single,
-        contains('Plus, all the latest changes.'),
+        contains('source begins with "Hey" followed by that alias'),
+      );
+      expect(
+        client.instructions.single,
+        contains('Never promote a bare alias such as "Plus"'),
       );
     },
   );
@@ -452,6 +456,9 @@ final class _FakeGemmaClient implements GemmaCorrectionClient {
     final corrected = switch (source) {
       'run test 15 with --verbose' => 'Run test 15 with --verbose.',
       'Plus, for the latest changes.'
+          when request.instructions.contains('"Flux"') =>
+        'Flux, pull the latest changes.',
+      'Hey flex, pull the latest changes.'
           when request.instructions.contains('"Flux"') =>
         'Flux, pull the latest changes.',
       _ => '${source[0].toUpperCase()}${source.substring(1)}.',

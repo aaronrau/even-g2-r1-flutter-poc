@@ -832,10 +832,9 @@ final class WearableController extends ChangeNotifier
     return true;
   }
 
-  Future<void> _handleFinalTranscript(
-    String segmentId,
-    String transcript,
-  ) async {
+  Future<void> _handleFinalTranscript(FinalTranscriptDelivery delivery) async {
+    final segmentId = delivery.segmentId;
+    final transcript = delivery.transcript;
     if (await _voiceMemo.acceptFinalTranscript(segmentId, transcript)) {
       addLog(
         'Memo',
@@ -844,7 +843,11 @@ final class WearableController extends ChangeNotifier
       );
       return;
     }
-    final route = _voiceWebSocket.routeForTranscript(transcript);
+    final correctedRoute = _voiceWebSocket.routeForTranscript(transcript);
+    final route = _voiceWebSocket.routeForTranscript(
+      transcript,
+      evidenceTranscript: delivery.rawTranscript,
+    );
     if (route == null) {
       await _glassesStatusQueue.completeTranscript(
         segmentId: segmentId,
@@ -853,7 +856,8 @@ final class WearableController extends ChangeNotifier
       );
       addLog(
         'WebSocket',
-        '[WorkBench][VoiceWebSocket] state=saved routed=false',
+        '[WorkBench][VoiceWebSocket] state=saved routed=false '
+            'reason=${correctedRoute == null ? 'no_match' : 'missing_raw_agent_evidence'}',
       );
       return;
     }

@@ -128,10 +128,14 @@ same turn. When correction is enabled, the saved agent names are added to
 the validated correction instructions as local command vocabulary; only the
 corrected result is eligible for agent matching and WebSocket routing. Known
 configured agent names also receive conservative acoustic alias guidance for
-leading command invocations; the prompt requires a plausible command context
-so ordinary prose is not rewritten into an agent command. The raw and
-corrected files remain separate. Explicitly disabling correction permits the
-live raw transcript to route as a documented fallback.
+leading command invocations. Routing independently requires either the complete
+selected agent phrase in the durable raw transcript or a leading `Hey` plus an
+explicitly supported acoustic variant such as `flex`, as well as the canonical
+agent phrase in the corrected transcript. A bare variant such as `Plus` is not
+activation evidence. Gemma may repair the command body, but it cannot introduce
+`Flux` or another configured agent and cause a send. The raw and corrected
+files remain separate. Explicitly disabling correction permits the live raw
+transcript to route as a documented fallback.
 
 The item resolves to `Sent:` only after a positive modern acknowledgement.
 Every other outcome resolves to `Saved:`. The terminal state remains visible

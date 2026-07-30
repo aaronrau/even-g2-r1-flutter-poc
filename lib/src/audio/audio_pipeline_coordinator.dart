@@ -23,9 +23,23 @@ typedef AudioPipelineLog =
     void Function(String source, String message, {bool isError});
 typedef TranscriptHandler =
     Future<void> Function(String segmentId, String transcript);
+typedef FinalTranscriptHandler =
+    Future<void> Function(FinalTranscriptDelivery delivery);
 typedef CorrectionTermsProvider = Iterable<String> Function();
 typedef FinalizedSpeechSegmentHandler =
     void Function(String segmentId, String wavPath);
+
+final class FinalTranscriptDelivery {
+  const FinalTranscriptDelivery({
+    required this.segmentId,
+    required this.rawTranscript,
+    required this.transcript,
+  });
+
+  final String segmentId;
+  final String rawTranscript;
+  final String transcript;
+}
 
 final class AudioPipelineCoordinator {
   AudioPipelineCoordinator({
@@ -66,7 +80,7 @@ final class AudioPipelineCoordinator {
   final void Function() onChanged;
   final void Function() onCaptureUnsafe;
   final TranscriptHandler? onQueuedTranscript;
-  final TranscriptHandler? onFinalTranscript;
+  final FinalTranscriptHandler? onFinalTranscript;
   final FinalizedSpeechSegmentHandler? onFinalizedSpeechSegment;
   final VadSpeechEventSink? onVadSpeechEvent;
   final CorrectionTermsProvider? correctionTermsProvider;
@@ -484,7 +498,16 @@ final class AudioPipelineCoordinator {
           '[WorkBench][VoiceRoute] state=raw_fallback segment=$id '
               'reason=correction_unavailable',
         );
-        unawaited(_publishTranscript(finalTranscriptHandler, id, result.text));
+        unawaited(
+          _publishFinalTranscript(
+            finalTranscriptHandler,
+            FinalTranscriptDelivery(
+              segmentId: id,
+              rawTranscript: result.text,
+              transcript: result.text,
+            ),
+          ),
+        );
       }
     }
     startup = StartupSnapshot(
@@ -502,6 +525,22 @@ final class AudioPipelineCoordinator {
   ) async {
     try {
       await handler(segmentId, transcript);
+    } on Object catch (error) {
+      log(
+        'Pipeline',
+        '[WorkBench][TranscriptDisplay] state=failed '
+            'error=${_oneLine(error)}',
+        isError: true,
+      );
+    }
+  }
+
+  Future<void> _publishFinalTranscript(
+    FinalTranscriptHandler handler,
+    FinalTranscriptDelivery delivery,
+  ) async {
+    try {
+      await handler(delivery);
     } on Object catch (error) {
       log(
         'Pipeline',
@@ -533,10 +572,13 @@ final class AudioPipelineCoordinator {
               'segment=${result.segmentId} provider=${result.provider}',
         );
         unawaited(
-          _publishTranscript(
+          _publishFinalTranscript(
             finalTranscriptHandler,
-            result.segmentId,
-            result.correctedText,
+            FinalTranscriptDelivery(
+              segmentId: result.segmentId,
+              rawTranscript: result.originalText,
+              transcript: result.correctedText,
+            ),
           ),
         );
       }
@@ -573,7 +615,14 @@ final class AudioPipelineCoordinator {
           'segment=${job.segmentId} reason=$reason',
     );
     unawaited(
-      _publishTranscript(finalTranscriptHandler, job.segmentId, transcript),
+      _publishFinalTranscript(
+        finalTranscriptHandler,
+        FinalTranscriptDelivery(
+          segmentId: job.segmentId,
+          rawTranscript: transcript,
+          transcript: transcript,
+        ),
+      ),
     );
   }
 

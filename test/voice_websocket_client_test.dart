@@ -139,6 +139,33 @@ void main() {
       isNull,
       reason: 'Agent names must match a complete phrase.',
     );
+    expect(
+      client.routeForTranscript(
+        'Flux, pull the latest changes',
+        evidenceTranscript: 'Hey, pull the latest changes',
+      ),
+      isNull,
+      reason: 'Correction cannot introduce an agent absent from raw STT.',
+    );
+    expect(
+      client.routeForTranscript(
+        'Flux, pull the latest changes',
+        evidenceTranscript: 'Plus, pull the latest changes',
+      ),
+      isNull,
+      reason: 'A bare acoustic alias is not enough to invoke an agent.',
+    );
+    final aliasedCorrection = client.routeForTranscript(
+      'Flux, pull the latest changes',
+      evidenceTranscript: 'Hey flex, pull the latest changes',
+    );
+    expect(aliasedCorrection?.agent, 'Flux');
+    final evidencedCorrection = client.routeForTranscript(
+      'Flux, pull the latest changes',
+      evidenceTranscript: 'flux pull latest changes',
+    );
+    expect(evidencedCorrection?.agent, 'Flux');
+    expect(evidencedCorrection?.message, 'pull the latest changes');
 
     final sent = await client.sendTranscript(
       'Agent One, pull the latest changes',

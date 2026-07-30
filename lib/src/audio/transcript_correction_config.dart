@@ -25,6 +25,17 @@ const _legacyTranscriptCorrectionInstructions =
     'not summarize, remove requested actions, add facts, answer the transcript, '
     'or use markdown.';
 
+const _previousAgentRoutingPolicy =
+    'In routing position before an engineering command, rewrite "flex" or '
+    '"fox" as "Flux", "block" or "brook" as "Brock", "pipe" as "Pike", '
+    'and "wolfe" as "Wolf". Do not rewrite an ordinary reference to a fox. ';
+
+const _currentAgentRoutingPolicy =
+    'Only after a leading attention word "Hey", rewrite "flex" or "fox" as '
+    '"Flux", "block" or "brook" as "Brock", "pipe" as "Pike", and "wolfe" '
+    'as "Wolf". Never promote a bare alias into an agent invocation. Do not '
+    'rewrite an ordinary reference to a fox. ';
+
 const defaultTranscriptCorrectionInstructions =
     'You clean short ASR transcript chunks from smart glasses. Fix obvious '
     'speech recognition errors, capitalization, punctuation, and light grammar '
@@ -50,10 +61,9 @@ const defaultTranscriptCorrectionInstructions =
     'transcript addresses a known local AI coding agent supplied after these '
     'instructions, begin the cleaned transcript with its canonical target name '
     'and omit only greetings or filler that precede that target. Treat the '
-    'remaining speech as an engineering task or planning prompt. In routing '
-    'position before an engineering command, rewrite "flex" or "fox" as '
-    '"Flux", "block" or "brook" as "Brock", "pipe" as "Pike", and "wolfe" '
-    'as "Wolf". Do not rewrite an ordinary reference to a fox. When the audio '
+    'remaining speech as an engineering task or planning prompt. '
+    '$_currentAgentRoutingPolicy'
+    'When the audio '
     'supports it, prefer common coding actions and terms such as analyze, '
     'inspect, search, plan, implement, fix, refactor, update, debug, reproduce, '
     'verify, run, test, build, lint, type-check, commit, push, pull, branch, '
@@ -421,4 +431,9 @@ final class TranscriptCorrectionConfigStore extends ChangeNotifier {
 
 bool _isLegacyTranscriptCorrectionInstructions(String value) =>
     value == _legacyTranscriptCorrectionInstructions ||
-    value == _legacyTranscriptCorrectionInstructions.replaceAll('’', "'");
+    value == _legacyTranscriptCorrectionInstructions.replaceAll('’', "'") ||
+    value ==
+        defaultTranscriptCorrectionInstructions.replaceFirst(
+          _currentAgentRoutingPolicy,
+          _previousAgentRoutingPolicy,
+        );

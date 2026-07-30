@@ -212,7 +212,10 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     }
   }
 
-  AgentTranscriptRoute? routeForTranscript(String transcript) {
+  AgentTranscriptRoute? routeForTranscript(
+    String transcript, {
+    String? evidenceTranscript,
+  }) {
     final text = transcript.trim();
     if (text.isEmpty) {
       return null;
@@ -224,6 +227,10 @@ final class VoiceWebSocketClient extends ChangeNotifier {
         caseSensitive: false,
       ).firstMatch(text);
       if (match == null) {
+        continue;
+      }
+      if (evidenceTranscript != null &&
+          !_hasAgentEvidence(evidenceTranscript, agent)) {
         continue;
       }
       final nameStart = match.start + (match.group(1)?.length ?? 0);
@@ -254,6 +261,34 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       }
     }
     return AgentTranscriptRoute(agent: selected.agent, message: message);
+  }
+
+  static bool _containsCompletePhrase(String text, String phrase) => RegExp(
+    '(^|[^A-Za-z0-9_])${RegExp.escape(phrase)}(?=\$|[^A-Za-z0-9_])',
+    caseSensitive: false,
+  ).hasMatch(text);
+
+  static bool _hasAgentEvidence(String rawTranscript, String agent) {
+    if (_containsCompletePhrase(rawTranscript, agent)) {
+      return true;
+    }
+    const knownAliases = <String, List<String>>{
+      'flux': <String>['plus', 'plux', 'flex', 'flax', 'fox'],
+      'brock': <String>['broke', 'block', 'broc'],
+      'pike': <String>['bike', 'pipe', 'pyke'],
+      'wolf': <String>['woolf', 'woof', 'wolfe'],
+    };
+    final aliases = knownAliases[agent.toLowerCase()];
+    if (aliases == null) {
+      return false;
+    }
+    return aliases.any(
+      (alias) => RegExp(
+        '^\\s*hey[\\s,.;:!?-]+${RegExp.escape(alias)}'
+        '(?=\$|[^A-Za-z0-9_])',
+        caseSensitive: false,
+      ).hasMatch(rawTranscript),
+    );
   }
 
   Future<bool> sendTranscript(String transcript) async {

@@ -617,17 +617,19 @@ final class TranscriptCorrectionSupervisor {
               'rewrite an ordinary use of the word memo, such as "I wrote a '
               'memo yesterday", into an invocation.'
         : '';
+    final hasAgentAliases = acousticAliases.keys.any(
+      (term) => term.toLowerCase() != 'hey memo',
+    );
+    final agentGuidance = hasAgentAliases
+        ? ' For configured agents other than Hey Memo, normalize a known '
+              'acoustic alias only when the source begins with "Hey" followed '
+              'by that alias. Never promote a bare alias such as "Plus" into '
+              'an agent invocation.'
+        : '';
     return '$base\nKnown local command names: ${jsonEncode(terms)}.$memoGuidance '
-        'The first one to three words may be a spoken command name even when '
-        'the attention word "hey" was dropped by ASR. When the remaining words '
-        'form a plausible imperative command or request, replace an obvious '
-        'leading phonetic ASR match with the exact command name. Known acoustic '
-        'aliases: ${jsonEncode(acousticAliases)}. Correct an adjacent obvious '
-        'verb error as part of the same invocation; for example, with Flux in '
-        'the known names, "Plus, all the latest changes." becomes '
-        '"Flux, pull the latest changes." Do not make that replacement in '
-        'ordinary prose such as "Plus, this is already complete." Never insert '
-        'a command name when the audio does not plausibly contain it.';
+        '$agentGuidance Known acoustic aliases: ${jsonEncode(acousticAliases)}. '
+        'An exact configured command name may be normalized in place. Never '
+        'insert a command name when the audio does not plausibly contain it.';
   }
 
   static Future<void> _atomicWriteText(String path, String value) async {

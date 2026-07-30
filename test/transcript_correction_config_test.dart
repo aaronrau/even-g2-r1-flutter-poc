@@ -104,6 +104,39 @@ void main() {
     );
   });
 
+  test('migrates the prior bare-alias default to the guarded policy', () async {
+    final priorDefault = defaultTranscriptCorrectionInstructions.replaceFirst(
+      'Only after a leading attention word "Hey", rewrite "flex" or "fox" as '
+          '"Flux", "block" or "brook" as "Brock", "pipe" as "Pike", and '
+          '"wolfe" as "Wolf". Never promote a bare alias into an agent '
+          'invocation. Do not rewrite an ordinary reference to a fox. ',
+      'In routing position before an engineering command, rewrite "flex" or '
+          '"fox" as "Flux", "block" or "brook" as "Brock", "pipe" as '
+          '"Pike", and "wolfe" as "Wolf". Do not rewrite an ordinary '
+          'reference to a fox. ',
+    );
+    final workbench = Directory('${temp.path}/workbench');
+    await workbench.create(recursive: true);
+    final file = File('${workbench.path}/config.json');
+    await file.writeAsString(
+      jsonEncode(
+        TranscriptCorrectionConfig.defaults
+            .copyWith(instructions: priorDefault)
+            .toJson(),
+      ),
+      flush: true,
+    );
+    final store = TranscriptCorrectionConfigStore(
+      supportDirectory: () async => temp,
+    );
+    addTearDown(store.dispose);
+
+    await store.initialize();
+
+    expect(store.config.instructions, defaultTranscriptCorrectionInstructions);
+    expect(store.config.instructions, contains('leading attention word "Hey"'));
+  });
+
   test('creates and atomically updates validated config.json', () async {
     final store = TranscriptCorrectionConfigStore(
       supportDirectory: () async => temp,

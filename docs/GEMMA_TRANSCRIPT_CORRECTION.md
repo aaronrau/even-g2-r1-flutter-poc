@@ -53,10 +53,11 @@ and mirrors it into the private configuration. Model, backend, timeout, and
 schema constraints remain app-private.
 
 The app-owned initial prompt includes the guarded engineering vocabulary and
-routing corrections, including `flex` or `fox` to `Flux` only in routing
-position before an engineering command. An untouched prompt from the previous
-release migrates to this default in both storage locations. A user-edited
-prompt is never replaced by that migration.
+routing corrections. An acoustic agent variant such as `flex` or `fox` may
+become `Flux` only after a leading `Hey`; a bare variant is never agent
+activation evidence. An untouched prompt from the previous release migrates
+to this default in both storage locations. A user-edited prompt is never
+replaced by that migration.
 
 At startup and before each queued segment begins, the supervisor rereads the
 private fallback and then the shared prompt when available. A valid save or
