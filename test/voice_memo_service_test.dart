@@ -44,6 +44,11 @@ void main() {
     );
     expect(MemoInvocation.parse('I wrote a memo yesterday.'), isNull);
     expect(MemoInvocation.parse('Hey me mo, capture this'), isNull);
+    expect(MemoInvocation.hasWakeEvidence('Hey Memo, capture this'), isTrue);
+    expect(MemoInvocation.hasWakeEvidence('Hey me mo, capture this'), isTrue);
+    expect(MemoInvocation.hasWakeEvidence('Hey mimo, capture this'), isTrue);
+    expect(MemoInvocation.hasWakeEvidence('Hey'), isFalse);
+    expect(MemoInvocation.hasWakeEvidence('Hey, capture this'), isFalse);
   });
 
   test(
@@ -246,6 +251,36 @@ void main() {
 
     expect(service.isActive, isTrue);
     expect(service.activeMemo?.sources.single.memoText, 'buy tea.');
+  });
+
+  test('corrected text cannot expand standalone Hey into Hey Memo', () async {
+    expect(service.acceptRawTranscript('segment-1', 'Hey'), isFalse);
+    expect(
+      await service.acceptFinalTranscript('segment-1', 'Hey Memo.'),
+      isFalse,
+    );
+
+    expect(service.isActive, isFalse);
+    expect(service.records, isEmpty);
+    expect(client.requests, isEmpty);
+  });
+
+  test('corrected text requires memo-like raw wake evidence', () async {
+    expect(
+      service.acceptRawTranscript('segment-1', 'Hey, capture this'),
+      isFalse,
+    );
+    expect(
+      await service.acceptFinalTranscript(
+        'segment-1',
+        'Hey Memo, capture this.',
+      ),
+      isFalse,
+    );
+
+    expect(service.isActive, isFalse);
+    expect(service.records, isEmpty);
+    expect(client.requests, isEmpty);
   });
 
   test(

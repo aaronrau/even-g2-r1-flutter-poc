@@ -184,6 +184,10 @@ final class MemoInvocation {
     caseSensitive: false,
     dotAll: true,
   );
+  static final RegExp _supportedAcousticVariant = RegExp(
+    r'^\s*hey[\s,.;:!?-]+(?:me[\s,.;:!?-]+mo|mimo)\b',
+    caseSensitive: false,
+  );
 
   final String body;
 
@@ -194,4 +198,11 @@ final class MemoInvocation {
     }
     return MemoInvocation(body: (match.group(1) ?? '').trim());
   }
+
+  /// Whether raw STT contains both the attention word and memo-like acoustic
+  /// evidence. Corrected text may normalize that evidence, but it may not
+  /// expand a standalone "Hey" into the complete invocation.
+  static bool hasWakeEvidence(String rawTranscript) =>
+      parse(rawTranscript) != null ||
+      _supportedAcousticVariant.hasMatch(rawTranscript);
 }

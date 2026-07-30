@@ -612,6 +612,8 @@ final class TranscriptCorrectionSupervisor {
               'plausible leading acoustic variant such as "hey me mo" or '
               '"hey mimo" to exactly "Hey Memo" when the remaining words are '
               'dictated memo content or a clear request to take a memo. Never '
+              'expand a standalone "Hey" into "Hey Memo"; the source must '
+              'contain both "Hey" and a memo-like second word. Never '
               'rewrite an ordinary use of the word memo, such as "I wrote a '
               'memo yesterday", into an invocation.'
         : '';

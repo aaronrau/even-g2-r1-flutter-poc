@@ -25,8 +25,11 @@ G2 audio → journal → VAD → raw transcript → Gemma correction
 An exact leading `Hey Memo` in raw STT activates the local agent immediately.
 `Hey Memo` is also included in Gemma's bounded correction vocabulary so a
 plausible leading acoustic variant can be restored before routing. The prompt
-requires a leading invocation and memo-taking context. Ordinary prose such as
-`I wrote a memo yesterday` must not activate the agent.
+requires a leading invocation and memo-taking context. Corrected activation
+also checks the durable raw transcript for both `Hey` and exact or explicitly
+supported memo-like acoustic evidence such as `me mo` or `mimo`; a standalone
+`Hey` cannot be expanded into the wake phrase. Ordinary prose such as `I wrote
+a memo yesterday` must not activate the agent.
 
 Words following the invocation become the first source utterance. While memo
 mode is active, every newly started live VAD segment belongs to that memo before
@@ -112,10 +115,11 @@ timing. They never contain memo or transcript text.
 
 ## Validation
 
-Automated coverage includes invocation parsing, corrected invocation recovery,
-ordinary-prose rejection, iterative revisions, five-second timing, resumed
-speech, last-segment finalization, atomic restart recovery, display ownership,
-the G2 action header, and phone-sized Conversation UI.
+Automated coverage includes invocation parsing, standalone-`Hey` rejection,
+corrected invocation recovery, ordinary-prose rejection, iterative revisions,
+five-second timing, resumed speech, last-segment finalization, atomic restart
+recovery, display ownership, the G2 action header, and phone-sized Conversation
+UI.
 
 Physical validation retains the existing Kokoro transport/VAD/STT contract and
 adds fixed synthetic cases for `Hey Memo`, corrected acoustic variants,

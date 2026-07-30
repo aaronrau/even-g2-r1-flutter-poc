@@ -167,7 +167,8 @@ final class VoiceMemoService {
   }
 
   /// Consumes the corrected transcript for a claimed memo segment. A corrected
-  /// "Hey Memo" can also activate the local agent when raw ASR missed it.
+  /// "Hey Memo" can also activate the local agent when raw ASR contains a
+  /// supported memo-like acoustic variant.
   Future<bool> acceptFinalTranscript(
     String segmentId,
     String transcript,
@@ -180,15 +181,17 @@ final class VoiceMemoService {
     }
     var active = activeMemo;
     if (active == null) {
+      final pending = _pendingSegments[segmentId];
       final invocation = MemoInvocation.parse(transcript);
-      if (invocation == null) {
+      final rawTranscript = pending?.rawTranscript ?? transcript;
+      if (invocation == null ||
+          !MemoInvocation.hasWakeEvidence(rawTranscript)) {
         _pendingSegments.remove(segmentId);
         return false;
       }
-      final pending = _pendingSegments[segmentId];
       _startMemo(
         segmentId: segmentId,
-        rawTranscript: pending?.rawTranscript ?? transcript,
+        rawTranscript: rawTranscript,
         memoText: invocation.body,
         finalTranscript: transcript,
       );

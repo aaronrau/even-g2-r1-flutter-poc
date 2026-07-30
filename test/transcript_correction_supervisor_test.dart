@@ -152,6 +152,8 @@ void main() {
     expect(instructions, contains('exactly "Hey Memo"'));
     expect(instructions, contains('hey me mo'));
     expect(instructions, contains('I wrote a memo yesterday'));
+    expect(instructions, contains('standalone "Hey"'));
+    expect(instructions, contains('memo-like second word'));
     expect(instructions, contains('Never rewrite an ordinary use'));
   });
 
