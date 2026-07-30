@@ -49,6 +49,12 @@ class GemmaCorrectionService : Service() {
                         worker.execute { correct(data, replyTo) }
                         true
                     }
+                    GemmaCorrectionProtocol.REQUEST_PREPARE_ENGINE -> {
+                        val replyTo = message.replyTo
+                        val data = Bundle(message.data)
+                        worker.execute { prepareEngine(data, replyTo) }
+                        true
+                    }
                     GemmaCorrectionProtocol.REQUEST_RELEASE_ENGINE -> {
                         activeConversation?.runCatching { cancelProcess() }
                         worker.execute { releaseEngine("requested") }
@@ -61,8 +67,6 @@ class GemmaCorrectionService : Service() {
 
     private var engine: Engine? = null
     private var loadedModelPath: String? = null
-    private var engineGeneration = 0L
-    private var idleEngineRelease: ScheduledFuture<*>? = null
     @Volatile
     private var activeConversation: Conversation? = null
 
@@ -108,6 +112,65 @@ class GemmaCorrectionService : Service() {
         super.onDestroy()
     }
 
+    private fun prepareEngine(data: Bundle, replyTo: Messenger?) {
+        val requestId = data.getLong(GemmaCorrectionProtocol.KEY_REQUEST_ID, -1)
+        val modelPath = data.getString(GemmaCorrectionProtocol.KEY_MODEL_PATH).orEmpty()
+        val modelId = data.getString(GemmaCorrectionProtocol.KEY_MODEL_ID).orEmpty()
+        if (replyTo == null || requestId < 0 || modelPath.isBlank() || modelId.isBlank()) {
+            replyError(
+                replyTo,
+                requestId,
+                "invalid_request",
+                "The engine preparation request was incomplete.",
+                GemmaCorrectionProtocol.RESPONSE_ENGINE_READY,
+            )
+            return
+        }
+        try {
+            ensureMemoryAvailable()
+            val canonicalModel = validateModelPath(modelPath)
+            val engineLoadMs = ensureEngine(canonicalModel)
+            replyTo.send(
+                Message.obtain(
+                    null,
+                    GemmaCorrectionProtocol.RESPONSE_ENGINE_READY,
+                ).apply {
+                    this.data =
+                        Bundle().apply {
+                            putLong(
+                                GemmaCorrectionProtocol.KEY_REQUEST_ID,
+                                requestId,
+                            )
+                        }
+                },
+            )
+            Log.i(
+                "WorkBench",
+                "[WorkBench][CorrectionNative] state=warm_idle model=$modelId " +
+                    "provider=gpu engine_load_ms=$engineLoadMs reason=preload",
+            )
+        } catch (error: Throwable) {
+            val code =
+                when (error) {
+                    is CorrectionMemoryPressureException -> "memory_pressure"
+                    is SecurityException -> "model_path"
+                    else -> "engine_prepare_failed"
+                }
+            Log.e(
+                "WorkBench",
+                "[WorkBench][CorrectionNative] state=prepare_failed model=$modelId " +
+                    "provider=gpu code=$code error=${oneLine(error)}",
+            )
+            replyError(
+                replyTo,
+                requestId,
+                code,
+                oneLine(error),
+                GemmaCorrectionProtocol.RESPONSE_ENGINE_READY,
+            )
+        }
+    }
+
     @OptIn(ExperimentalApi::class)
     private fun correct(data: Bundle, replyTo: Messenger?) {
         val requestId = data.getLong(GemmaCorrectionProtocol.KEY_REQUEST_ID, -1)
@@ -143,9 +206,6 @@ class GemmaCorrectionService : Service() {
 
         try {
             ensureMemoryAvailable()
-            engineGeneration++
-            idleEngineRelease?.cancel(false)
-            idleEngineRelease = null
             val canonicalModel = validateModelPath(modelPath)
             val engineLoadMs = ensureEngine(canonicalModel)
             val conversation =
@@ -269,7 +329,11 @@ class GemmaCorrectionService : Service() {
                 timeoutTask?.cancel(false)
                 activeConversation = null
                 conversation.close()
-                scheduleIdleEngineRelease()
+                Log.i(
+                    "WorkBench",
+                    "[WorkBench][CorrectionNative] state=warm_idle model=$modelId " +
+                        "provider=gpu reason=conversation_closed",
+                )
             }
         } catch (error: Throwable) {
             val code =
@@ -343,29 +407,7 @@ class GemmaCorrectionService : Service() {
         }
     }
 
-    private fun scheduleIdleEngineRelease() {
-        idleEngineRelease?.cancel(false)
-        val scheduledGeneration = engineGeneration
-        idleEngineRelease =
-            watchdog.schedule(
-                {
-                    worker.execute {
-                        if (engineGeneration == scheduledGeneration &&
-                            activeConversation == null
-                        ) {
-                            releaseEngine("idle_timeout")
-                        }
-                    }
-                },
-                ENGINE_IDLE_TIMEOUT_SECONDS,
-                TimeUnit.SECONDS,
-            )
-    }
-
     private fun releaseEngine(reason: String) {
-        engineGeneration++
-        idleEngineRelease?.cancel(false)
-        idleEngineRelease = null
         activeConversation?.runCatching { cancelProcess() }
         activeConversation = null
         engine?.runCatching { close() }
@@ -382,6 +424,7 @@ class GemmaCorrectionService : Service() {
         requestId: Long,
         code: String,
         message: String,
+        responseWhat: Int = GemmaCorrectionProtocol.RESPONSE_CORRECTION,
     ) {
         if (target == null) {
             return
@@ -396,7 +439,7 @@ class GemmaCorrectionService : Service() {
             send(
                 Message.obtain(
                     null,
-                    GemmaCorrectionProtocol.RESPONSE_CORRECTION,
+                    responseWhat,
                 ).apply { this.data = data },
             )
         }
@@ -423,7 +466,6 @@ class GemmaCorrectionService : Service() {
             setOf(TASK_TRANSCRIPT_CORRECTION, TASK_MEMO_REVISION)
         private const val RUNNING_LOW_MEMORY_LEVEL = 10
         private const val RUNNING_CRITICAL_MEMORY_LEVEL = 15
-        private const val ENGINE_IDLE_TIMEOUT_SECONDS = 30L
         private const val DEFAULT_TIMEOUT_MS = 30_000L
         private const val MIN_TIMEOUT_MS = 5_000L
         private const val MAX_TIMEOUT_MS = 120_000L

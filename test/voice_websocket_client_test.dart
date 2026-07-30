@@ -17,6 +17,9 @@ void main() {
   late int closedModernRequestCount;
   late int modernRouteCount;
   late Map<String, Map<String, Object?>> acceptedByRequestId;
+  late Map<String, int> busyResponsesRemaining;
+  late Set<String> alwaysBusyMessages;
+  late Set<String> negativeAcknowledgementBusyMessages;
 
   setUp(() async {
     temp = Directory.systemTemp.createTempSync(
@@ -30,6 +33,9 @@ void main() {
     closedModernRequestCount = 0;
     modernRouteCount = 0;
     acceptedByRequestId = <String, Map<String, Object?>>{};
+    busyResponsesRemaining = <String, int>{};
+    alwaysBusyMessages = <String>{};
+    negativeAcknowledgementBusyMessages = <String>{};
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((request) async {
       authorizationHeaders.add(
@@ -48,6 +54,23 @@ void main() {
           final previous = acceptedByRequestId[requestId];
           if (previous != null) {
             socket.add(jsonEncode(previous));
+            return;
+          }
+          final message = payload['message'] as String;
+          final remainingBusyResponses = busyResponsesRemaining[message] ?? 0;
+          if (alwaysBusyMessages.contains(message) ||
+              remainingBusyResponses > 0) {
+            modernRouteCount++;
+            if (remainingBusyResponses > 0) {
+              busyResponsesRemaining[message] = remainingBusyResponses - 1;
+            }
+            socket.add(
+              jsonEncode(
+                negativeAcknowledgementBusyMessages.contains(message)
+                    ? _busyAcknowledgementPayload(payload)
+                    : _busyPayload(payload),
+              ),
+            );
             return;
           }
           if (closeFirstModernRequestBeforeAcknowledgement &&
@@ -139,13 +162,16 @@ void main() {
       isNull,
       reason: 'Agent names must match a complete phrase.',
     );
+    final leadingAttentionCorrection = client.routeForTranscript(
+      'Flux, pull the latest changes',
+      evidenceTranscript: 'Hey, pull the latest changes',
+    );
+    expect(leadingAttentionCorrection?.agent, 'Flux');
     expect(
-      client.routeForTranscript(
-        'Flux, pull the latest changes',
-        evidenceTranscript: 'Hey, pull the latest changes',
-      ),
-      isNull,
-      reason: 'Correction cannot introduce an agent absent from raw STT.',
+      leadingAttentionCorrection?.message,
+      'pull the latest changes',
+      reason:
+          'A complete leading Hey allows correction to recover a misheard target.',
     );
     expect(
       client.routeForTranscript(
@@ -164,8 +190,27 @@ void main() {
       'Flux, pull the latest changes',
       evidenceTranscript: 'flux pull latest changes',
     );
-    expect(evidencedCorrection?.agent, 'Flux');
-    expect(evidencedCorrection?.message, 'pull the latest changes');
+    expect(
+      evidencedCorrection,
+      isNull,
+      reason: 'A live corrected route requires a leading Hey.',
+    );
+    expect(
+      client.routeForTranscript(
+        'Flux, pull the latest changes',
+        evidenceTranscript: 'Please, hey Flux, pull the latest changes',
+      ),
+      isNull,
+      reason: 'A mid-sentence Hey cannot activate an agent.',
+    );
+    expect(
+      client.routeForTranscript(
+        'Flux, pull the latest changes',
+        evidenceTranscript: 'Heyday Flux, pull the latest changes',
+      ),
+      isNull,
+      reason: 'Hey must be recognized as a complete word.',
+    );
 
     final sent = await client.sendTranscript(
       'Agent One, pull the latest changes',
@@ -373,6 +418,261 @@ void main() {
       expect(modernRouteCount, 1);
     },
   );
+
+  test('queues busy commands and preserves FIFO order', () async {
+    const firstMessage = 'run the first queued fixture';
+    const secondMessage = 'run the second queued fixture';
+    busyResponsesRemaining[firstMessage] = 2;
+    final client = await _configuredClient(
+      temp: temp,
+      serverPort: server.port,
+      busyRetryDelays: const <Duration>[Duration(milliseconds: 10)],
+    );
+    addTearDown(client.close);
+
+    final first = client.sendAgentMessage(
+      agent: 'Agent One',
+      message: firstMessage,
+    );
+    final second = client.sendAgentMessage(
+      agent: 'Agent One',
+      message: secondMessage,
+    );
+
+    expect(await Future.wait(<Future<bool>>[first, second]), <bool>[
+      true,
+      true,
+    ]);
+    final sends = received
+        .where((payload) => payload['type'] == 'message.send')
+        .toList(growable: false);
+    expect(sends.map((payload) => payload['message']), <String>[
+      firstMessage,
+      firstMessage,
+      firstMessage,
+      secondMessage,
+    ]);
+    expect(
+      sends
+          .where((payload) => payload['message'] == firstMessage)
+          .map((payload) => payload['request_id'])
+          .toSet(),
+      hasLength(3),
+      reason: 'Each explicit busy rejection starts a new delivery attempt.',
+    );
+    expect(client.queuedMessageCount, 0);
+    expect(client.statusText, 'Connected · 1 server agents');
+  });
+
+  test('a completion event wakes the busy queue before its backoff', () async {
+    const message = 'run after the current fixture completes';
+    busyResponsesRemaining[message] = 1;
+    final client = await _configuredClient(
+      temp: temp,
+      serverPort: server.port,
+      busyRetryDelays: const <Duration>[Duration(minutes: 1)],
+    );
+    addTearDown(client.close);
+
+    final sent = client.sendAgentMessage(agent: 'Agent One', message: message);
+    await _waitUntil(() => client.statusText.contains('agent busy'));
+
+    serverSockets.single.add(
+      jsonEncode(<String, Object>{
+        'type': 'message.completed',
+        'event_id': 7,
+        'agent': 'Agent One',
+        'payload': <String, Object>{
+          'summary': 'The previous fixture completed.',
+        },
+      }),
+    );
+
+    expect(
+      await sent.timeout(const Duration(seconds: 1)),
+      isTrue,
+      reason: 'Completion should wake the queue without waiting one minute.',
+    );
+    expect(
+      received.where((payload) => payload['type'] == 'message.send'),
+      hasLength(2),
+    );
+  });
+
+  test('an unrelated completion does not wake the busy queue', () async {
+    const message = 'wait for the matching agent to complete';
+    busyResponsesRemaining[message] = 1;
+    final client = await _configuredClient(
+      temp: temp,
+      serverPort: server.port,
+      busyRetryDelays: const <Duration>[Duration(minutes: 1)],
+    );
+    addTearDown(client.close);
+
+    var completed = false;
+    final sent = client.sendAgentMessage(agent: 'Agent One', message: message);
+    unawaited(sent.then((_) => completed = true));
+    await _waitUntil(() => client.statusText.contains('agent busy'));
+
+    serverSockets.single.add(
+      jsonEncode(<String, Object>{
+        'type': 'message.completed',
+        'event_id': 8,
+        'agent': 'Agent Two',
+        'payload': <String, Object>{
+          'summary': 'An unrelated fixture completed.',
+        },
+      }),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(completed, isFalse);
+    expect(
+      received.where((payload) => payload['type'] == 'message.send'),
+      hasLength(1),
+    );
+
+    serverSockets.single.add(
+      jsonEncode(<String, Object>{
+        'type': 'message.completed',
+        'event_id': 9,
+        'agent': 'Agent One',
+        'payload': <String, Object>{
+          'summary': 'The matching fixture completed.',
+        },
+      }),
+    );
+
+    expect(await sent.timeout(const Duration(seconds: 1)), isTrue);
+  });
+
+  test('queues agent_busy from a negative acknowledgement', () async {
+    const message = 'run after a negative busy acknowledgement';
+    busyResponsesRemaining[message] = 1;
+    negativeAcknowledgementBusyMessages.add(message);
+    final client = await _configuredClient(temp: temp, serverPort: server.port);
+    addTearDown(client.close);
+
+    final sent = await client.sendAgentMessage(
+      agent: 'Agent One',
+      message: message,
+    );
+
+    expect(sent, isTrue);
+    expect(
+      received.where((payload) => payload['type'] == 'message.send'),
+      hasLength(2),
+    );
+  });
+
+  test('expires a perpetually busy queue item without getting stuck', () async {
+    const message = 'run an expiring busy fixture';
+    alwaysBusyMessages.add(message);
+    final client = await _configuredClient(
+      temp: temp,
+      serverPort: server.port,
+      maximumBusyQueueAge: const Duration(milliseconds: 60),
+      busyRetryDelays: const <Duration>[Duration(milliseconds: 10)],
+    );
+    addTearDown(client.close);
+
+    final sent = await client
+        .sendAgentMessage(agent: 'Agent One', message: message)
+        .timeout(const Duration(seconds: 1));
+
+    expect(sent, isFalse);
+    expect(client.queuedMessageCount, 0);
+    expect(
+      received.where((payload) => payload['type'] == 'message.send').length,
+      greaterThanOrEqualTo(2),
+    );
+  });
+
+  test(
+    'configuration changes cancel the busy queue before reconnecting',
+    () async {
+      const message = 'cancel this busy fixture during configuration';
+      alwaysBusyMessages.add(message);
+      final client = await _configuredClient(
+        temp: temp,
+        serverPort: server.port,
+        busyRetryDelays: const <Duration>[Duration(minutes: 1)],
+      );
+      addTearDown(client.close);
+
+      final sent = client.sendAgentMessage(
+        agent: 'Agent One',
+        message: message,
+      );
+      await _waitUntil(() => client.statusText.contains('agent busy'));
+
+      await client.saveConfig(client.config);
+
+      expect(await sent, isFalse);
+      expect(client.queuedMessageCount, 0);
+      await _waitUntil(() => client.isReady);
+      expect(client.statusText, 'Connected · 1 server agents');
+    },
+  );
+
+  test('bounds the busy queue and cancels it on close', () async {
+    const firstMessage = 'run the retained busy fixture';
+    alwaysBusyMessages.add(firstMessage);
+    final client = await _configuredClient(
+      temp: temp,
+      serverPort: server.port,
+      maximumQueuedMessages: 1,
+      busyRetryDelays: const <Duration>[Duration(minutes: 1)],
+    );
+
+    final first = client.sendAgentMessage(
+      agent: 'Agent One',
+      message: firstMessage,
+    );
+    await _waitUntil(() => client.statusText.contains('agent busy'));
+    final overflow = await client.sendAgentMessage(
+      agent: 'Agent One',
+      message: 'run the overflow fixture',
+    );
+
+    expect(overflow, isFalse);
+    expect(client.queuedMessageCount, 1);
+    await client.close();
+    expect(await first, isFalse);
+    expect(client.queuedMessageCount, 0);
+  });
+}
+
+Future<VoiceWebSocketClient> _configuredClient({
+  required Directory temp,
+  required int serverPort,
+  int maximumQueuedMessages = 32,
+  Duration maximumBusyQueueAge = const Duration(minutes: 5),
+  List<Duration> busyRetryDelays = const <Duration>[Duration(milliseconds: 10)],
+}) async {
+  final store = VoiceWebSocketConfigStore(supportDirectory: () async => temp);
+  final client = VoiceWebSocketClient(
+    configStore: store,
+    reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
+    readyTimeout: const Duration(seconds: 1),
+    acknowledgementTimeout: const Duration(seconds: 1),
+    maximumQueuedMessages: maximumQueuedMessages,
+    maximumBusyQueueAge: maximumBusyQueueAge,
+    busyRetryDelays: busyRetryDelays,
+  );
+  await client.initialize();
+  await client.saveConfig(
+    VoiceWebSocketConfig.validate(
+      host: '127.0.0.1',
+      port: serverPort,
+      secret: 'example-secret',
+      authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+      agentNames: const <String>['Agent One'],
+      useLegacyMessageShape: false,
+    ),
+  );
+  await _waitUntil(() => client.isReady);
+  return client;
 }
 
 Map<String, Object?> _acceptedPayload(Map<String, dynamic> payload) {
@@ -391,6 +691,25 @@ Map<String, Object?> _acceptedPayload(Map<String, dynamic> payload) {
     },
   };
 }
+
+Map<String, Object?> _busyPayload(Map<String, dynamic> payload) =>
+    <String, Object?>{
+      'type': 'message.error',
+      'version': 1,
+      'request_id': payload['request_id'],
+      'ok': false,
+      'error': <String, Object?>{'code': 'agent_busy', 'status': 'busy'},
+    };
+
+Map<String, Object?> _busyAcknowledgementPayload(
+  Map<String, dynamic> payload,
+) => <String, Object?>{
+  'type': 'message.accepted',
+  'version': 1,
+  'request_id': payload['request_id'],
+  'ok': false,
+  'result': <String, Object?>{'sent': false, 'reason': 'agent_busy'},
+};
 
 Future<void> _waitUntil(
   bool Function() predicate, {

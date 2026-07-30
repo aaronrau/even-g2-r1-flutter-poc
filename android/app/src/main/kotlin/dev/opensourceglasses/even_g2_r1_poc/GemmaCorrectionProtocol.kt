@@ -4,6 +4,8 @@ internal object GemmaCorrectionProtocol {
     const val REQUEST_CORRECTION = 1
     const val RESPONSE_CORRECTION = 2
     const val REQUEST_RELEASE_ENGINE = 3
+    const val REQUEST_PREPARE_ENGINE = 4
+    const val RESPONSE_ENGINE_READY = 5
 
     const val KEY_REQUEST_ID = "requestId"
     const val KEY_MODEL_PATH = "modelPath"

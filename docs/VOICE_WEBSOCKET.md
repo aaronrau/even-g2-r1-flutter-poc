@@ -74,16 +74,30 @@ The modern message envelope is:
 missing agent match, or unavailable server resolves the queued display to
 `Saved:`.
 
+For a live Gemma-corrected command, the durable raw STT transcript must begin
+with the complete word `Hey`. Gemma may then recover the canonical configured
+agent from a mispronounced or poorly recognized following word. A bare agent
+alias, a mid-sentence `hey`, or a larger word such as `heyday` is never
+activation evidence and resolves to `Saved:` without a WebSocket send.
+
 If the connection closes or the acknowledgement times out, Work Bench
 reconnects once and resends the modern request with the exact same
 `request_id`. Servers must treat repeated request IDs idempotently: return the
 prior acknowledgement without delivering the agent command twice. An explicit
-`message.error` or negative acknowledgement is not retried. The legacy shape
-has no acknowledgement contract and therefore is not automatically retried.
-In particular, `agent_busy` resolves the display to `Saved:`; Work Bench does
-not retain an unbounded command for surprise delivery later. The server must
-publish its final completion state and release the active request before a new
-command for that agent can be accepted.
+non-busy `message.error` or negative acknowledgement is not retried. The
+legacy shape has no acknowledgement contract and therefore is not
+automatically retried.
+
+An `agent_busy` error or negative acknowledgement keeps the command in a
+32-item, app-process-only FIFO. The head retries after a matching server
+completion wakes the queue or after bounded 2, 4, 8, 15, then 30-second
+backoff. Later commands cannot pass the busy head, preserving spoken order.
+Each explicit busy rejection starts a new request ID, while a reconnect for an
+unknown acknowledgement still reuses the original request ID. A command
+expires after five minutes and resolves to `Saved:` so the queue cannot remain
+stuck forever. Changing configuration, disconnecting, closing the client, or
+restarting the app cancels the queue; queued commands are never restored or
+surprisingly delivered in a later process.
 
 Legacy mode sends only:
 
@@ -128,14 +142,13 @@ same turn. When correction is enabled, the saved agent names are added to
 the validated correction instructions as local command vocabulary; only the
 corrected result is eligible for agent matching and WebSocket routing. Known
 configured agent names also receive conservative acoustic alias guidance for
-leading command invocations. Routing independently requires either the complete
-selected agent phrase in the durable raw transcript or a leading `Hey` plus an
-explicitly supported acoustic variant such as `flex`, as well as the canonical
-agent phrase in the corrected transcript. A bare variant such as `Plus` is not
-activation evidence. Gemma may repair the command body, but it cannot introduce
-`Flux` or another configured agent and cause a send. The raw and corrected
-files remain separate. Explicitly disabling correction permits the live raw
-transcript to route as a documented fallback.
+leading command invocations. Routing independently requires the complete word
+`Hey` at the start of the durable raw transcript and the canonical agent phrase
+in the corrected transcript. A bare acoustic variant, a mid-sentence `hey`, or
+a larger word such as `heyday` is not activation evidence. Gemma may repair a
+misheard agent name and command body only after the raw leading attention word
+is present. The raw and corrected files remain separate. Explicitly disabling
+correction permits the live raw transcript to route as a documented fallback.
 
 The item resolves to `Sent:` only after a positive modern acknowledgement.
 Every other outcome resolves to `Saved:`. The terminal state remains visible
@@ -148,6 +161,11 @@ active item plus that one deferred item are the complete in-memory display
 bound. This visual scheduler is independent of the durable transcription and
 correction ledgers, so display timing cannot block or discard audio, files,
 correction, or WebSocket routing.
+
+After a positive acknowledgement, Work Bench starts the G2 `Sent:` update and
+the app-private message save/shared-folder export concurrently. The message is
+never archived as sent before acknowledgement, while shared-storage latency no
+longer delays the terminal G2 update.
 
 The agent server's `message.progress` and `message.completed` events carry
 their concise user-facing text under `payload.summary` or
@@ -182,6 +200,9 @@ cannot block every later status indefinitely.
 ## Reliability and privacy boundaries
 
 - WebSocket ready and acknowledgement waits are bounded.
+- Modern `agent_busy` commands use a bounded, expiring, in-memory FIFO; its
+  retry timer and pending futures are canceled on configuration changes,
+  disconnect, and shutdown.
 - Reconnect delay is bounded and all timers, subscriptions, and pending
   acknowledgements are canceled when configuration changes or the client
   closes.
@@ -208,6 +229,29 @@ dart run tool/run_voice_websocket_fixture.dart \
   --secret <local-secret> \
   --port 8787
 ```
+
+Add `--busy-responses 1` to reject the first modern request with
+`agent_busy`, then accept its queued retry. This provides a deterministic
+device-side FIFO validation without invoking a real agent.
+
+The checked-in Android validation target sends two synthetic commands and
+requires the busy retry plus the following FIFO command to be acknowledged.
+Increment the Android build suffix in `pubspec.yaml` immediately before the
+`flutter run`, then use:
+
+```sh
+dart run tool/run_voice_websocket_fixture.dart \
+  --secret synthetic-queue-validation-secret \
+  --port 18787 \
+  --busy-responses 1
+adb -s <android-serial> reverse tcp:18787 tcp:18787
+flutter run -d <android-serial> \
+  -t tool/validate_voice_websocket_queue_on_android.dart \
+  --dart-define=WORKBENCH_QUEUE_FIXTURE_PORT=18787
+```
+
+The validator exits successfully only when both sends complete in order and
+the in-memory queue is empty. Remove the `adb reverse` rule after validation.
 
 For an Android phone connected over USB:
 

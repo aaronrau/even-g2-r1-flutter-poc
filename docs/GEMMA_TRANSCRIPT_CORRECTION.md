@@ -21,6 +21,14 @@ initialization or inference failure returns to the durable retry queue; CPU
 fallback is not configured. Killing or exhausting the correction process must
 not interrupt BLE, capture, VAD, STT, or the original transcript.
 
+When correction is enabled and the verified model is installed, startup
+prepares the engine asynchronously before the first transcript arrives. The
+engine remains warm after each short-lived conversation instead of being
+released on an inactivity timer. Android or Flutter memory-pressure handling,
+an explicit release, a model reload, service shutdown, or process death may
+still release it. The next live correction safely reloads the engine if that
+happens.
+
 ## Storage contract
 
 App-private speech storage contains:

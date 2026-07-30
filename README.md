@@ -307,9 +307,10 @@ validation error.
 
 [`config.example.json`](config.example.json) documents the complete schema.
 Its generic default includes the constrained leading-command recovery used by
-the physical `Flux` validation: a configured name may be used directly, while
-an acoustic alias requires a leading `Hey`. A bare alias cannot activate an
-agent.
+the physical `Flux` validation. A live corrected agent command requires the
+raw STT transcript to begin with the complete word `Hey`; Gemma may then
+recover the configured target from the following mispronunciation. A bare
+alias or a mid-sentence `hey` cannot activate an agent.
 Only schema version 1, the pinned Gemma model, the `gpu` backend, a timeout from
 5 to 120 seconds, and non-empty instructions up to 2,000 characters are
 accepted. If an external edit is malformed, the last validated configuration

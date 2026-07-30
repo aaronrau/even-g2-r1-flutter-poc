@@ -52,6 +52,10 @@ final class GemmaCorrectionResult {
 }
 
 abstract interface class GemmaCorrectionClient {
+  Future<void> prepareEngine({
+    required String modelPath,
+    required String modelId,
+  });
   Future<GemmaCorrectionResult> correct(GemmaCorrectionRequest request);
   Future<void> releaseEngine();
 }
@@ -67,6 +71,24 @@ final class PlatformGemmaCorrectionClient implements GemmaCorrectionClient {
 
   final MethodChannel _channel;
   final bool _isAndroid;
+
+  @override
+  Future<void> prepareEngine({
+    required String modelPath,
+    required String modelId,
+  }) async {
+    if (!_isAndroid) {
+      throw UnsupportedError(
+        'On-device Gemma correction is currently available on Android.',
+      );
+    }
+    await _channel
+        .invokeMethod<void>('prepareEngine', <String, Object>{
+          'modelPath': modelPath,
+          'modelId': modelId,
+        })
+        .timeout(const Duration(seconds: 30));
+  }
 
   @override
   Future<GemmaCorrectionResult> correct(GemmaCorrectionRequest request) async {

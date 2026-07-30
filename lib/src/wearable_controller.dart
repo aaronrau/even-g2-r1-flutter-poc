@@ -28,6 +28,18 @@ import 'websocket/voice_websocket_client.dart';
 import 'websocket/voice_websocket_config.dart';
 import 'websocket/websocket_message_store.dart';
 
+@visibleForTesting
+Future<void> completeAgentRouteConsumers({
+  required Future<void> Function() updateDisplay,
+  Future<void> Function()? persistAcknowledgedMessage,
+}) async {
+  final operations = <Future<void>>[updateDisplay()];
+  if (persistAcknowledgedMessage != null) {
+    operations.add(persistAcknowledgedMessage());
+  }
+  await Future.wait(operations);
+}
+
 final class WearableController extends ChangeNotifier
     with WidgetsBindingObserver {
   WearableController({
@@ -857,7 +869,7 @@ final class WearableController extends ChangeNotifier
       addLog(
         'WebSocket',
         '[WorkBench][VoiceWebSocket] state=saved routed=false '
-            'reason=${correctedRoute == null ? 'no_match' : 'missing_raw_agent_evidence'}',
+            'reason=${correctedRoute == null ? 'no_match' : 'missing_leading_hey_evidence'}',
       );
       return;
     }
@@ -865,19 +877,21 @@ final class WearableController extends ChangeNotifier
       agent: route.agent,
       message: route.message,
     );
-    if (sent) {
-      await _archiveWebSocketMessage(
-        direction: WebSocketMessageDirection.sent,
-        message: '${route.agent}: ${route.message}',
-        failureState: 'sent_save_failed',
-      );
-    }
-    await _glassesStatusQueue.completeTranscript(
-      segmentId: segmentId,
-      transcript: transcript,
-      outcome: sent
-          ? GlassesTranscriptOutcome.sent
-          : GlassesTranscriptOutcome.saved,
+    await completeAgentRouteConsumers(
+      updateDisplay: () => _glassesStatusQueue.completeTranscript(
+        segmentId: segmentId,
+        transcript: transcript,
+        outcome: sent
+            ? GlassesTranscriptOutcome.sent
+            : GlassesTranscriptOutcome.saved,
+      ),
+      persistAcknowledgedMessage: sent
+          ? () => _archiveWebSocketMessage(
+              direction: WebSocketMessageDirection.sent,
+              message: '${route.agent}: ${route.message}',
+              failureState: 'sent_save_failed',
+            )
+          : null,
     );
     addLog(
       'WebSocket',

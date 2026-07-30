@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -41,12 +42,24 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       Duration(seconds: 8),
       Duration(seconds: 15),
     ],
+    int maximumQueuedMessages = 32,
+    Duration maximumBusyQueueAge = const Duration(minutes: 5),
+    List<Duration> busyRetryDelays = const <Duration>[
+      Duration(seconds: 2),
+      Duration(seconds: 4),
+      Duration(seconds: 8),
+      Duration(seconds: 15),
+      Duration(seconds: 30),
+    ],
   }) : _configStore = configStore ?? VoiceWebSocketConfigStore(),
        _connector = connector,
        _onInboundMessage = onInboundMessage,
        _readyTimeout = readyTimeout,
        _acknowledgementTimeout = acknowledgementTimeout,
-       _reconnectDelays = reconnectDelays;
+       _reconnectDelays = reconnectDelays,
+       _maximumQueuedMessages = maximumQueuedMessages,
+       _maximumBusyQueueAge = maximumBusyQueueAge,
+       _busyRetryDelays = busyRetryDelays;
 
   final VoiceWebSocketConfigStore _configStore;
   final VoiceWebSocketConnector _connector;
@@ -54,14 +67,20 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   final Duration _readyTimeout;
   final Duration _acknowledgementTimeout;
   final List<Duration> _reconnectDelays;
+  final int _maximumQueuedMessages;
+  final Duration _maximumBusyQueueAge;
+  final List<Duration> _busyRetryDelays;
   final Random _random = Random.secure();
   final Map<String, _PendingAcknowledgement> _pending =
       <String, _PendingAcknowledgement>{};
+  final Queue<_QueuedAgentMessage> _outboundQueue =
+      Queue<_QueuedAgentMessage>();
 
   WebSocket? _socket;
   StreamSubscription<dynamic>? _subscription;
   Timer? _readyTimer;
   Timer? _reconnectTimer;
+  Timer? _busyRetryTimer;
   Completer<void>? _readyCompleter;
   bool _initialized = false;
   bool _disposed = false;
@@ -71,6 +90,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   int _reconnectAttempt = 0;
   int? _lastEventId;
   Future<void> _inboundTail = Future<void>.value();
+  bool _pumpingOutboundQueue = false;
 
   VoiceWebSocketStatus status = VoiceWebSocketStatus.unconfigured;
   String statusText = 'Not configured';
@@ -82,6 +102,8 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   String? get validationError => _configStore.validationError;
 
   bool get isReady => status == VoiceWebSocketStatus.ready;
+
+  int get queuedMessageCount => _outboundQueue.length;
 
   Future<void> initialize() async {
     if (_initialized || _disposed) {
@@ -100,8 +122,12 @@ final class VoiceWebSocketClient extends ChangeNotifier {
 
   Future<void> saveConfig(VoiceWebSocketConfig value) async {
     _requireInitialized();
-    await _configStore.save(value);
+    _manualDisconnect = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _cancelOutboundQueue();
     await _closeSocket(reconnect: false);
+    await _configStore.save(value);
     _manualDisconnect = false;
     _reconnectAttempt = 0;
     _everReady = false;
@@ -199,6 +225,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
 
   Future<void> disconnect() async {
     _manualDisconnect = true;
+    _cancelOutboundQueue();
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     await _closeSocket(reconnect: false);
@@ -230,7 +257,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
         continue;
       }
       if (evidenceTranscript != null &&
-          !_hasAgentEvidence(evidenceTranscript, agent)) {
+          !_hasLeadingAttentionEvidence(evidenceTranscript)) {
         continue;
       }
       final nameStart = match.start + (match.group(1)?.length ?? 0);
@@ -263,33 +290,10 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     return AgentTranscriptRoute(agent: selected.agent, message: message);
   }
 
-  static bool _containsCompletePhrase(String text, String phrase) => RegExp(
-    '(^|[^A-Za-z0-9_])${RegExp.escape(phrase)}(?=\$|[^A-Za-z0-9_])',
+  static bool _hasLeadingAttentionEvidence(String rawTranscript) => RegExp(
+    r'^\s*hey(?=$|[^A-Za-z0-9_])',
     caseSensitive: false,
-  ).hasMatch(text);
-
-  static bool _hasAgentEvidence(String rawTranscript, String agent) {
-    if (_containsCompletePhrase(rawTranscript, agent)) {
-      return true;
-    }
-    const knownAliases = <String, List<String>>{
-      'flux': <String>['plus', 'plux', 'flex', 'flax', 'fox'],
-      'brock': <String>['broke', 'block', 'broc'],
-      'pike': <String>['bike', 'pipe', 'pyke'],
-      'wolf': <String>['woolf', 'woof', 'wolfe'],
-    };
-    final aliases = knownAliases[agent.toLowerCase()];
-    if (aliases == null) {
-      return false;
-    }
-    return aliases.any(
-      (alias) => RegExp(
-        '^\\s*hey[\\s,.;:!?-]+${RegExp.escape(alias)}'
-        '(?=\$|[^A-Za-z0-9_])',
-        caseSensitive: false,
-      ).hasMatch(rawTranscript),
-    );
-  }
+  ).hasMatch(rawTranscript);
 
   Future<bool> sendTranscript(String transcript) async {
     final route = routeForTranscript(transcript);
@@ -311,6 +315,24 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     if (canonicalAgent.isEmpty || trimmedMessage.isEmpty) {
       return false;
     }
+
+    if (!config.useLegacyMessageShape) {
+      if (_disposed ||
+          _maximumQueuedMessages <= 0 ||
+          _outboundQueue.length >= _maximumQueuedMessages) {
+        return false;
+      }
+      final queued = _QueuedAgentMessage(
+        agent: canonicalAgent,
+        message: trimmedMessage,
+        enqueuedAt: DateTime.now(),
+      );
+      _outboundQueue.addLast(queued);
+      _publishQueueStatus();
+      unawaited(_pumpOutboundQueue());
+      return queued.completer.future;
+    }
+
     try {
       await connect();
     } on Object {
@@ -321,20 +343,22 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       return false;
     }
 
-    if (config.useLegacyMessageShape) {
-      try {
-        socket.add(
-          jsonEncode(<String, Object>{
-            'agent': canonicalAgent,
-            'message': trimmedMessage,
-          }),
-        );
-        return true;
-      } on Object {
-        return false;
-      }
+    try {
+      socket.add(
+        jsonEncode(<String, Object>{
+          'agent': canonicalAgent,
+          'message': trimmedMessage,
+        }),
+      );
+      return true;
+    } on Object {
+      return false;
     }
+  }
 
+  Future<_AcknowledgementOutcome> _sendModernAgentMessage(
+    _QueuedAgentMessage queued,
+  ) async {
     final requestId = _newRequestId();
     for (var attempt = 0; attempt < 2; attempt++) {
       if (attempt > 0 ||
@@ -347,7 +371,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
         try {
           await connect();
         } on Object {
-          return false;
+          return _AcknowledgementOutcome.connectionLost;
         }
       }
 
@@ -373,8 +397,8 @@ final class VoiceWebSocketClient extends ChangeNotifier {
           jsonEncode(<String, Object>{
             'type': 'message.send',
             'request_id': requestId,
-            'agent': canonicalAgent,
-            'message': trimmedMessage,
+            'agent': queued.agent,
+            'message': queued.message,
           }),
         );
       } on Object {
@@ -385,14 +409,154 @@ final class VoiceWebSocketClient extends ChangeNotifier {
         }
       }
       final outcome = await completer.future;
-      if (outcome == _AcknowledgementOutcome.accepted) {
-        return true;
-      }
-      if (outcome == _AcknowledgementOutcome.rejected) {
-        return false;
+      if (outcome == _AcknowledgementOutcome.accepted ||
+          outcome == _AcknowledgementOutcome.rejected ||
+          outcome == _AcknowledgementOutcome.agentBusy) {
+        return outcome;
       }
     }
-    return false;
+    return _AcknowledgementOutcome.timedOut;
+  }
+
+  Future<void> _pumpOutboundQueue() async {
+    if (_pumpingOutboundQueue || _busyRetryTimer != null || _disposed) {
+      return;
+    }
+    _pumpingOutboundQueue = true;
+    try {
+      while (_outboundQueue.isNotEmpty && !_disposed) {
+        final queued = _outboundQueue.first;
+        if (_busyQueueAgeExpired(queued)) {
+          _completeQueuedMessage(queued, sent: false);
+          continue;
+        }
+
+        final outcome = await _sendModernAgentMessage(queued);
+        if (_outboundQueue.isEmpty ||
+            !identical(_outboundQueue.first, queued)) {
+          continue;
+        }
+        if (outcome == _AcknowledgementOutcome.accepted) {
+          _completeQueuedMessage(queued, sent: true);
+          continue;
+        }
+        if (outcome == _AcknowledgementOutcome.agentBusy) {
+          queued.busyAttempts++;
+          if (_scheduleBusyRetry(queued)) {
+            break;
+          }
+          continue;
+        }
+        _completeQueuedMessage(queued, sent: false);
+      }
+    } finally {
+      _pumpingOutboundQueue = false;
+    }
+  }
+
+  bool _busyQueueAgeExpired(_QueuedAgentMessage queued) {
+    if (_maximumBusyQueueAge <= Duration.zero) {
+      return true;
+    }
+    return DateTime.now().difference(queued.enqueuedAt) >= _maximumBusyQueueAge;
+  }
+
+  bool _scheduleBusyRetry(_QueuedAgentMessage queued) {
+    if (_disposed ||
+        _outboundQueue.isEmpty ||
+        !identical(_outboundQueue.first, queued)) {
+      return false;
+    }
+    final elapsed = DateTime.now().difference(queued.enqueuedAt);
+    final remaining = _maximumBusyQueueAge - elapsed;
+    if (remaining <= Duration.zero) {
+      _completeQueuedMessage(queued, sent: false);
+      return false;
+    }
+    final configuredDelay = _busyRetryDelays.isEmpty
+        ? const Duration(seconds: 2)
+        : _busyRetryDelays[(queued.busyAttempts - 1).clamp(
+            0,
+            _busyRetryDelays.length - 1,
+          )];
+    final delay = configuredDelay < remaining ? configuredDelay : remaining;
+    _busyRetryTimer?.cancel();
+    _busyRetryTimer = Timer(delay, () {
+      _busyRetryTimer = null;
+      _publishQueueStatus();
+      unawaited(_pumpOutboundQueue());
+    });
+    _publishQueueStatus();
+    return true;
+  }
+
+  void _wakeBusyQueueFor(Map<String, dynamic> payload) {
+    if (_busyRetryTimer == null || _outboundQueue.isEmpty || _disposed) {
+      return;
+    }
+    final completedAgent = _extractEventAgent(payload);
+    if (completedAgent == null ||
+        completedAgent.toLowerCase() !=
+            _outboundQueue.first.agent.toLowerCase()) {
+      return;
+    }
+    _busyRetryTimer?.cancel();
+    _busyRetryTimer = null;
+    _publishQueueStatus();
+    unawaited(_pumpOutboundQueue());
+  }
+
+  static String? _extractEventAgent(
+    Map<String, dynamic> payload, {
+    int depth = 0,
+  }) {
+    if (depth > 3) {
+      return null;
+    }
+    final agent = payload['agent'];
+    if (agent is String && agent.trim().isNotEmpty) {
+      return agent.trim();
+    }
+    for (final key in const <String>['payload', 'result', 'data']) {
+      final nested = payload[key];
+      if (nested is Map<String, dynamic>) {
+        final nestedAgent = _extractEventAgent(nested, depth: depth + 1);
+        if (nestedAgent != null) {
+          return nestedAgent;
+        }
+      }
+    }
+    return null;
+  }
+
+  void _completeQueuedMessage(
+    _QueuedAgentMessage queued, {
+    required bool sent,
+  }) {
+    if (_outboundQueue.isNotEmpty && identical(_outboundQueue.first, queued)) {
+      _outboundQueue.removeFirst();
+    } else {
+      _outboundQueue.remove(queued);
+    }
+    if (!queued.completer.isCompleted) {
+      queued.completer.complete(sent);
+    }
+    _publishQueueStatus();
+  }
+
+  void _cancelOutboundQueue() {
+    _busyRetryTimer?.cancel();
+    _busyRetryTimer = null;
+    for (final queued in _outboundQueue) {
+      if (!queued.completer.isCompleted) {
+        queued.completer.complete(false);
+      }
+    }
+    final changed = _outboundQueue.isNotEmpty;
+    _outboundQueue.clear();
+    if (changed) {
+      _publishQueueStatus();
+    }
   }
 
   Future<void> _handleSocketData(Object? data, int generation) async {
@@ -437,6 +601,9 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       }
     }
     _captureAndAcknowledgeEvent(decoded);
+    if (type == 'message.completed') {
+      _wakeBusyQueueFor(decoded);
+    }
   }
 
   void _handleReady(Map<String, dynamic> payload, int generation) {
@@ -459,12 +626,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     }
     _everReady = true;
     _reconnectAttempt = 0;
-    _setStatus(
-      VoiceWebSocketStatus.ready,
-      serverAgents.isEmpty
-          ? 'Connected · ready'
-          : 'Connected · ${serverAgents.length} server agents',
-    );
+    _setStatus(VoiceWebSocketStatus.ready, _connectedStatusText);
     final ready = _readyCompleter;
     if (ready != null && !ready.isCompleted) {
       ready.complete();
@@ -488,6 +650,8 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       pending.completer.complete(
         accepted
             ? _AcknowledgementOutcome.accepted
+            : _hasAgentBusyCode(payload)
+            ? _AcknowledgementOutcome.agentBusy
             : _AcknowledgementOutcome.rejected,
       );
     }
@@ -504,8 +668,52 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     }
     pending.timer.cancel();
     if (!pending.completer.isCompleted) {
-      pending.completer.complete(_AcknowledgementOutcome.rejected);
+      pending.completer.complete(
+        _hasAgentBusyCode(payload)
+            ? _AcknowledgementOutcome.agentBusy
+            : _AcknowledgementOutcome.rejected,
+      );
     }
+  }
+
+  static bool _hasAgentBusyCode(
+    Object? value, {
+    int depth = 0,
+    bool codeValue = false,
+  }) {
+    if (depth > 4) {
+      return false;
+    }
+    if (value is String && codeValue) {
+      final normalized = value.trim().toLowerCase().replaceAll(
+        RegExp(r'[\s-]+'),
+        '_',
+      );
+      return normalized == 'agent_busy';
+    }
+    if (value is! Map) {
+      return false;
+    }
+    for (final entry in value.entries) {
+      final key = entry.key.toString().toLowerCase();
+      final nestedIsCode =
+          key == 'code' ||
+          key == 'error' ||
+          key == 'error_code' ||
+          key == 'reason' ||
+          key == 'status';
+      final nestedContainer =
+          nestedIsCode || key == 'payload' || key == 'result' || key == 'data';
+      if (nestedContainer &&
+          _hasAgentBusyCode(
+            entry.value,
+            depth: depth + 1,
+            codeValue: nestedIsCode,
+          )) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<bool> _deliverInbound(String message, int generation) async {
@@ -686,6 +894,27 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     }
   }
 
+  String get _connectedStatusText {
+    if (_outboundQueue.isNotEmpty) {
+      final waiting = _busyRetryTimer == null ? '' : ' · agent busy';
+      return 'Connected · ${_outboundQueue.length} queued$waiting';
+    }
+    return serverAgents.isEmpty
+        ? 'Connected · ready'
+        : 'Connected · ${serverAgents.length} server agents';
+  }
+
+  void _publishQueueStatus() {
+    if (_disposed) {
+      return;
+    }
+    if (isReady) {
+      _setStatus(VoiceWebSocketStatus.ready, _connectedStatusText);
+    } else {
+      notifyListeners();
+    }
+  }
+
   void _setStatus(VoiceWebSocketStatus next, String text) {
     final changed = status != next || statusText != text;
     status = next;
@@ -715,6 +944,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     }
     _disposed = true;
     _manualDisconnect = true;
+    _cancelOutboundQueue();
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _configStore.removeListener(_configChanged);
@@ -763,4 +993,24 @@ final class _PendingAcknowledgement {
   final Timer timer;
 }
 
-enum _AcknowledgementOutcome { accepted, rejected, connectionLost, timedOut }
+final class _QueuedAgentMessage {
+  _QueuedAgentMessage({
+    required this.agent,
+    required this.message,
+    required this.enqueuedAt,
+  });
+
+  final String agent;
+  final String message;
+  final DateTime enqueuedAt;
+  final Completer<bool> completer = Completer<bool>();
+  int busyAttempts = 0;
+}
+
+enum _AcknowledgementOutcome {
+  accepted,
+  rejected,
+  agentBusy,
+  connectionLost,
+  timedOut,
+}

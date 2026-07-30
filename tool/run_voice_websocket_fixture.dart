@@ -10,6 +10,7 @@ Future<void> main(List<String> arguments) async {
   );
   var connectionCount = 0;
   var eventId = 0;
+  var busyResponsesRemaining = options.busyResponses;
   final acceptedByRequestId = <String, Map<String, Object>>{};
 
   Future<void> stop(ProcessSignal signal) async {
@@ -69,6 +70,10 @@ Future<void> main(List<String> arguments) async {
           stdout.writeln('resume_received');
           return;
         }
+        if (decoded['type'] == 'event.ack') {
+          stdout.writeln('event_ack_received');
+          return;
+        }
 
         final modern = decoded['type'] == 'message.send';
         final agent = decoded['agent'];
@@ -89,6 +94,23 @@ Future<void> main(List<String> arguments) async {
           if (previous != null) {
             socket.add(jsonEncode(previous));
             stdout.writeln('message_duplicate request_id=reused');
+            return;
+          }
+          if (busyResponsesRemaining > 0) {
+            busyResponsesRemaining--;
+            socket.add(
+              jsonEncode(<String, Object>{
+                'type': 'message.error',
+                'version': 1,
+                'request_id': requestId,
+                'ok': false,
+                'error': <String, Object>{
+                  'code': 'agent_busy',
+                  'status': 'busy',
+                },
+              }),
+            );
+            stdout.writeln('message_busy remaining=$busyResponsesRemaining');
             return;
           }
           final response = <String, Object>{
@@ -142,15 +164,18 @@ final class _FixtureOptions {
     required this.host,
     required this.port,
     required this.secret,
+    required this.busyResponses,
   });
 
   final InternetAddress host;
   final int port;
   final String secret;
+  final int busyResponses;
 
   static _FixtureOptions parse(List<String> arguments) {
     var host = InternetAddress.loopbackIPv4;
     var port = 8787;
+    var busyResponses = 0;
     String? secret;
     for (var index = 0; index < arguments.length; index++) {
       switch (arguments[index]) {
@@ -173,6 +198,11 @@ final class _FixtureOptions {
             _usageError('Missing value for --secret.');
           }
           secret = arguments[++index];
+        case '--busy-responses':
+          if (index + 1 >= arguments.length) {
+            _usageError('Missing value for --busy-responses.');
+          }
+          busyResponses = int.tryParse(arguments[++index]) ?? -1;
         default:
           _usageError('Unknown argument: ${arguments[index]}');
       }
@@ -186,14 +216,23 @@ final class _FixtureOptions {
     if (secret.contains('\r') || secret.contains('\n')) {
       _usageError('Secret must fit on one line.');
     }
-    return _FixtureOptions(host: host, port: port, secret: secret);
+    if (busyResponses < 0 || busyResponses > 100) {
+      _usageError('--busy-responses must be between 0 and 100.');
+    }
+    return _FixtureOptions(
+      host: host,
+      port: port,
+      secret: secret,
+      busyResponses: busyResponses,
+    );
   }
 
   static Never _usageError(String message) {
     stderr.writeln(message);
     stderr.writeln(
       'Usage: dart run tool/run_voice_websocket_fixture.dart '
-      '--secret <local-secret> [--host 127.0.0.1] [--port 8787]',
+      '--secret <local-secret> [--host 127.0.0.1] [--port 8787] '
+      '[--busy-responses 1]',
     );
     exit(64);
   }

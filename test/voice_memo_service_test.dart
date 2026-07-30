@@ -466,6 +466,12 @@ final class _FakeGemmaClient implements GemmaCorrectionClient {
   final List<String> scriptedNotesUsed = <String>[];
 
   @override
+  Future<void> prepareEngine({
+    required String modelPath,
+    required String modelId,
+  }) async {}
+
+  @override
   Future<GemmaCorrectionResult> correct(GemmaCorrectionRequest request) async {
     requests.add(request);
     final input = jsonDecode(request.transcript) as Map<String, Object?>;

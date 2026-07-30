@@ -43,6 +43,42 @@ void main() {
     temp.deleteSync(recursive: true);
   });
 
+  test('prepares the verified correction engine during startup', () async {
+    final supervisor = TranscriptCorrectionSupervisor(
+      speechPath: speech.path,
+      configStore: configStore,
+      modelStore: modelStore,
+      client: client,
+      onCorrected: (_) {},
+      onUncorrected: (_, _, _) {},
+      onStatus: (_, {isError = false}) {},
+    );
+    addTearDown(supervisor.dispose);
+
+    await supervisor.start();
+
+    expect(client.preparedModelPaths, hasLength(1));
+    expect(client.preparedModelPaths.single, endsWith(gemma4E4bModel.fileName));
+  });
+
+  test('does not prepare the engine when correction is disabled', () async {
+    await configStore.setEnabled(false);
+    final supervisor = TranscriptCorrectionSupervisor(
+      speechPath: speech.path,
+      configStore: configStore,
+      modelStore: modelStore,
+      client: client,
+      onCorrected: (_) {},
+      onUncorrected: (_, _, _) {},
+      onStatus: (_, {isError = false}) {},
+    );
+    addTearDown(supervisor.dispose);
+
+    await supervisor.start();
+
+    expect(client.preparedModelPaths, isEmpty);
+  });
+
   test(
     'persists corrected text separately with complete timing metadata',
     () async {
@@ -448,6 +484,15 @@ Future<void> _queue(
 
 final class _FakeGemmaClient implements GemmaCorrectionClient {
   final List<String> instructions = <String>[];
+  final List<String> preparedModelPaths = <String>[];
+
+  @override
+  Future<void> prepareEngine({
+    required String modelPath,
+    required String modelId,
+  }) async {
+    preparedModelPaths.add(modelPath);
+  }
 
   @override
   Future<GemmaCorrectionResult> correct(GemmaCorrectionRequest request) async {
@@ -481,6 +526,12 @@ final class _FakeGemmaClient implements GemmaCorrectionClient {
 
 final class _InvalidGemmaClient implements GemmaCorrectionClient {
   int calls = 0;
+
+  @override
+  Future<void> prepareEngine({
+    required String modelPath,
+    required String modelId,
+  }) async {}
 
   @override
   Future<GemmaCorrectionResult> correct(GemmaCorrectionRequest request) async {

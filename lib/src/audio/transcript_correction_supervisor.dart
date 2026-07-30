@@ -165,15 +165,49 @@ final class TranscriptCorrectionSupervisor {
 
   Future<void> start() async {
     await _restorePending();
-    final installed = await modelStore.installedModelPath() != null;
-    state = installed ? 'ready' : 'model missing';
+    final modelPath = await modelStore.installedModelPath();
+    final installed = modelPath != null;
+    final shouldPrepare = installed && configStore.config.enabled;
+    state = shouldPrepare ? 'warming' : (installed ? 'ready' : 'model missing');
     onStatus(
-      '[WorkBench][Correction] state=${installed ? 'ready' : 'model_missing'} '
+      '[WorkBench][Correction] '
+      'state=${shouldPrepare ? 'warming' : (installed ? 'ready' : 'model_missing')} '
       'model=${gemma4E4bModel.id} provider=gpu '
       'pending=${_pending.length}',
       isError: !installed,
     );
+    if (shouldPrepare) {
+      unawaited(_prepareEngine(modelPath));
+    }
     _schedulePump(Duration.zero);
+  }
+
+  Future<void> _prepareEngine(String modelPath) async {
+    try {
+      await _client.prepareEngine(
+        modelPath: modelPath,
+        modelId: gemma4E4bModel.id,
+      );
+      if (_disposed) {
+        return;
+      }
+      state = 'ready';
+      onStatus(
+        '[WorkBench][Correction] state=warm_idle '
+        'model=${gemma4E4bModel.id} provider=gpu',
+      );
+    } on Object catch (error) {
+      if (_disposed) {
+        return;
+      }
+      state = 'ready';
+      onStatus(
+        '[WorkBench][Correction] state=warmup_failed '
+        'model=${gemma4E4bModel.id} provider=gpu '
+        'raw_transcription=available error=${_oneLine(error)}',
+        isError: true,
+      );
+    }
   }
 
   Future<void> queue(TranscriptCorrectionJob job) async {
@@ -682,4 +716,7 @@ final class TranscriptCorrectionSupervisor {
     UnsupportedError _ => 'unsupported',
     _ => 'runtime_failure',
   };
+
+  static String _oneLine(Object? value) =>
+      value.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
 }

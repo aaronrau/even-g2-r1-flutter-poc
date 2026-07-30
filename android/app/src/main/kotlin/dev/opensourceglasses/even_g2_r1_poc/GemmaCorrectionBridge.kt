@@ -30,7 +30,9 @@ internal class GemmaCorrectionBridge(private val context: Context) :
     private val replies =
         Messenger(
             Handler(Looper.getMainLooper()) { message ->
-                if (message.what != GemmaCorrectionProtocol.RESPONSE_CORRECTION) {
+                if (message.what != GemmaCorrectionProtocol.RESPONSE_CORRECTION &&
+                    message.what != GemmaCorrectionProtocol.RESPONSE_ENGINE_READY
+                ) {
                     return@Handler false
                 }
                 val data = message.data
@@ -47,6 +49,10 @@ internal class GemmaCorrectionBridge(private val context: Context) :
                         ),
                         null,
                     )
+                } else if (
+                    message.what == GemmaCorrectionProtocol.RESPONSE_ENGINE_READY
+                ) {
+                    result.success(null)
                 } else {
                     result.success(
                         mapOf(
@@ -92,6 +98,7 @@ internal class GemmaCorrectionBridge(private val context: Context) :
     fun handle(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "correct" -> requestCorrection(call, result)
+            "prepareEngine" -> requestEnginePreparation(call, result)
             "releaseEngine" -> {
                 service?.runCatching {
                     send(
@@ -105,6 +112,38 @@ internal class GemmaCorrectionBridge(private val context: Context) :
             }
             else -> result.notImplemented()
         }
+    }
+
+    private fun requestEnginePreparation(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val modelPath = call.argument<String>("modelPath")
+        val modelId = call.argument<String>("modelId")
+        if (modelPath == null || modelId == null) {
+            result.error(
+                "invalid_request",
+                "The engine preparation request was incomplete.",
+                null,
+            )
+            return
+        }
+        val requestId = nextRequestId.getAndIncrement()
+        val data =
+            Bundle().apply {
+                putLong(GemmaCorrectionProtocol.KEY_REQUEST_ID, requestId)
+                putString(GemmaCorrectionProtocol.KEY_MODEL_PATH, modelPath)
+                putString(GemmaCorrectionProtocol.KEY_MODEL_ID, modelId)
+            }
+        val message =
+            Message.obtain(
+                null,
+                GemmaCorrectionProtocol.REQUEST_PREPARE_ENGINE,
+            ).apply {
+                this.data = data
+                replyTo = replies
+            }
+        queueOrSend(requestId, message, result)
     }
 
     private fun requestCorrection(
@@ -153,6 +192,14 @@ internal class GemmaCorrectionBridge(private val context: Context) :
                 this.data = data
                 replyTo = replies
             }
+        queueOrSend(requestId, message, result)
+    }
+
+    private fun queueOrSend(
+        requestId: Long,
+        message: Message,
+        result: MethodChannel.Result,
+    ) {
         pendingById[requestId] = result
         val target = service
         if (target != null) {
