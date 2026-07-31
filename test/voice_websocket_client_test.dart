@@ -484,6 +484,52 @@ void main() {
     },
   );
 
+  test('exposes request IDs for exact send and summary correlation', () async {
+    final inbound = Completer<VoiceWebSocketInboundEvent>();
+    final store = VoiceWebSocketConfigStore(supportDirectory: () async => temp);
+    final client = VoiceWebSocketClient(
+      configStore: store,
+      reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
+      readyTimeout: const Duration(seconds: 1),
+      acknowledgementTimeout: const Duration(seconds: 1),
+      onInboundEvent: (event) async {
+        if (event.kind == VoiceWebSocketInboundKind.summary &&
+            !inbound.isCompleted) {
+          inbound.complete(event);
+        }
+      },
+    );
+    addTearDown(client.close);
+    await client.initialize();
+    await client.saveConfig(
+      VoiceWebSocketConfig.validate(
+        host: '127.0.0.1',
+        port: server.port,
+        secret: 'example-secret',
+        authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+        agentNames: const <String>['Agent One'],
+        useLegacyMessageShape: false,
+      ),
+    );
+    await _waitUntil(() => client.isReady);
+
+    final send = await client.sendAgentMessageWithResult(
+      agent: 'Agent One',
+      message: 'run the correlated fixture',
+    );
+    final summary = await client.requestAgentSummary('Agent One');
+    final event = await inbound.future.timeout(const Duration(seconds: 1));
+
+    expect(send.sent, isTrue);
+    expect(send.requestId, isNotEmpty);
+    expect(send.legacy, isFalse);
+    expect(summary.outcome, VoiceWebSocketSummaryRequestOutcome.sent);
+    expect(summary.requestId, isNotEmpty);
+    expect(event.requestId, summary.requestId);
+    expect(event.agent, 'Agent One');
+    expect(event.kind, VoiceWebSocketInboundKind.summary);
+  });
+
   test(
     'reconnects and reuses the request id when acknowledgement is lost',
     () async {

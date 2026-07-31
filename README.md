@@ -137,6 +137,11 @@ expose for a true locked Hub mode.
   the last agent that successfully received a live command. The returned
   `summary.result` follows the same durable `Received:` path. During a voice
   memo, double tap retains its higher-priority finish action.
+- Implements the single-tap agent history selector with `Dismiss` selected
+  first, a local Memo row, up to five one-line agent rows, request-ID-correlated
+  response lookup, bounded waiting/cancel behavior, and tap-to-dismiss detail
+  pages. See
+  [`docs/G2_AGENT_HISTORY_SELECTOR.md`](docs/G2_AGENT_HISTORY_SELECTOR.md).
 - Draws a dim-to-bright pulsing dot in the upper-left using LC3 global gain and
   an adaptive silence floor.
 - Displays `Tap`, `Swipe up`, `Swipe down`, and `Long press (inferred)`;

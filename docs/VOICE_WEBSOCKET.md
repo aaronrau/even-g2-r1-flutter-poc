@@ -150,6 +150,16 @@ supersedes it when received. Its `result.summary`, `result.detail`, or
 shared-folder export, Messages-tab, and G2 `Received:` path as other readable
 inbound events. Voice memo finalization retains priority over this action.
 
+## Single-tap history selector
+
+The single-tap interaction expands progress lookup into a gesture-controlled
+selector with `Dismiss` selected first, a local Memo row, and up to five
+one-line agent rows. Request-ID correlation prevents an arbitrary recent
+response from the same agent from replacing the selected result. The complete
+state machine, data model, failure behavior, implementation, and
+physical-device acceptance flow are documented in
+[`G2_AGENT_HISTORY_SELECTOR.md`](G2_AGENT_HISTORY_SELECTOR.md).
+
 The client tracks the latest non-negative top-level `event_id`. After an
 unexpected disconnect, it reconnects with bounded backoff, waits for the next
 `connection.ready`, then sends:

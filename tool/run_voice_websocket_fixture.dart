@@ -162,22 +162,24 @@ Future<void> main(List<String> arguments) async {
           acceptedByRequestId[requestId] = response;
           socket.add(jsonEncode(response));
         }
-        eventId++;
-        final event = <String, Object>{
-          'type': 'message.progress',
-          'event_id': eventId,
-          'agent': agent,
-          'payload': <String, Object>{
+        if (!options.deferProgress) {
+          eventId++;
+          final event = <String, Object>{
+            'type': 'message.progress',
+            'event_id': eventId,
             'agent': agent,
-            'summary': 'Fixture received the agent message.',
-            'phase': 'in_progress',
-            'is_final': false,
-          },
-        };
-        if (requestId != null) {
-          event['request_id'] = requestId;
+            'payload': <String, Object>{
+              'agent': agent,
+              'summary': 'Fixture received the agent message.',
+              'phase': 'in_progress',
+              'is_final': false,
+            },
+          };
+          if (requestId != null) {
+            event['request_id'] = requestId;
+          }
+          socket.add(jsonEncode(event));
         }
-        socket.add(jsonEncode(event));
         stdout.writeln(
           'message_received shape=${modern ? 'modern' : 'legacy'} '
           'characters=${message.length}',
@@ -198,17 +200,20 @@ final class _FixtureOptions {
     required this.port,
     required this.secret,
     required this.busyResponses,
+    required this.deferProgress,
   });
 
   final InternetAddress host;
   final int port;
   final String secret;
   final int busyResponses;
+  final bool deferProgress;
 
   static _FixtureOptions parse(List<String> arguments) {
     var host = InternetAddress.loopbackIPv4;
     var port = 8787;
     var busyResponses = 0;
+    var deferProgress = false;
     String? secret;
     for (var index = 0; index < arguments.length; index++) {
       switch (arguments[index]) {
@@ -236,6 +241,8 @@ final class _FixtureOptions {
             _usageError('Missing value for --busy-responses.');
           }
           busyResponses = int.tryParse(arguments[++index]) ?? -1;
+        case '--defer-progress':
+          deferProgress = true;
         default:
           _usageError('Unknown argument: ${arguments[index]}');
       }
@@ -257,6 +264,7 @@ final class _FixtureOptions {
       port: port,
       secret: secret,
       busyResponses: busyResponses,
+      deferProgress: deferProgress,
     );
   }
 
@@ -265,7 +273,7 @@ final class _FixtureOptions {
     stderr.writeln(
       'Usage: dart run tool/run_voice_websocket_fixture.dart '
       '--secret <local-secret> [--host 127.0.0.1] [--port 8787] '
-      '[--busy-responses 1]',
+      '[--busy-responses 1] [--defer-progress]',
     );
     exit(64);
   }

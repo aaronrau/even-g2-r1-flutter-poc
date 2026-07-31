@@ -36,6 +36,7 @@ final class GlassesStatusQueue {
   bool _pumping = false;
   bool _pumpRequested = false;
   bool _paused = false;
+  String _pauseOwner = 'normal';
   bool _disposed = false;
   int _revision = 0;
   int _transientSequence = 0;
@@ -51,7 +52,7 @@ final class GlassesStatusQueue {
   }) async {
     if (_disposed || _paused) {
       if (_paused) {
-        _log('[WorkBench][GlassesStatus] state=suppressed owner=memo');
+        _log('[WorkBench][GlassesStatus] state=suppressed owner=$_pauseOwner');
       }
       return;
     }
@@ -74,7 +75,7 @@ final class GlassesStatusQueue {
   }) async {
     if (_disposed || _paused) {
       if (_paused) {
-        _log('[WorkBench][GlassesStatus] state=suppressed owner=memo');
+        _log('[WorkBench][GlassesStatus] state=suppressed owner=$_pauseOwner');
       }
       return;
     }
@@ -112,7 +113,7 @@ final class GlassesStatusQueue {
   }) async {
     if (_disposed || _paused) {
       if (_paused) {
-        _log('[WorkBench][GlassesStatus] state=suppressed owner=memo');
+        _log('[WorkBench][GlassesStatus] state=suppressed owner=$_pauseOwner');
       }
       return;
     }
@@ -138,20 +139,25 @@ final class GlassesStatusQueue {
     }
   }
 
-  void setPaused(bool paused) {
-    if (_disposed || _paused == paused) {
+  void setPaused(bool paused, {String owner = 'memo'}) {
+    if (_disposed || _paused == paused && (!paused || _pauseOwner == owner)) {
       return;
     }
     _paused = paused;
     if (paused) {
+      _pauseOwner = owner;
       _cancelHold();
       _current = null;
       _deferredTransient = null;
       _latestTranscriptId = null;
       _revision++;
-      _log('[WorkBench][GlassesStatus] state=paused owner=memo pending=0');
+      _log(
+        '[WorkBench][GlassesStatus] state=paused '
+        'owner=$_pauseOwner pending=0',
+      );
       return;
     }
+    _pauseOwner = 'normal';
     _log('[WorkBench][GlassesStatus] state=resumed owner=normal pending=0');
   }
 

@@ -24,6 +24,8 @@ import 'ble/r1_connection.dart';
 import 'protocol/g2_protocol.dart';
 import 'util/hex.dart';
 import 'startup/startup_state.dart';
+import 'websocket/agent_exchange_store.dart';
+import 'websocket/g2_agent_history_state.dart';
 import 'websocket/voice_websocket_client.dart';
 import 'websocket/voice_websocket_config.dart';
 import 'websocket/websocket_message_store.dart';
@@ -62,18 +64,20 @@ final class WearableController extends ChangeNotifier
         const SpeechModelPreferences(),
     SharedAudioExportStore? sharedAudioExportStore,
     WebSocketMessageStore? webSocketMessageStore,
+    AgentExchangeStore? agentExchangeStore,
     VoiceWebSocketConfigStore? voiceWebSocketConfigStore,
   }) : _ble = ble ?? FlutterReactiveBle(),
        _speechModelPreferences = speechModelPreferences,
        _sharedAudioExportStore =
            sharedAudioExportStore ?? SharedAudioExportStore(),
        _webSocketMessageStore =
-           webSocketMessageStore ?? WebSocketMessageStore() {
+           webSocketMessageStore ?? WebSocketMessageStore(),
+       _agentExchangeStore = agentExchangeStore ?? AgentExchangeStore() {
     _sharedAudioExportStore.addListener(_sharedStorageChanged);
     _runtime = AppRuntimeCoordinator(log: addLog);
     _voiceWebSocket = VoiceWebSocketClient(
       configStore: voiceWebSocketConfigStore,
-      onInboundMessage: _handleInboundWebSocketMessage,
+      onInboundEvent: _handleInboundWebSocketEvent,
     );
     _voiceWebSocket.addListener(_voiceWebSocketChanged);
     _conversationAnalysis = ConversationAnalysisService(
@@ -119,6 +123,7 @@ final class WearableController extends ChangeNotifier
   final SpeechModelPreferences _speechModelPreferences;
   final SharedAudioExportStore _sharedAudioExportStore;
   final WebSocketMessageStore _webSocketMessageStore;
+  final AgentExchangeStore _agentExchangeStore;
   late final AppRuntimeCoordinator _runtime;
   late final VoiceWebSocketClient _voiceWebSocket;
   late final ConversationAnalysisService _conversationAnalysis;
@@ -134,6 +139,13 @@ final class WearableController extends ChangeNotifier
   Timer? _audioNotifyTimer;
   Timer? _backgroundNotifyTimer;
   Future<void> _memoDisplayTail = Future<void>.value();
+  Future<void> _historyDisplayTail = Future<void>.value();
+  final G2AgentHistoryState _agentHistory = G2AgentHistoryState();
+  Timer? _agentHistoryWaitTimer;
+  bool _agentExchangeStoreReady = false;
+  bool _agentHistoryOpening = false;
+  bool _agentHistoryClosing = false;
+  int _agentHistoryGeneration = 0;
   bool _disposed = false;
   bool _g2UnexpectedlyDisconnected = false;
   bool _linkingController = false;
@@ -261,6 +273,17 @@ final class WearableController extends ChangeNotifier
       );
     }
     try {
+      await _agentExchangeStore.initialize();
+      _agentExchangeStoreReady = true;
+    } on Object {
+      addLog(
+        'WebSocket',
+        '[WorkBench][AgentHistory] state=unavailable '
+            'action=check_app_storage',
+        isError: true,
+      );
+    }
+    try {
       await _voiceWebSocket.initialize();
     } on Object {
       addLog(
@@ -269,6 +292,23 @@ final class WearableController extends ChangeNotifier
             'action=check_app_storage',
         isError: true,
       );
+    }
+    if (_agentExchangeStoreReady &&
+        _voiceWebSocket.config.agentNames.isNotEmpty) {
+      try {
+        await _agentExchangeStore.importExistingSentMessages(
+          paths: await _webSocketMessageStore.savedPaths(),
+          agents: _voiceWebSocket.config.agentNames,
+          legacy: _voiceWebSocket.config.useLegacyMessageShape,
+        );
+      } on Object {
+        addLog(
+          'WebSocket',
+          '[WorkBench][AgentHistory] state=history_import_failed '
+              'fallback=new_messages_only',
+          isError: true,
+        );
+      }
     }
     try {
       await _voiceMemo.initialize();
@@ -541,7 +581,19 @@ final class WearableController extends ChangeNotifier
       _conversationAnalysis.restartWorkerForTest();
 
   Future<void> saveVoiceWebSocketConfig(VoiceWebSocketConfig config) async {
+    await _closeAgentHistory(clearDisplay: true);
     await _voiceWebSocket.saveConfig(config);
+    if (_agentExchangeStoreReady) {
+      try {
+        await _agentExchangeStore.clear();
+      } on Object {
+        addLog(
+          'WebSocket',
+          '[WorkBench][AgentHistory] state=clear_failed',
+          isError: true,
+        );
+      }
+    }
     addLog(
       'WebSocket',
       '[WorkBench][VoiceWebSocket] state=saved '
@@ -773,6 +825,9 @@ final class WearableController extends ChangeNotifier
     _safeNotify();
     _glassesStatusQueue.connectionChanged();
     _queueMemoDisplaySync();
+    if (_agentHistory.isOpen && g2.isConnected) {
+      _queueAgentHistoryDisplay();
+    }
     final active = _hasWearableSession;
     if (_runtimeSessionActive != active) {
       _runtimeSessionActive = active;
@@ -785,12 +840,25 @@ final class WearableController extends ChangeNotifier
   }
 
   void _voiceWebSocketChanged() {
+    if (_agentHistory.mode == G2AgentHistoryMode.waiting &&
+        (_voiceWebSocket.status == VoiceWebSocketStatus.disconnected ||
+            _voiceWebSocket.status == VoiceWebSocketStatus.error)) {
+      final title = _agentHistory.selected?.label ?? 'Agent';
+      _agentHistoryWaitTimer?.cancel();
+      _agentHistoryWaitTimer = null;
+      _agentHistory.showError(title, 'Connection lost');
+      _queueAgentHistoryDisplay();
+    }
     _safeNotify();
   }
 
   void _memoChanged() {
     if (_voiceMemo.isActive) {
-      _glassesStatusQueue.setPaused(true);
+      _agentHistoryGeneration++;
+      _agentHistoryWaitTimer?.cancel();
+      _agentHistoryWaitTimer = null;
+      _agentHistory.close();
+      _glassesStatusQueue.setPaused(true, owner: 'memo');
     }
     _safeNotify();
     _queueMemoDisplaySync();
@@ -817,7 +885,7 @@ final class WearableController extends ChangeNotifier
     }
     final active = _voiceMemo.activeMemo;
     if (active != null) {
-      _glassesStatusQueue.setPaused(true);
+      _glassesStatusQueue.setPaused(true, owner: 'memo');
       if (g2.isConnected) {
         await g2.showMemo(
           note: _voiceMemo.displayText,
@@ -828,6 +896,11 @@ final class WearableController extends ChangeNotifier
     }
     if (g2.isConnected && g2.isMemoDisplayActive) {
       await g2.exitMemo();
+    }
+    if (_agentHistory.isOpen) {
+      _glassesStatusQueue.setPaused(true, owner: 'history');
+      await _showAgentHistory();
+      return;
     }
     _glassesStatusQueue.setPaused(false);
     final finalizedId = _voiceMemo.lastFinalizedId;
@@ -850,6 +923,38 @@ final class WearableController extends ChangeNotifier
   }
 
   bool _handleG2Gesture(G2GestureEvent event) {
+    if (_agentHistoryOpening || _agentHistoryClosing) {
+      return true;
+    }
+    if (_agentHistory.isOpen) {
+      switch (event.type) {
+        case 0:
+          unawaited(_activateAgentHistorySelection());
+          break;
+        case 1:
+          if (_agentHistory.mode == G2AgentHistoryMode.selector) {
+            _agentHistory.selectNext();
+            _queueAgentHistoryDisplay();
+          }
+          break;
+        case 2:
+          if (_agentHistory.mode == G2AgentHistoryMode.selector) {
+            _agentHistory.selectPrevious();
+            _queueAgentHistoryDisplay();
+          }
+          break;
+        default:
+          break;
+      }
+      return true;
+    }
+    if (event.type == 0) {
+      if (_voiceMemo.isActive) {
+        return true;
+      }
+      unawaited(_openAgentHistory());
+      return true;
+    }
     switch (resolveWearableGestureAction(
       gestureType: event.type,
       memoActive: _voiceMemo.isActive,
@@ -863,6 +968,172 @@ final class WearableController extends ChangeNotifier
       case WearableGestureAction.requestAgentSummary:
         unawaited(_requestLastAgentSummary());
         return true;
+    }
+  }
+
+  Future<void> _openAgentHistory() async {
+    if (_disposed ||
+        _voiceMemo.isActive ||
+        _agentHistory.isOpen ||
+        _agentHistoryOpening ||
+        _agentHistoryClosing) {
+      return;
+    }
+    _agentHistoryOpening = true;
+    final generation = ++_agentHistoryGeneration;
+    try {
+      _glassesStatusQueue.setPaused(true, owner: 'history');
+      List<AgentExchangeView> exchanges = const <AgentExchangeView>[];
+      if (_agentExchangeStoreReady) {
+        try {
+          exchanges = await _agentExchangeStore.latestForAgents(
+            _voiceWebSocket.config.agentNames,
+            maximumAgents: G2AgentHistoryState.maximumAgents,
+          );
+        } on Object {
+          addLog(
+            'WebSocket',
+            '[WorkBench][AgentHistory] state=load_failed',
+            isError: true,
+          );
+        }
+      }
+      if (_disposed ||
+          _voiceMemo.isActive ||
+          generation != _agentHistoryGeneration) {
+        _agentHistory.close();
+        return;
+      }
+      final memo = _voiceMemo.records
+          .where((record) => !record.isActive && record.note.trim().isNotEmpty)
+          .firstOrNull;
+      _agentHistory.open(
+        agents: _voiceWebSocket.config.agentNames,
+        exchanges: exchanges,
+        memo: memo?.note,
+      );
+      await _showAgentHistory();
+      addLog(
+        'WebSocket',
+        '[WorkBench][AgentHistory] state=opened '
+            'agents=${_agentHistory.entries.length - 2}',
+      );
+    } finally {
+      _agentHistoryOpening = false;
+    }
+  }
+
+  Future<void> _activateAgentHistorySelection() async {
+    if (_agentHistory.mode != G2AgentHistoryMode.selector) {
+      await _closeAgentHistory(clearDisplay: true);
+      return;
+    }
+    final selected = _agentHistory.selected;
+    if (selected == null || selected.kind == G2AgentHistoryEntryKind.dismiss) {
+      await _closeAgentHistory(clearDisplay: true);
+      return;
+    }
+    if (selected.kind == G2AgentHistoryEntryKind.memo ||
+        selected.exchange == null) {
+      _agentHistory.showSelectedDetail();
+      await _showAgentHistory();
+      return;
+    }
+    final exchange = selected.exchange!;
+    if (exchange.response?.trim().isNotEmpty == true) {
+      _agentHistory.showSelectedDetail();
+      await _showAgentHistory();
+      return;
+    }
+
+    _agentHistory.showWaiting(exchange);
+    await _showAgentHistory();
+    final result = await _voiceWebSocket.requestAgentSummary(exchange.agent);
+    if (!_agentHistory.isOpen ||
+        _agentHistory.waitingExchangeId != exchange.id) {
+      return;
+    }
+    if (result.outcome != VoiceWebSocketSummaryRequestOutcome.sent) {
+      _agentHistory.showError(exchange.agent, 'Connection unavailable');
+      await _showAgentHistory();
+      return;
+    }
+    if (_agentExchangeStoreReady) {
+      try {
+        await _agentExchangeStore.associateSummary(
+          exchangeId: exchange.id,
+          requestId: result.requestId,
+        );
+        final updated = await _agentExchangeStore.viewById(exchange.id);
+        if (updated?.response?.trim().isNotEmpty == true &&
+            _agentHistory.acceptResponse(exchange.id, updated!.response!)) {
+          await _showAgentHistory();
+          return;
+        }
+      } on Object {
+        _agentHistory.showError(exchange.agent, 'History unavailable');
+        await _showAgentHistory();
+        return;
+      }
+    }
+    _agentHistoryWaitTimer?.cancel();
+    _agentHistoryWaitTimer = Timer(const Duration(seconds: 15), () {
+      if (_agentHistory.waitingExchangeId == exchange.id) {
+        _agentHistory.markWaitingTimedOut();
+        _queueAgentHistoryDisplay();
+      }
+    });
+  }
+
+  void _queueAgentHistoryDisplay() {
+    final operation = _historyDisplayTail.then((_) => _showAgentHistory());
+    _historyDisplayTail = operation.then<void>(
+      (_) {},
+      onError: (Object _) {
+        addLog(
+          'WebSocket',
+          '[WorkBench][AgentHistory] state=display_failed',
+          isError: true,
+        );
+      },
+    );
+  }
+
+  Future<void> _showAgentHistory() async {
+    if (_disposed || !_agentHistory.isOpen || !g2.isConnected) {
+      return;
+    }
+    await g2.sendText(_agentHistory.render());
+  }
+
+  Future<void> _closeAgentHistory({required bool clearDisplay}) async {
+    if (_agentHistoryClosing ||
+        (!_agentHistory.isOpen && !_agentHistoryOpening)) {
+      return;
+    }
+    _agentHistoryClosing = true;
+    _agentHistoryGeneration++;
+    try {
+      _agentHistoryWaitTimer?.cancel();
+      _agentHistoryWaitTimer = null;
+      _agentHistory.close();
+      if (clearDisplay && g2.isConnected && !g2.isMemoDisplayActive) {
+        try {
+          await g2.clearText();
+        } on Object {
+          addLog(
+            'WebSocket',
+            '[WorkBench][AgentHistory] state=clear_display_failed',
+            isError: true,
+          );
+        }
+      }
+      if (!_voiceMemo.isActive) {
+        _glassesStatusQueue.setPaused(false);
+      }
+      addLog('WebSocket', '[WorkBench][AgentHistory] state=closed');
+    } finally {
+      _agentHistoryClosing = false;
     }
   }
 
@@ -934,10 +1205,11 @@ final class WearableController extends ChangeNotifier
       );
       return;
     }
-    final sent = await _voiceWebSocket.sendAgentMessage(
+    final sendResult = await _voiceWebSocket.sendAgentMessageWithResult(
       agent: route.agent,
       message: route.message,
     );
+    final sent = sendResult.sent;
     await completeAgentRouteConsumers(
       updateDisplay: () => _glassesStatusQueue.completeTranscript(
         segmentId: segmentId,
@@ -947,11 +1219,30 @@ final class WearableController extends ChangeNotifier
             : GlassesTranscriptOutcome.saved,
       ),
       persistAcknowledgedMessage: sent
-          ? () => _archiveWebSocketMessage(
-              direction: WebSocketMessageDirection.sent,
-              message: '${route.agent}: ${route.message}',
-              failureState: 'sent_save_failed',
-            )
+          ? () async {
+              final saved = await _archiveWebSocketMessage(
+                direction: WebSocketMessageDirection.sent,
+                message: '${route.agent}: ${route.message}',
+                failureState: 'sent_save_failed',
+              );
+              if (saved != null && _agentExchangeStoreReady) {
+                try {
+                  await _agentExchangeStore.recordSent(
+                    agent: sendResult.agent,
+                    messagePath: saved.path,
+                    legacy: sendResult.legacy,
+                    requestId: sendResult.requestId,
+                  );
+                } on Object {
+                  addLog(
+                    'WebSocket',
+                    '[WorkBench][AgentHistory] state=sent_index_failed '
+                        'fallback=message_file',
+                    isError: true,
+                  );
+                }
+              }
+            }
           : null,
     );
     addLog(
@@ -979,13 +1270,18 @@ final class WearableController extends ChangeNotifier
     );
   }
 
-  Future<void> _handleInboundWebSocketMessage(String message) async {
+  Future<void> _handleInboundWebSocketEvent(
+    VoiceWebSocketInboundEvent event,
+  ) async {
+    final message = event.message;
     Object? persistenceError;
+    SavedWebSocketMessage? savedMessage;
     try {
       final saved = await _webSocketMessageStore.save(
         direction: WebSocketMessageDirection.received,
         message: message,
       );
+      savedMessage = saved;
       try {
         final exported = await _sharedAudioExportStore.exportFiles(<String>[
           saved.path,
@@ -1015,6 +1311,35 @@ final class WearableController extends ChangeNotifier
         isError: true,
       );
     }
+    if (savedMessage != null && _agentExchangeStoreReady) {
+      try {
+        final exchangeId = await _agentExchangeStore.attachResponse(
+          responsePath: savedMessage.path,
+          kind: event.kind.name,
+          requestId: event.requestId,
+          agent: event.agent,
+          allowLegacyAgentMatch: _voiceWebSocket.config.useLegacyMessageShape,
+        );
+        if (exchangeId != null &&
+            _agentHistory.waitingExchangeId == exchangeId) {
+          final exchange = await _agentExchangeStore.viewById(exchangeId);
+          final response = exchange?.response;
+          if (response != null &&
+              _agentHistory.acceptResponse(exchangeId, response)) {
+            _agentHistoryWaitTimer?.cancel();
+            _agentHistoryWaitTimer = null;
+            _queueAgentHistoryDisplay();
+          }
+        }
+      } on Object {
+        addLog(
+          'WebSocket',
+          '[WorkBench][AgentHistory] state=response_index_failed '
+              'fallback=message_file',
+          isError: true,
+        );
+      }
+    }
     await _glassesStatusQueue.queueTransient(
       prefix: 'Received',
       message: message,
@@ -1029,7 +1354,7 @@ final class WearableController extends ChangeNotifier
     }
   }
 
-  Future<void> _archiveWebSocketMessage({
+  Future<SavedWebSocketMessage?> _archiveWebSocketMessage({
     required WebSocketMessageDirection direction,
     required String message,
     required String failureState,
@@ -1054,6 +1379,7 @@ final class WearableController extends ChangeNotifier
           isError: true,
         );
       }
+      return saved;
     } on Object {
       addLog(
         'WebSocket',
@@ -1061,6 +1387,7 @@ final class WearableController extends ChangeNotifier
             'action=check_app_storage',
         isError: true,
       );
+      return null;
     }
   }
 
@@ -1208,11 +1535,15 @@ final class WearableController extends ChangeNotifier
     unawaited(_audioPipeline.handleMemoryPressure());
     unawaited(_conversationAnalysis.handleMemoryPressure());
     unawaited(_voiceMemo.handleMemoryPressure());
+    unawaited(_closeAgentHistory(clearDisplay: true));
   }
 
   @override
   void dispose() {
     _disposed = true;
+    _agentHistoryWaitTimer?.cancel();
+    _agentHistoryWaitTimer = null;
+    _agentHistory.close();
     WidgetsBinding.instance.removeObserver(this);
     _sharedAudioExportStore.removeListener(_sharedStorageChanged);
     _voiceWebSocket.removeListener(_voiceWebSocketChanged);
