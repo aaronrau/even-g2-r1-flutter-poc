@@ -61,8 +61,8 @@ G2 operating system still owns the global Menu and other system surfaces.
 | --- | --- |
 | Stay in Daily/Hub mode | Yes; `MODE_DAILY` is reasserted after connection |
 | Start and maintain microphone streaming | Yes; starts automatically and restarts after recovery |
-| Keep tap and double-tap from stopping audio | Yes; both are display-only events |
-| Show tap, double-tap, and swipe | Yes |
+| Keep tap and double-tap from stopping audio | Yes; tap is display-only and double-tap requests the last sent agent's update |
+| Show tap and swipe; use double-tap for an agent update | Yes |
 | Show long press | Inferred from R1 activity and Hub lifecycle evidence |
 | Receive real long-press down/up in Hub | No; available only in Terminal mode |
 | Disable the native global Menu | No; firmware reserves hold for the Menu |
@@ -133,10 +133,14 @@ expose for a true locked Hub mode.
   `Sent:` for two seconds before clearing. Inbound server messages appear as
   serialized `Received:` items, are saved to the selected Files folder, and
   clear from the glasses after two seconds.
+- Uses an ordinary G2/R1 double tap to request a read-only progress summary from
+  the last agent that successfully received a live command. The returned
+  `summary.result` follows the same durable `Received:` path. During a voice
+  memo, double tap retains its higher-priority finish action.
 - Draws a dim-to-bright pulsing dot in the upper-left using LC3 global gain and
   an adaptive silence floor.
-- Displays `Tap`, `Double tap`, `Swipe up`, `Swipe down`, and
-  `Long press (inferred)`.
+- Displays `Tap`, `Swipe up`, `Swipe down`, and `Long press (inferred)`;
+  double tap displays the requested agent update instead of a gesture label.
 - Shows one live audio summary plus concise connection, gesture, and lifecycle
   events without flooding the Home screen with raw packets.
 - Keeps manual display commands and raw G2 diagnostics behind the upper-right
@@ -174,6 +178,11 @@ complete configured agent-name match with `message.send`, correlates the
 server's `message.accepted` using `request_id`, and resumes from the last
 observed event ID after an unexpected reconnect. The optional legacy setting
 sends exactly `agent` and `message`.
+
+After a successful agent delivery, an ordinary G2/R1 double tap sends a
+`summary.request` for that same agent. Legacy mode sends the server's
+`local`/`progress_summary` equivalent. Changing connection configuration clears
+the in-memory last-agent selection.
 
 Agent progress and completion replies arrive as `message.progress` and
 `message.completed`. Work Bench reads their concise text from

@@ -85,6 +85,21 @@ void main() {
           final response = _acceptedPayload(payload);
           acceptedByRequestId[requestId] = response;
           socket.add(jsonEncode(response));
+        } else if (payload['type'] == 'summary.request') {
+          socket.add(
+            jsonEncode(<String, Object?>{
+              'type': 'summary.result',
+              'request_id': payload['request_id'],
+              'ok': true,
+              'result': <String, Object?>{
+                'agent': payload['agent'],
+                'summary': 'The requested fixture is still running.',
+                'detail': 'Synthetic fixture detail.',
+                'detail_lines': <String>['Synthetic fixture detail.'],
+                'source': 'tmux_capture',
+              },
+            }),
+          );
         } else if (payload['type'] == 'connection.resume' &&
             !resumed.isCompleted) {
           resumed.complete(payload);
@@ -370,6 +385,102 @@ void main() {
         'agent': 'Agent One',
         'message': 'run the check',
       });
+
+      final summary = await client.requestLastSentAgentSummary();
+      await _waitUntil(() => received.length == 2);
+
+      expect(summary, VoiceWebSocketSummaryRequestOutcome.sent);
+      expect(received.last, <String, dynamic>{
+        'type': 'local',
+        'agent': 'Agent One',
+        'message': 'progress_summary',
+      });
+    },
+  );
+
+  test(
+    'requests a summary for only the last acknowledged modern agent',
+    () async {
+      final inbound = <String>[];
+      final store = VoiceWebSocketConfigStore(
+        supportDirectory: () async => temp,
+      );
+      final client = VoiceWebSocketClient(
+        configStore: store,
+        reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
+        readyTimeout: const Duration(seconds: 1),
+        acknowledgementTimeout: const Duration(seconds: 1),
+        onInboundMessage: (message) async => inbound.add(message),
+      );
+      addTearDown(client.close);
+      await client.initialize();
+      final config = VoiceWebSocketConfig.validate(
+        host: '127.0.0.1',
+        port: server.port,
+        secret: 'example-secret',
+        authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+        agentNames: const <String>['Agent One', 'Agent Two'],
+        useLegacyMessageShape: false,
+      );
+      await client.saveConfig(config);
+      await _waitUntil(() => client.isReady);
+
+      expect(
+        await client.requestLastSentAgentSummary(),
+        VoiceWebSocketSummaryRequestOutcome.noSentAgent,
+      );
+      expect(received, isEmpty);
+
+      expect(
+        await client.sendAgentMessage(
+          agent: 'Agent One',
+          message: 'run the accepted fixture',
+        ),
+        isTrue,
+      );
+      expect(client.lastSentAgent, 'Agent One');
+      expect(
+        await client.sendAgentMessage(
+          agent: 'Agent Two',
+          message: 'run the rejected fixture',
+        ),
+        isFalse,
+      );
+      expect(
+        client.lastSentAgent,
+        'Agent One',
+        reason: 'A rejected send must not replace the last successful agent.',
+      );
+
+      expect(
+        await client.requestLastSentAgentSummary(),
+        VoiceWebSocketSummaryRequestOutcome.sent,
+      );
+      await _waitUntil(
+        () => received.any((payload) => payload['type'] == 'summary.request'),
+      );
+      final request = received.lastWhere(
+        (payload) => payload['type'] == 'summary.request',
+      );
+      expect(
+        request['request_id'],
+        isA<String>().having((value) => value, 'request id', isNotEmpty),
+      );
+      expect(request['agent'], 'Agent One');
+      expect(request.keys.toSet(), <String>{'type', 'request_id', 'agent'});
+      await _waitUntil(() => inbound.isNotEmpty);
+      expect(
+        inbound.single,
+        'Agent One: The requested fixture is still running.',
+      );
+
+      await client.saveConfig(config);
+      await _waitUntil(() => client.isReady);
+      expect(client.lastSentAgent, isNull);
+      expect(
+        await client.requestLastSentAgentSummary(),
+        VoiceWebSocketSummaryRequestOutcome.noSentAgent,
+      );
     },
   );
 

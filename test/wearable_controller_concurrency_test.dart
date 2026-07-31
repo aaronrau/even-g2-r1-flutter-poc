@@ -4,6 +4,32 @@ import 'package:even_g2_r1_poc/src/wearable_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('double tap requests an agent update outside a voice memo', () {
+    expect(
+      resolveWearableGestureAction(gestureType: 3, memoActive: false),
+      WearableGestureAction.requestAgentSummary,
+    );
+  });
+
+  test('double tap keeps voice memo finalization priority', () {
+    expect(
+      resolveWearableGestureAction(gestureType: 3, memoActive: true),
+      WearableGestureAction.finishMemo,
+    );
+  });
+
+  test('other gestures remain available to the normal gesture flow', () {
+    for (final gestureType in <int>[0, 1, 2, 4]) {
+      expect(
+        resolveWearableGestureAction(
+          gestureType: gestureType,
+          memoActive: false,
+        ),
+        WearableGestureAction.ignore,
+      );
+    }
+  });
+
   test(
     'updates Sent display while acknowledged message persistence runs',
     () async {

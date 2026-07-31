@@ -75,8 +75,41 @@ Future<void> main(List<String> arguments) async {
           return;
         }
 
-        final modern = decoded['type'] == 'message.send';
         final agent = decoded['agent'];
+        final summaryRequest =
+            decoded['type'] == 'summary.request' ||
+            decoded['type'] == 'local' &&
+                decoded['message'] == 'progress_summary';
+        if (summaryRequest) {
+          final requestId = decoded['request_id'];
+          if (agent is! String ||
+              decoded['type'] == 'summary.request' &&
+                  (requestId is! String || requestId.isEmpty)) {
+            stdout.writeln('summary_rejected reason=invalid_fields');
+            return;
+          }
+          socket.add(
+            jsonEncode(<String, Object?>{
+              'type': 'summary.result',
+              'request_id': requestId,
+              'ok': true,
+              'result': <String, Object>{
+                'agent': agent,
+                'summary': 'Synthetic progress summary from fixture.',
+                'detail': 'Synthetic fixture detail.',
+                'detail_lines': <String>['Synthetic fixture detail.'],
+                'source': 'tmux_capture',
+              },
+            }),
+          );
+          stdout.writeln(
+            'summary_requested shape='
+            '${decoded['type'] == 'summary.request' ? 'modern' : 'legacy'}',
+          );
+          return;
+        }
+
+        final modern = decoded['type'] == 'message.send';
         final message = decoded['message'];
         if (agent is! String || message is! String || message.trim().isEmpty) {
           stdout.writeln('message_rejected reason=invalid_fields');

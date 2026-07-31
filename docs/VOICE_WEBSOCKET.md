@@ -111,6 +111,45 @@ Legacy mode sends only:
 Because that shape has no request correlation contract, Work Bench treats a
 successful socket write as sent.
 
+## Double-tap progress request
+
+After a modern command receives a positive `message.accepted`, Work Bench
+retains that command's canonical agent name in app-process memory. A G2/R1
+double tap outside an active voice memo sends:
+
+```json
+{
+  "type": "summary.request",
+  "request_id": "<unique-request-id>",
+  "agent": "Agent One"
+}
+```
+
+When legacy mode is selected, the equivalent request is:
+
+```json
+{
+  "type": "local",
+  "agent": "Agent One",
+  "message": "progress_summary"
+}
+```
+
+The request is a direct, read-only control write and does not enter, reorder, or
+block the normal `message.send` FIFO. A failed or rejected command never
+replaces the last successful agent. Changing the connection configuration
+clears the in-memory selection so a request cannot cross server
+configurations. Disconnect and reconnect retain it for the same configuration;
+an app restart does not restore it.
+
+If no command has been sent, the glasses show `Update: Send a command first`.
+If the server is unavailable, they show `Update: Unavailable`. Otherwise they
+show the transient state `Update: Requesting`; the server's `summary.result`
+supersedes it when received. Its `result.summary`, `result.detail`, or
+`result.detail_lines` text follows the same atomic `.received.message.txt`,
+shared-folder export, Messages-tab, and G2 `Received:` path as other readable
+inbound events. Voice memo finalization retains priority over this action.
+
 The client tracks the latest non-negative top-level `event_id`. After an
 unexpected disconnect, it reconnects with bounded backoff, waits for the next
 `connection.ready`, then sends:
@@ -252,6 +291,24 @@ flutter run -d <android-serial> \
 
 The validator exits successfully only when both sends complete in order and
 the in-memory queue is empty. Remove the `adb reverse` rule after validation.
+
+The companion physical-Android summary validator requires an acknowledged
+synthetic command, resolves the ordinary double-tap action, sends the modern
+`summary.request`, and requires the fixture's `summary.result` to traverse the
+client's inbound path:
+
+```sh
+dart run tool/run_voice_websocket_fixture.dart \
+  --secret synthetic-summary-validation-secret \
+  --port 18788
+adb -s <android-serial> reverse tcp:18788 tcp:18788
+flutter run -d <android-serial> \
+  -t tool/validate_voice_websocket_summary_on_android.dart \
+  --dart-define=WORKBENCH_SUMMARY_FIXTURE_PORT=18788
+```
+
+Increment the Android build suffix before this `flutter run` and remove the
+reverse rule after validation.
 
 For an Android phone connected over USB:
 

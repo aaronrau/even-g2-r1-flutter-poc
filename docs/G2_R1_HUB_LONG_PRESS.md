@@ -85,9 +85,12 @@ Remain in Daily/Hub mode and use tap, double press, and swipe only for
 application interaction. These events work with the normal Hub page, are
 attributable to G2 or R1, and do not depend on timing heuristics.
 
-The current POC keeps microphone streaming active and treats tap/double-tap as
-display-only events. Raw BLE audio is logged as LC3. The public EvenHub SDK
-performs host-side conversion and exposes 16 kHz mono PCM, as shown in Even's
+The current POC keeps microphone streaming active, treats tap as a display-only
+event, and uses double-tap for application interaction. Outside memo mode,
+double-tap requests a read-only progress update from the last agent that
+successfully received a WebSocket command. During memo mode it finishes the
+memo. Raw BLE audio is logged as LC3. The public EvenHub SDK performs host-side
+conversion and exposes 16 kHz mono PCM, as shown in Even's
 [Device APIs audio section][device-apis-audio] and official
 [ASR template][asr-template].
 

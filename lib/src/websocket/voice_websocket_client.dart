@@ -16,6 +16,8 @@ enum VoiceWebSocketStatus {
   error,
 }
 
+enum VoiceWebSocketSummaryRequestOutcome { sent, noSentAgent, unavailable }
+
 typedef VoiceWebSocketConnector =
     Future<WebSocket> Function(Uri uri, Map<String, Object> headers);
 
@@ -89,6 +91,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   int _generation = 0;
   int _reconnectAttempt = 0;
   int? _lastEventId;
+  String? _lastSentAgent;
   Future<void> _inboundTail = Future<void>.value();
   bool _pumpingOutboundQueue = false;
 
@@ -104,6 +107,8 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   bool get isReady => status == VoiceWebSocketStatus.ready;
 
   int get queuedMessageCount => _outboundQueue.length;
+
+  String? get lastSentAgent => _lastSentAgent;
 
   Future<void> initialize() async {
     if (_initialized || _disposed) {
@@ -132,6 +137,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     _reconnectAttempt = 0;
     _everReady = false;
     _lastEventId = null;
+    _lastSentAgent = null;
     serverAgents = const <String>[];
     agentControls = const <String>[];
     sessionControls = const <String>[];
@@ -350,9 +356,51 @@ final class VoiceWebSocketClient extends ChangeNotifier {
           'message': trimmedMessage,
         }),
       );
+      _lastSentAgent = canonicalAgent;
       return true;
     } on Object {
       return false;
+    }
+  }
+
+  Future<VoiceWebSocketSummaryRequestOutcome>
+  requestLastSentAgentSummary() async {
+    final agent = _lastSentAgent;
+    if (agent == null) {
+      return VoiceWebSocketSummaryRequestOutcome.noSentAgent;
+    }
+    try {
+      await connect();
+    } on Object {
+      return VoiceWebSocketSummaryRequestOutcome.unavailable;
+    }
+    final socket = _socket;
+    if (socket == null ||
+        socket.readyState != WebSocket.open ||
+        !isReady ||
+        _disposed) {
+      return VoiceWebSocketSummaryRequestOutcome.unavailable;
+    }
+
+    try {
+      socket.add(
+        jsonEncode(
+          config.useLegacyMessageShape
+              ? <String, Object>{
+                  'type': 'local',
+                  'agent': agent,
+                  'message': 'progress_summary',
+                }
+              : <String, Object>{
+                  'type': 'summary.request',
+                  'request_id': _newRequestId(),
+                  'agent': agent,
+                },
+        ),
+      );
+      return VoiceWebSocketSummaryRequestOutcome.sent;
+    } on Object {
+      return VoiceWebSocketSummaryRequestOutcome.unavailable;
     }
   }
 
@@ -537,6 +585,9 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       _outboundQueue.removeFirst();
     } else {
       _outboundQueue.remove(queued);
+    }
+    if (sent) {
+      _lastSentAgent = queued.agent;
     }
     if (!queued.completer.isCompleted) {
       queued.completer.complete(sent);

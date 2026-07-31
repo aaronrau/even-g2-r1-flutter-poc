@@ -28,6 +28,20 @@ import 'websocket/voice_websocket_client.dart';
 import 'websocket/voice_websocket_config.dart';
 import 'websocket/websocket_message_store.dart';
 
+enum WearableGestureAction { ignore, finishMemo, requestAgentSummary }
+
+WearableGestureAction resolveWearableGestureAction({
+  required int gestureType,
+  required bool memoActive,
+}) {
+  if (gestureType != 3) {
+    return WearableGestureAction.ignore;
+  }
+  return memoActive
+      ? WearableGestureAction.finishMemo
+      : WearableGestureAction.requestAgentSummary;
+}
+
 @visibleForTesting
 Future<void> completeAgentRouteConsumers({
   required Future<void> Function() updateDisplay,
@@ -836,12 +850,59 @@ final class WearableController extends ChangeNotifier
   }
 
   bool _handleG2Gesture(G2GestureEvent event) {
-    if (event.type != 3 || !_voiceMemo.isActive) {
-      return false;
+    switch (resolveWearableGestureAction(
+      gestureType: event.type,
+      memoActive: _voiceMemo.isActive,
+    )) {
+      case WearableGestureAction.ignore:
+        return false;
+      case WearableGestureAction.finishMemo:
+        _audioPipeline.flushCurrentSpeech();
+        _voiceMemo.requestFinalize(reason: 'double_tap');
+        return true;
+      case WearableGestureAction.requestAgentSummary:
+        unawaited(_requestLastAgentSummary());
+        return true;
     }
-    _audioPipeline.flushCurrentSpeech();
-    _voiceMemo.requestFinalize(reason: 'double_tap');
-    return true;
+  }
+
+  Future<void> _requestLastAgentSummary() async {
+    if (_voiceWebSocket.lastSentAgent == null) {
+      await _glassesStatusQueue.queueTransient(
+        prefix: 'Update',
+        message: 'Send a command first',
+      );
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=summary_skipped '
+            'reason=no_sent_agent',
+      );
+      return;
+    }
+    await _glassesStatusQueue.queueTransient(
+      prefix: 'Update',
+      message: 'Requesting',
+    );
+    final outcome = await _voiceWebSocket.requestLastSentAgentSummary();
+    if (outcome == VoiceWebSocketSummaryRequestOutcome.sent) {
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=summary_requested',
+      );
+      return;
+    }
+    await _glassesStatusQueue.queueTransient(
+      prefix: 'Update',
+      message: outcome == VoiceWebSocketSummaryRequestOutcome.noSentAgent
+          ? 'Send a command first'
+          : 'Unavailable',
+    );
+    addLog(
+      'WebSocket',
+      '[WorkBench][VoiceWebSocket] state=summary_failed '
+          'reason=${outcome.name}',
+      isError: outcome == VoiceWebSocketSummaryRequestOutcome.unavailable,
+    );
   }
 
   Future<void> _handleFinalTranscript(FinalTranscriptDelivery delivery) async {
