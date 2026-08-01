@@ -32,6 +32,8 @@ import 'websocket/websocket_message_store.dart';
 
 enum WearableGestureAction { ignore, finishMemo, requestAgentSummary }
 
+enum AgentHistorySelectionMove { none, previous, next }
+
 WearableGestureAction resolveWearableGestureAction({
   required int gestureType,
   required bool memoActive,
@@ -42,6 +44,14 @@ WearableGestureAction resolveWearableGestureAction({
   return memoActive
       ? WearableGestureAction.finishMemo
       : WearableGestureAction.requestAgentSummary;
+}
+
+AgentHistorySelectionMove resolveAgentHistorySelectionMove(int gestureType) {
+  return switch (gestureType) {
+    1 => AgentHistorySelectionMove.previous,
+    2 => AgentHistorySelectionMove.next,
+    _ => AgentHistorySelectionMove.none,
+  };
 }
 
 @visibleForTesting
@@ -927,24 +937,19 @@ final class WearableController extends ChangeNotifier
       return true;
     }
     if (_agentHistory.isOpen) {
-      switch (event.type) {
-        case 0:
-          unawaited(_activateAgentHistorySelection());
-          break;
-        case 1:
-          if (_agentHistory.mode == G2AgentHistoryMode.selector) {
-            _agentHistory.selectNext();
-            _queueAgentHistoryDisplay();
-          }
-          break;
-        case 2:
-          if (_agentHistory.mode == G2AgentHistoryMode.selector) {
+      if (event.type == 0) {
+        unawaited(_activateAgentHistorySelection());
+      } else if (_agentHistory.mode == G2AgentHistoryMode.selector) {
+        switch (resolveAgentHistorySelectionMove(event.type)) {
+          case AgentHistorySelectionMove.previous:
             _agentHistory.selectPrevious();
             _queueAgentHistoryDisplay();
-          }
-          break;
-        default:
-          break;
+          case AgentHistorySelectionMove.next:
+            _agentHistory.selectNext();
+            _queueAgentHistoryDisplay();
+          case AgentHistorySelectionMove.none:
+            break;
+        }
       }
       return true;
     }
@@ -1103,7 +1108,7 @@ final class WearableController extends ChangeNotifier
     if (_disposed || !_agentHistory.isOpen || !g2.isConnected) {
       return;
     }
-    await g2.sendText(_agentHistory.render());
+    await g2.showFullPageText(_agentHistory.render());
   }
 
   Future<void> _closeAgentHistory({required bool clearDisplay}) async {
@@ -1119,7 +1124,7 @@ final class WearableController extends ChangeNotifier
       _agentHistory.close();
       if (clearDisplay && g2.isConnected && !g2.isMemoDisplayActive) {
         try {
-          await g2.clearText();
+          await g2.exitFullPageText();
         } on Object {
           addLog(
             'WebSocket',

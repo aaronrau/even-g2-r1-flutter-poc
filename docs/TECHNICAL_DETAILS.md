@@ -37,6 +37,15 @@ enabled independently from tap and double-tap input. A displayed ring event
 clears after three seconds; each new event cancels and restarts that expiration
 timer.
 
+The agent history selector uses the Hub rebuild command to replace that compact
+`520x64` gesture slot with a dedicated `576x288` full-page text container. A
+startup/create command is not reused because firmware accepts it only at page
+startup and otherwise retains the existing visualizer geometry. This gives
+Dismiss, Memo, and five agent rows the full vertical viewport and a full-height
+firmware scroll indicator. Pulse writes pause while history owns the page.
+Dismissal rebuilds the compact visualizer without stopping continuous LC3
+capture.
+
 The microphone notification format observed in MentraOS and on hardware is:
 
 - 16,000 Hz;

@@ -545,6 +545,10 @@ final class G2ReceiveAssembler {
 
 /// Builds the subset of G2 commands needed by this transport POC.
 final class G2Protocol {
+  static const int fullPageTextX = 0;
+  static const int fullPageTextY = 0;
+  static const int fullPageTextWidth = 576;
+  static const int fullPageTextHeight = 288;
   static const int visualizerPulseX = 16;
   static const int visualizerPulseY = 12;
   static const int visualizerPulseWidth = 32;
@@ -780,6 +784,24 @@ final class G2Protocol {
   }
 
   Uint8List createTextPage(String content) {
+    return _textPageMessage(content, command: 0, subField: 3);
+  }
+
+  /// Replaces an existing Hub page with the full-height text surface.
+  ///
+  /// The startup create command is only accepted once for a page session.
+  /// Switching away from the audio visualizer therefore requires the rebuild
+  /// command; another startup create leaves the visualizer's compact text
+  /// container active on current G2 firmware.
+  Uint8List rebuildTextPage(String content) {
+    return _textPageMessage(content, command: 7, subField: 7);
+  }
+
+  Uint8List _textPageMessage(
+    String content, {
+    required int command,
+    required int subField,
+  }) {
     final eventCapture = ProtoWriter()
       ..writeInt32(1, 0)
       ..writeInt32(2, 0)
@@ -794,10 +816,10 @@ final class G2Protocol {
       ..writeInt32(11, 1)
       ..writeString(12, '');
     final text = ProtoWriter()
-      ..writeInt32(1, 0)
-      ..writeInt32(2, 0)
-      ..writeInt32(3, 576)
-      ..writeInt32(4, 288)
+      ..writeInt32(1, fullPageTextX)
+      ..writeInt32(2, fullPageTextY)
+      ..writeInt32(3, fullPageTextWidth)
+      ..writeInt32(4, fullPageTextHeight)
       ..writeInt32(5, 0)
       ..writeInt32(6, 0)
       ..writeInt32(7, 0)
@@ -812,8 +834,8 @@ final class G2Protocol {
       ..writeMessage(3, eventCapture.takeBytes())
       ..writeMessage(3, text.takeBytes());
     return _evenHubMessage(
-      command: 0,
-      subField: 3,
+      command: command,
+      subField: subField,
       subMessage: page.takeBytes(),
     );
   }

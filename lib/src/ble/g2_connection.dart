@@ -77,6 +77,7 @@ final class G2Connection {
   bool _pageCreated = false;
   String _lastPageContent = '';
   bool _memoDisplayActive = false;
+  bool _fullPageTextActive = false;
   String _memoDisplayNote = '';
   String _memoDisplayStatus = '';
   Uint8List? _lastAudioPacket;
@@ -155,6 +156,7 @@ final class G2Connection {
 
   bool get isConnected => state == LinkState.connected;
   bool get isMemoDisplayActive => _memoDisplayActive;
+  bool get isFullPageTextActive => _fullPageTextActive;
   String? get leftMac => _target?.leftMac;
   String? get rightMac => _target?.rightMac;
 
@@ -501,6 +503,10 @@ final class G2Connection {
       await _createMemoPage();
       return;
     }
+    if (_fullPageTextActive) {
+      await _createFullPageText(content);
+      return;
+    }
     await _sendPayload(
       G2Ids.serviceEvenHub,
       _protocol.createTextPage(''),
@@ -522,10 +528,10 @@ final class G2Connection {
 
   Future<void> sendText(String content) async {
     _requireConnected();
-    if (_memoDisplayActive) {
+    if (_memoDisplayActive || _fullPageTextActive) {
       _log(
         'G2 TX',
-        'Text update suppressed while the private memo page owns the display',
+        'Text update suppressed while a private full-page view owns the display',
       );
       return;
     }
@@ -548,10 +554,10 @@ final class G2Connection {
 
   Future<void> clearText() async {
     _requireConnected();
-    if (_memoDisplayActive) {
+    if (_memoDisplayActive || _fullPageTextActive) {
       _log(
         'G2 TX',
-        'Text clear suppressed while the private memo page owns the display',
+        'Text clear suppressed while a private full-page view owns the display',
       );
       return;
     }
@@ -572,8 +578,78 @@ final class G2Connection {
     _log('G2 TX', 'Text cleared');
   }
 
+  Future<void> showFullPageText(String content) async {
+    _requireConnected();
+    if (_memoDisplayActive) {
+      _log(
+        'G2 TX',
+        'Full-page text suppressed while the private memo page owns the display',
+      );
+      return;
+    }
+    _pulseTimer?.cancel();
+    _pulseTimer = null;
+    _visibleGestureTimer?.cancel();
+    _visibleGestureTimer = null;
+    _visibleGesturePageLabel = null;
+    if (!_fullPageTextActive || !_pageCreated) {
+      _fullPageTextActive = true;
+      await _createFullPageText(content);
+    } else {
+      await _sendPayload(
+        G2Ids.serviceEvenHub,
+        _protocol.updateText(content),
+        reserveFlag: true,
+        priority: AsyncWritePriority.high,
+      );
+      _lastPageContent = content;
+    }
+    _log(
+      'G2 TX',
+      'Full-page text sent (${content.runes.length} characters; content private)',
+    );
+  }
+
+  Future<void> exitFullPageText() async {
+    if (!_fullPageTextActive) {
+      return;
+    }
+    _fullPageTextActive = false;
+    _lastPageContent = '';
+    if (!isConnected || terminalModeEnabled) {
+      _pageCreated = false;
+      return;
+    }
+    _pageCreated = false;
+    await _createPage('');
+    _log('G2 TX', 'Full-page text closed and audio visualizer restored');
+  }
+
+  Future<void> _createFullPageText(String content) async {
+    if (!_pageCreated) {
+      await _sendPayload(
+        G2Ids.serviceEvenHub,
+        _protocol.createTextPage(content),
+        reserveFlag: true,
+        priority: AsyncWritePriority.high,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+    }
+    await _sendPayload(
+      G2Ids.serviceEvenHub,
+      _protocol.rebuildTextPage(content),
+      reserveFlag: true,
+      priority: AsyncWritePriority.high,
+    );
+    _lastPageContent = content;
+    _pageCreated = true;
+    pageSessionStatus = 'full-page text created';
+    _onChanged();
+  }
+
   Future<void> showMemo({required String note, required String status}) async {
     _requireConnected();
+    _fullPageTextActive = false;
     _memoDisplayNote = _boundedMemoText(note);
     _memoDisplayStatus = status.replaceAll(RegExp(r'\s+'), ' ').trim();
     _pulseTimer?.cancel();
@@ -620,6 +696,7 @@ final class G2Connection {
   }
 
   Future<void> _createMemoPage() async {
+    _fullPageTextActive = false;
     await _sendPayload(
       G2Ids.serviceEvenHub,
       _protocol.createMemoPage(_memoDisplayNote, status: _memoDisplayStatus),
@@ -655,6 +732,7 @@ final class G2Connection {
 
   Future<void> sendTestDrawing() async {
     _requireConnected();
+    _fullPageTextActive = false;
     final bitmap = G2Bitmap.testPattern();
     _lastPageContent = 'Flutter BLE POC\n64x64 G2 bitmap test';
     await _sendPayload(
@@ -930,6 +1008,8 @@ final class G2Connection {
     if (enabled && !_pageCreated) {
       if (_memoDisplayActive) {
         await _createMemoPage();
+      } else if (_fullPageTextActive) {
+        await _createFullPageText(_lastPageContent);
       } else {
         await _createPage(_lastPageContent);
       }
@@ -1249,7 +1329,7 @@ final class G2Connection {
   }
 
   void _showGestureOnVisualizer(int type, {required DateTime receivedAt}) {
-    if (_memoDisplayActive) {
+    if (_memoDisplayActive || _fullPageTextActive) {
       return;
     }
     final label = switch (type) {
@@ -1712,6 +1792,8 @@ final class G2Connection {
       await Future<void>.delayed(const Duration(milliseconds: 120));
       if (_memoDisplayActive) {
         await _createMemoPage();
+      } else if (_fullPageTextActive) {
+        await _createFullPageText(_lastPageContent);
       } else {
         await _createPage(_lastPageContent);
       }
@@ -1987,6 +2069,7 @@ final class G2Connection {
         !audioEnabled ||
         !_pageCreated ||
         _memoDisplayActive ||
+        _fullPageTextActive ||
         terminalModeEnabled ||
         _pulseTimer != null) {
       return;
@@ -2025,6 +2108,7 @@ final class G2Connection {
     if ((!isConnected && !force) ||
         !_pageCreated ||
         _memoDisplayActive ||
+        _fullPageTextActive ||
         terminalModeEnabled ||
         (!audioEnabled && !force)) {
       return;
@@ -2264,6 +2348,7 @@ final class G2Connection {
     _resetPulseState();
     _pageCreated = false;
     _memoDisplayActive = false;
+    _fullPageTextActive = false;
     _memoDisplayNote = '';
     _memoDisplayStatus = '';
     _nativeMenuOpen = false;

@@ -95,10 +95,34 @@ void main() {
       final protocol = G2Protocol();
       final create = protocol.createTextPage('hello');
       final update = protocol.updateText('world');
+      final outer = ProtoReader(create).readFields();
+      final page = ProtoReader(outer[3]! as Uint8List).readFields();
+      final text = ProtoReader(page[3]! as Uint8List).readFields();
 
       expect(create, containsAllInOrder(utf8.encode('hello')));
       expect(create, containsAllInOrder(utf8.encode('evt-0')));
+      expect(text[1], G2Protocol.fullPageTextX);
+      expect(text[2], G2Protocol.fullPageTextY);
+      expect(text[3], G2Protocol.fullPageTextWidth);
+      expect(text[4], G2Protocol.fullPageTextHeight);
+      expect(text[4]! as int, greaterThan(G2Protocol.visualizerTextHeight));
       expect(update, containsAllInOrder(utf8.encode('world')));
+    });
+
+    test('rebuilds an active page with the full-height text container', () {
+      final protocol = G2Protocol();
+      final rebuild = protocol.rebuildTextPage('seven selector rows');
+      final outer = ProtoReader(rebuild).readFields();
+      final page = ProtoReader(outer[7]! as Uint8List).readFields();
+      final text = ProtoReader(page[3]! as Uint8List).readFields();
+
+      expect(outer[1], 7);
+      expect(page[1], 2);
+      expect(text[1], G2Protocol.fullPageTextX);
+      expect(text[2], G2Protocol.fullPageTextY);
+      expect(text[3], G2Protocol.fullPageTextWidth);
+      expect(text[4], G2Protocol.fullPageTextHeight);
+      expect(rebuild, containsAllInOrder(utf8.encode('seven selector rows')));
     });
 
     test('builds a memo page with a persistent double-tap action header', () {

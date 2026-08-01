@@ -58,6 +58,12 @@ The marker is the only selection indicator, so the layout remains grayscale
 and does not rely on color. The implementation uses a 48-rune row budget. The
 complete page remains bounded to 512 characters.
 
+History rebuilds the active Hub surface as a dedicated 576x288 text page. A
+second startup/create command is not sufficient after the visualizer exists;
+the firmware retains the visualizer's compact 520x64 gesture slot, clipping
+the lower rows and producing a misleadingly short scroll indicator. Dismissal
+rebuilds the visualizer page and resumes pulse rendering.
+
 ### Cached response
 
 Selecting an agent command with a correlated saved response opens:
@@ -123,8 +129,8 @@ Tapping either empty row shows the same one-line state plus
 
 | Gesture | Result |
 | --- | --- |
-| Swipe up | Select the next row, wrapping after the last row |
-| Swipe down | Select the previous row, wrapping before `Dismiss` |
+| Swipe up | Select the previous row, wrapping before `Dismiss` |
+| Swipe down | Select the next row, wrapping after the last row |
 | Tap on `Dismiss` | Clear the selector and restore the audio visualizer |
 | Tap on Memo | Show the most recent saved Memo, or the empty state |
 | Tap on an agent with a command | Show a correlated response or request one |

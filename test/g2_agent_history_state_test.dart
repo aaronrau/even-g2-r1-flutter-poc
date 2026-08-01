@@ -34,6 +34,7 @@ void main() {
     expect(state.entries[1].kind, G2AgentHistoryEntryKind.memo);
     expect(state.entries.last.label, 'Agent Five');
     expect(state.render(), startsWith('> Dismiss\n  Memo · Remember'));
+    expect(state.render().split('\n'), hasLength(7));
     expect(
       state.render().runes.length,
       lessThanOrEqualTo(G2AgentHistoryState.maximumPageCharacters),

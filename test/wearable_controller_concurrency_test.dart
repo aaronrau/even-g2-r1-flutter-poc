@@ -30,6 +30,15 @@ void main() {
     }
   });
 
+  test('history swipes follow the G2 viewport direction', () {
+    expect(
+      resolveAgentHistorySelectionMove(1),
+      AgentHistorySelectionMove.previous,
+    );
+    expect(resolveAgentHistorySelectionMove(2), AgentHistorySelectionMove.next);
+    expect(resolveAgentHistorySelectionMove(3), AgentHistorySelectionMove.none);
+  });
+
   test(
     'updates Sent display while acknowledged message persistence runs',
     () async {
