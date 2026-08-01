@@ -125,6 +125,39 @@ void main() {
       expect(rebuild, containsAllInOrder(utf8.encode('seven selector rows')));
     });
 
+    test('adds a proportional right-side indicator to detail pages', () {
+      final protocol = G2Protocol();
+      final rebuild = protocol.rebuildTextPage(
+        'synthetic detail page',
+        showPageIndicator: true,
+        pageIndex: 1,
+        pageCount: 4,
+      );
+      final outer = ProtoReader(rebuild).readFields();
+      final page = ProtoReader(outer[7]! as Uint8List).readFields();
+      final body = ProtoReader(page[3]! as Uint8List).readFields();
+      final indicator = G2Protocol.detailPageIndicatorContent(
+        pageIndex: 1,
+        pageCount: 4,
+      );
+
+      expect(page[1], 3);
+      expect(body[3], G2Protocol.fullPageDetailTextWidth);
+      expect(rebuild, containsAllInOrder(utf8.encode('poc-scroll')));
+      expect(rebuild, containsAllInOrder(utf8.encode(indicator)));
+      expect(indicator.split('\n'), hasLength(10));
+      expect(indicator.split('\n').where((row) => row == '█'), hasLength(3));
+    });
+
+    test('shows a full-height handle for a one-page detail', () {
+      final indicator = G2Protocol.detailPageIndicatorContent(
+        pageIndex: 0,
+        pageCount: 1,
+      );
+
+      expect(indicator.split('\n'), everyElement('█'));
+    });
+
     test('builds a memo page with a persistent double-tap action header', () {
       final protocol = G2Protocol();
       final create = protocol.createMemoPage(

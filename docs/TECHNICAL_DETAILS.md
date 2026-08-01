@@ -41,15 +41,18 @@ The agent history selector uses the Hub rebuild command to replace that compact
 `520x64` gesture slot with a dedicated `576x288` full-page text container. A
 startup/create command is not reused because firmware accepts it only at page
 startup and otherwise retains the existing visualizer geometry. This gives
-`[x]`, Memo, and five agent rows the full vertical viewport and a full-height
-firmware scroll indicator. Pulse writes pause while history owns the page.
-Dismissal rebuilds the compact visualizer without stopping continuous LC3
-capture.
+`[x]`, Memo, and five agent rows the full vertical viewport. Pulse writes pause
+while history owns the page. Dismissal rebuilds the compact visualizer without
+stopping continuous LC3 capture.
 
 Memo and agent-response details are host-paginated rather than relying on
 firmware text scrolling. Each page reserves one title row, seven wrapped body
 rows, one spacer, and one action/page row. Swipe down advances, swipe up goes
-back, and neither boundary wraps. Waiting status remains a single page.
+back, and neither boundary wraps. A separate `24x288` text container at the
+right edge renders a ten-row page-position track beside the `544x288` detail
+body. A one-page detail shows a full-height handle; on multi-page details the
+handle shrinks and moves proportionally. Selector and waiting pages retain the
+full `576x288` body and do not show the indicator.
 
 The microphone notification format observed in MentraOS and on hardware is:
 

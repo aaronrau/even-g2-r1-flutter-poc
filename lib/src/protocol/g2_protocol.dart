@@ -549,6 +549,10 @@ final class G2Protocol {
   static const int fullPageTextY = 0;
   static const int fullPageTextWidth = 576;
   static const int fullPageTextHeight = 288;
+  static const int fullPageDetailTextWidth = 544;
+  static const int fullPageIndicatorX = 552;
+  static const int fullPageIndicatorWidth = 24;
+  static const int fullPageIndicatorRows = 10;
   static const int maximumMemoRunes = 4096;
   static const int memoLineRunes = 48;
   static const int memoBodyLinesPerPage = 7;
@@ -786,8 +790,20 @@ final class G2Protocol {
     return package.takeBytes();
   }
 
-  Uint8List createTextPage(String content) {
-    return _textPageMessage(content, command: 0, subField: 3);
+  Uint8List createTextPage(
+    String content, {
+    bool showPageIndicator = false,
+    int pageIndex = 0,
+    int pageCount = 1,
+  }) {
+    return _textPageMessage(
+      content,
+      command: 0,
+      subField: 3,
+      showPageIndicator: showPageIndicator,
+      pageIndex: pageIndex,
+      pageCount: pageCount,
+    );
   }
 
   /// Replaces an existing Hub page with the full-height text surface.
@@ -796,14 +812,29 @@ final class G2Protocol {
   /// Switching away from the audio visualizer therefore requires the rebuild
   /// command; another startup create leaves the visualizer's compact text
   /// container active on current G2 firmware.
-  Uint8List rebuildTextPage(String content) {
-    return _textPageMessage(content, command: 7, subField: 7);
+  Uint8List rebuildTextPage(
+    String content, {
+    bool showPageIndicator = false,
+    int pageIndex = 0,
+    int pageCount = 1,
+  }) {
+    return _textPageMessage(
+      content,
+      command: 7,
+      subField: 7,
+      showPageIndicator: showPageIndicator,
+      pageIndex: pageIndex,
+      pageCount: pageCount,
+    );
   }
 
   Uint8List _textPageMessage(
     String content, {
     required int command,
     required int subField,
+    required bool showPageIndicator,
+    required int pageIndex,
+    required int pageCount,
   }) {
     final eventCapture = ProtoWriter()
       ..writeInt32(1, 0)
@@ -821,7 +852,10 @@ final class G2Protocol {
     final text = ProtoWriter()
       ..writeInt32(1, fullPageTextX)
       ..writeInt32(2, fullPageTextY)
-      ..writeInt32(3, fullPageTextWidth)
+      ..writeInt32(
+        3,
+        showPageIndicator ? fullPageDetailTextWidth : fullPageTextWidth,
+      )
       ..writeInt32(4, fullPageTextHeight)
       ..writeInt32(5, 0)
       ..writeInt32(6, 0)
@@ -833,14 +867,59 @@ final class G2Protocol {
       ..writeString(12, content);
 
     final page = ProtoWriter()
-      ..writeInt32(1, 2)
-      ..writeMessage(3, eventCapture.takeBytes())
-      ..writeMessage(3, text.takeBytes());
+      ..writeInt32(1, showPageIndicator ? 3 : 2)
+      ..writeMessage(3, eventCapture.takeBytes());
+    if (showPageIndicator) {
+      final indicator = ProtoWriter()
+        ..writeInt32(1, fullPageIndicatorX)
+        ..writeInt32(2, fullPageTextY)
+        ..writeInt32(3, fullPageIndicatorWidth)
+        ..writeInt32(4, fullPageTextHeight)
+        ..writeInt32(5, 0)
+        ..writeInt32(6, 0)
+        ..writeInt32(7, 0)
+        ..writeInt32(8, 4)
+        ..writeInt32(9, 2)
+        ..writeString(10, 'poc-scroll')
+        ..writeInt32(11, 0)
+        ..writeString(
+          12,
+          detailPageIndicatorContent(
+            pageIndex: pageIndex,
+            pageCount: pageCount,
+          ),
+        );
+      page.writeMessage(3, indicator.takeBytes());
+    }
+    // Keep the body last so the diagnostic reader, which retains the final
+    // repeated protobuf field, continues to expose the primary text object.
+    page.writeMessage(3, text.takeBytes());
     return _evenHubMessage(
       command: command,
       subField: subField,
       subMessage: page.takeBytes(),
     );
+  }
+
+  static String detailPageIndicatorContent({
+    required int pageIndex,
+    required int pageCount,
+  }) {
+    final count = pageCount < 1 ? 1 : pageCount;
+    final index = pageIndex.clamp(0, count - 1);
+    final handleRows = (fullPageIndicatorRows / count).ceil().clamp(
+      1,
+      fullPageIndicatorRows,
+    );
+    final travel = fullPageIndicatorRows - handleRows;
+    final handleStart = count == 1
+        ? 0
+        : ((travel * index) / (count - 1)).round();
+    return List<String>.generate(
+      fullPageIndicatorRows,
+      (row) => row >= handleStart && row < handleStart + handleRows ? '█' : '│',
+      growable: false,
+    ).join('\n');
   }
 
   Uint8List createMemoPage(String note, {required String status}) {

@@ -78,6 +78,9 @@ final class G2Connection {
   String _lastPageContent = '';
   bool _memoDisplayActive = false;
   bool _fullPageTextActive = false;
+  bool _fullPageTextIndicatorActive = false;
+  int _fullPageTextPageIndex = 0;
+  int _fullPageTextPageCount = 1;
   String _memoDisplayNote = '';
   String _memoDisplayStatus = '';
   List<String> _memoDisplayPages = const <String>[];
@@ -580,7 +583,12 @@ final class G2Connection {
     _log('G2 TX', 'Text cleared');
   }
 
-  Future<void> showFullPageText(String content) async {
+  Future<void> showFullPageText(
+    String content, {
+    bool showPageIndicator = false,
+    int pageIndex = 0,
+    int pageCount = 1,
+  }) async {
     _requireConnected();
     if (_memoDisplayActive) {
       _log(
@@ -594,6 +602,9 @@ final class G2Connection {
     _visibleGestureTimer?.cancel();
     _visibleGestureTimer = null;
     _visibleGesturePageLabel = null;
+    _fullPageTextIndicatorActive = showPageIndicator;
+    _fullPageTextPageCount = pageCount < 1 ? 1 : pageCount;
+    _fullPageTextPageIndex = pageIndex.clamp(0, _fullPageTextPageCount - 1);
     if (!_fullPageTextActive || !_pageCreated) {
       _fullPageTextActive = true;
       await _createFullPageText(content);
@@ -604,7 +615,12 @@ final class G2Connection {
       // full-height surface to reset it to the top and restore evt-0 capture.
       await _sendPayload(
         G2Ids.serviceEvenHub,
-        _protocol.rebuildTextPage(content),
+        _protocol.rebuildTextPage(
+          content,
+          showPageIndicator: _fullPageTextIndicatorActive,
+          pageIndex: _fullPageTextPageIndex,
+          pageCount: _fullPageTextPageCount,
+        ),
         reserveFlag: true,
         priority: AsyncWritePriority.high,
       );
@@ -612,7 +628,8 @@ final class G2Connection {
     }
     _log(
       'G2 TX',
-      'Full-page text sent (${content.runes.length} characters; content private)',
+      'Full-page text sent (${content.runes.length} characters; content private; '
+          'page_indicator=${_fullPageTextIndicatorActive ? '${_fullPageTextPageIndex + 1}/$_fullPageTextPageCount' : 'hidden'})',
     );
   }
 
@@ -621,6 +638,9 @@ final class G2Connection {
       return;
     }
     _fullPageTextActive = false;
+    _fullPageTextIndicatorActive = false;
+    _fullPageTextPageIndex = 0;
+    _fullPageTextPageCount = 1;
     _lastPageContent = '';
     if (!isConnected || terminalModeEnabled) {
       _pageCreated = false;
@@ -635,7 +655,12 @@ final class G2Connection {
     if (!_pageCreated) {
       await _sendPayload(
         G2Ids.serviceEvenHub,
-        _protocol.createTextPage(content),
+        _protocol.createTextPage(
+          content,
+          showPageIndicator: _fullPageTextIndicatorActive,
+          pageIndex: _fullPageTextPageIndex,
+          pageCount: _fullPageTextPageCount,
+        ),
         reserveFlag: true,
         priority: AsyncWritePriority.high,
       );
@@ -643,7 +668,12 @@ final class G2Connection {
     }
     await _sendPayload(
       G2Ids.serviceEvenHub,
-      _protocol.rebuildTextPage(content),
+      _protocol.rebuildTextPage(
+        content,
+        showPageIndicator: _fullPageTextIndicatorActive,
+        pageIndex: _fullPageTextPageIndex,
+        pageCount: _fullPageTextPageCount,
+      ),
       reserveFlag: true,
       priority: AsyncWritePriority.high,
     );
@@ -2407,6 +2437,9 @@ final class G2Connection {
     _pageCreated = false;
     _memoDisplayActive = false;
     _fullPageTextActive = false;
+    _fullPageTextIndicatorActive = false;
+    _fullPageTextPageIndex = 0;
+    _fullPageTextPageCount = 1;
     _memoDisplayNote = '';
     _memoDisplayStatus = '';
     _memoDisplayPages = const <String>[];

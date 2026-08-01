@@ -25,7 +25,7 @@ final class G2AgentHistoryState {
   static const int maximumRowRunes = 48;
   static const int maximumPageCharacters = 512;
   static const int maximumDetailRunes = 4096;
-  static const int detailLineRunes = 48;
+  static const int detailLineRunes = 45;
   static const int detailBodyLinesPerPage = 7;
 
   G2AgentHistoryMode mode = G2AgentHistoryMode.closed;

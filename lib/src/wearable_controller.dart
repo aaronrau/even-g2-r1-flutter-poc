@@ -1157,7 +1157,13 @@ final class WearableController extends ChangeNotifier
     if (_disposed || !_agentHistory.isOpen || !g2.isConnected) {
       return;
     }
-    await g2.showFullPageText(_agentHistory.render());
+    final isDetail = _agentHistory.mode == G2AgentHistoryMode.detail;
+    await g2.showFullPageText(
+      _agentHistory.render(),
+      showPageIndicator: isDetail,
+      pageIndex: isDetail ? _agentHistory.detailPageIndex : 0,
+      pageCount: isDetail ? _agentHistory.detailPageCount : 1,
+    );
   }
 
   Future<void> _closeAgentHistory({required bool clearDisplay}) async {

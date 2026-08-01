@@ -94,6 +94,14 @@ after the swipe that generated the app event; rebuilding resets that viewport
 to the top and re-registers the invisible gesture-capture container. This keeps
 Memo and agent detail paging visibly synchronized with app state.
 
+Detail mode also reserves a separate 24-pixel-wide text container at the right
+edge for a persistent ten-row page-position indicator. A one-page detail shows
+a full-height handle. For multiple pages, the handle shrinks and moves from top
+to bottom in proportion to the current host page. Keeping the indicator
+separate from the 544-pixel-wide body preserves bounded host pagination and
+does not depend on overflowing the firmware's native text viewport. Selector
+and waiting pages do not show this indicator.
+
 ### Waiting for a response
 
 If the selected command has no correlated response, tap sends a read-only
@@ -356,8 +364,9 @@ gesture-controlled ownership.
 4. Tap and swipe events route through that state before ordinary gesture
    display. Active Memo remains the first gate; double tap retains its existing
    shortcut only while the selector is closed.
-5. Persistent selector pages use the existing full-page 576×288 G2 text
-   container and high-priority bounded writes.
+5. Persistent selector pages use the full 576×288 G2 text container. Detail
+   pages use a 544×288 body and a separate 24×288 right-edge page indicator.
+   Both use high-priority bounded writes.
 6. The latest saved Memo is read locally without routing it through WebSocket
    or the agent exchange store.
 7. Selector rendering reads app-private atomic records and does not wait on a
@@ -393,6 +402,8 @@ gesture-controlled ownership.
 - selector ownership prevents transcript and unrelated inbound overwrite;
 - matching response replaces waiting;
 - Memo preempts selector;
+- detail pages render a proportional right-edge indicator without changing
+  selector or waiting geometry;
 - dismiss clears private text before restoring the pulse;
 - BLE timeout cannot stall later selector writes;
 - disconnect/reconnect rerenders no more than one bounded private page.
@@ -406,7 +417,8 @@ representative phone:
 2. connect the physical G2/R1 pair;
 3. tap and verify `[x]` is selected first;
 4. swipe through Memo and every agent, checking one-line truncation;
-5. select an agent with a cached response and tap again to dismiss;
+5. select an agent with a cached response, verify the right-edge indicator
+   remains visible and moves through every detail page, then tap to dismiss;
 6. select an agent without a response, verify one summary request, wait for its
    result, then tap to dismiss;
 7. verify unrelated inbound events do not replace the waiting page;
@@ -441,6 +453,8 @@ harness cannot mechanically actuate the wearable.
 - Swipes select deterministically and wrap.
 - Only acknowledged commands appear as sent.
 - Selecting a command shows its most recent correlated response.
+- Every Memo or agent detail shows a right-edge page-position indicator that
+  remains visible and tracks bounded swipe paging.
 - A missing response issues exactly one read-only summary request and shows a
   persistent waiting state.
 - A matching result replaces waiting; unrelated results do not.
