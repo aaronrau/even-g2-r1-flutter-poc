@@ -974,7 +974,8 @@ final class WearableController extends ChangeNotifier
             break;
         }
       } else if (_agentHistory.mode == G2AgentHistoryMode.detail) {
-        final changed = switch (resolveAgentHistorySelectionMove(event.type)) {
+        final move = resolveAgentHistorySelectionMove(event.type);
+        final changed = switch (move) {
           AgentHistorySelectionMove.previous =>
             _agentHistory.selectPreviousDetailPage(),
           AgentHistorySelectionMove.next =>
@@ -982,6 +983,13 @@ final class WearableController extends ChangeNotifier
           AgentHistorySelectionMove.none => false,
         };
         if (changed) {
+          addLog(
+            'WebSocket',
+            '[WorkBench][AgentHistory] state=detail_page_changed '
+                'direction=${move.name} '
+                'page=${_agentHistory.detailPageIndex + 1}/'
+                '${_agentHistory.detailPageCount}',
+          );
           _queueAgentHistoryDisplay();
         }
       }

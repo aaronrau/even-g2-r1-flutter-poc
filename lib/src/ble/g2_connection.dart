@@ -598,9 +598,13 @@ final class G2Connection {
       _fullPageTextActive = true;
       await _createFullPageText(content);
     } else {
+      // A TextEvent swipe also changes the G2 firmware's native text viewport.
+      // A command-5 content update preserves that offset, so a logically new
+      // Memo/agent page can remain outside the visible viewport. Rebuild the
+      // full-height surface to reset it to the top and restore evt-0 capture.
       await _sendPayload(
         G2Ids.serviceEvenHub,
-        _protocol.updateText(content),
+        _protocol.rebuildTextPage(content),
         reserveFlag: true,
         priority: AsyncWritePriority.high,
       );
@@ -767,9 +771,11 @@ final class G2Connection {
       return false;
     }
     _memoDisplayPageIndex = index;
+    // Rebuild rather than update so the firmware does not retain the native
+    // scroll offset produced by the swipe that selected this logical page.
     await _sendPayload(
       G2Ids.serviceEvenHub,
-      _protocol.updateText(_currentMemoPage),
+      _protocol.rebuildTextPage(_currentMemoPage),
       reserveFlag: true,
       priority: AsyncWritePriority.high,
     );

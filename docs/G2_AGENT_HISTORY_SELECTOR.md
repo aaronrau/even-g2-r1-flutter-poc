@@ -83,6 +83,12 @@ advances one page and swipe up returns one page; pages stop at either boundary
 instead of wrapping. A final tap clears the private text and restores the audio
 visualizer.
 
+Each logical page change rebuilds the full-height text surface instead of only
+updating its content. Current G2 firmware preserves the native text viewport
+after the swipe that generated the app event; rebuilding resets that viewport
+to the top and re-registers the invisible gesture-capture container. This keeps
+Memo and agent detail paging visibly synchronized with app state.
+
 ### Waiting for a response
 
 If the selected command has no correlated response, tap sends a read-only
