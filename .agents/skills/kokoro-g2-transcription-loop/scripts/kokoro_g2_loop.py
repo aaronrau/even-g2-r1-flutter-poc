@@ -393,6 +393,28 @@ def normalize_words(value: str) -> list[str]:
     return words
 
 
+def merge_overlapping_transcripts(
+    transcripts: Iterable[str],
+    maximum_words: int = 20,
+) -> str:
+    """Join STT windows while removing one exact boundary-word overlap."""
+    merged: list[str] = []
+    for transcript in transcripts:
+        incoming = transcript.strip().split()
+        if not incoming:
+            continue
+        overlap = 0
+        maximum_overlap = min(maximum_words, len(merged), len(incoming))
+        for candidate in range(maximum_overlap, 0, -1):
+            previous_words = normalize_words(" ".join(merged[-candidate:]))
+            incoming_words = normalize_words(" ".join(incoming[:candidate]))
+            if previous_words == incoming_words:
+                overlap = candidate
+                break
+        merged.extend(incoming[overlap:])
+    return " ".join(merged).strip()
+
+
 def parse_media_volume(output: str) -> MediaVolume | None:
     match = re.search(
         r"volume is (\d+) in range \[(\d+)\.\.(\d+)\]",
@@ -616,7 +638,7 @@ def build_report(
     # VAD may intentionally split one playback into multiple durable segments.
     # Score the ordered final results as one utterance instead of discarding
     # every segment except the last.
-    transcript = " ".join(transcripts) if transcripts else None
+    transcript = merge_overlapping_transcripts(transcripts) if transcripts else None
     wer = (
         word_error_rate(expected, transcript)
         if transcript is not None

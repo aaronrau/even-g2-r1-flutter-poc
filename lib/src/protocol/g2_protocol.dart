@@ -549,6 +549,9 @@ final class G2Protocol {
   static const int fullPageTextY = 0;
   static const int fullPageTextWidth = 576;
   static const int fullPageTextHeight = 288;
+  static const int maximumMemoRunes = 4096;
+  static const int memoLineRunes = 48;
+  static const int memoBodyLinesPerPage = 7;
   static const int visualizerPulseX = 16;
   static const int visualizerPulseY = 12;
   static const int visualizerPulseWidth = 32;
@@ -849,6 +852,10 @@ final class G2Protocol {
   }
 
   static String memoPageContent(String note, {required String status}) {
+    return memoPageContents(note, status: status).first;
+  }
+
+  static List<String> memoPageContents(String note, {required String status}) {
     final normalizedStatus = status.replaceAll(RegExp(r'\s+'), ' ').trim();
     final normalizedNote = note
         .replaceAll(
@@ -856,9 +863,77 @@ final class G2Protocol {
           '',
         )
         .trim();
-    return '[ Double Tap to finish ]\n'
-        '$normalizedStatus\n\n'
-        '$normalizedNote';
+    final boundedNote = _truncateRunes(normalizedNote, maximumMemoRunes);
+    final wrapped = _wrapDisplayLines(boundedNote, memoLineRunes);
+    final bodyLines = wrapped.isEmpty ? const <String>[''] : wrapped;
+    final chunks = <List<String>>[];
+    for (
+      var start = 0;
+      start < bodyLines.length;
+      start += memoBodyLinesPerPage
+    ) {
+      final end = (start + memoBodyLinesPerPage).clamp(0, bodyLines.length);
+      chunks.add(bodyLines.sublist(start, end));
+    }
+    return List<String>.generate(chunks.length, (index) {
+      final lines = <String>[
+        '[ Double Tap to finish ]',
+        _truncateRunes(normalizedStatus, memoLineRunes),
+        ...chunks[index],
+      ];
+      while (lines.length < memoBodyLinesPerPage + 2) {
+        lines.add('');
+      }
+      lines.add(
+        chunks.length == 1
+            ? ''
+            : '[ ${index + 1}/${chunks.length} · Swipe to scroll ]',
+      );
+      return lines.join('\n');
+    }, growable: false);
+  }
+
+  static List<String> _wrapDisplayLines(String value, int maximumRunes) {
+    final words = value
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((word) => word.isNotEmpty);
+    final lines = <String>[];
+    var line = '';
+    for (final sourceWord in words) {
+      var remaining = sourceWord;
+      while (remaining.runes.length > maximumRunes) {
+        if (line.isNotEmpty) {
+          lines.add(line);
+          line = '';
+        }
+        final runes = remaining.runes.toList(growable: false);
+        lines.add(String.fromCharCodes(runes.take(maximumRunes)));
+        remaining = String.fromCharCodes(runes.skip(maximumRunes));
+      }
+      if (remaining.isEmpty) {
+        continue;
+      }
+      final candidate = line.isEmpty ? remaining : '$line $remaining';
+      if (candidate.runes.length <= maximumRunes) {
+        line = candidate;
+      } else {
+        lines.add(line);
+        line = remaining;
+      }
+    }
+    if (line.isNotEmpty) {
+      lines.add(line);
+    }
+    return lines;
+  }
+
+  static String _truncateRunes(String value, int maximumRunes) {
+    final runes = value.runes.toList(growable: false);
+    if (runes.length <= maximumRunes) {
+      return value;
+    }
+    return '${String.fromCharCodes(runes.take(maximumRunes - 1))}…';
   }
 
   Uint8List updateText(String content) {

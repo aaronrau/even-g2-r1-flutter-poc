@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import '../startup/startup_state.dart';
 import 'capture_journal.dart';
+import 'continuous_transcript_store.dart';
 import 'gemma_model.dart';
 import 'inference_capabilities.dart';
 import 'lc3_decoder.dart';
@@ -92,12 +93,16 @@ final class AudioPipelineCoordinator {
   final Queue<_CapturedLc3Packet> _decodeQueue = Queue<_CapturedLc3Packet>();
   final Queue<Uint8List> _vadRecovery = Queue<Uint8List>();
   final TranscriptTurnState _transcriptTurn = TranscriptTurnState();
+  final Map<String, VadSpeechSegment> _speechSegments =
+      <String, VadSpeechSegment>{};
 
   CaptureJournalSupervisor? _capture;
   VadSupervisor? _vad;
   TranscriptionSupervisor? _transcription;
   TranscriptCorrectionSupervisor? _correction;
+  ContinuousTranscriptStore? _continuousTranscriptStore;
   Future<void>? _decodePump;
+  Future<void> _transcriptHandlingTail = Future<void>.value();
   bool _initialized = false;
   bool _initialStartupComplete = false;
   bool _disposed = false;
@@ -217,6 +222,9 @@ final class AudioPipelineCoordinator {
       _vadWasReady = true;
 
       _speechPath = '${paths.audioRoot}/speech';
+      _continuousTranscriptStore = ContinuousTranscriptStore(
+        speechPath: _speechPath!,
+      );
       _transcription = TranscriptionSupervisor(
         model: paths.transcription,
         speechPath: _speechPath!,
@@ -409,7 +417,10 @@ final class AudioPipelineCoordinator {
     _vadRecoveryBytes = 0;
   }
 
-  void _onSpeechSegment(String id, String wavPath) {
+  void _onSpeechSegment(VadSpeechSegment segment) {
+    final id = segment.id;
+    final wavPath = segment.wavPath;
+    _speechSegments[id] = segment;
     unawaited(
       _exportSharedFiles(<String>[wavPath], reason: 'audio', segmentId: id),
     );
@@ -428,17 +439,67 @@ final class AudioPipelineCoordinator {
   }
 
   void _onTranscript(TranscriptionResult result) {
+    final segment = _speechSegments.remove(result.segmentId);
+    final operation = _transcriptHandlingTail.then(
+      (_) => _processTranscript(result, segment),
+    );
+    _transcriptHandlingTail = operation.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace _) {
+        log(
+          'Pipeline',
+          '[WorkBench][Transcript] state=handling_failed '
+              'segment=${result.segmentId} error=${_oneLine(error)} '
+              'raw=preserved',
+          isError: true,
+        );
+      },
+    );
+  }
+
+  Future<void> _processTranscript(
+    TranscriptionResult result,
+    VadSpeechSegment? segment,
+  ) async {
     final id = result.segmentId;
     lastTranscriptPath = result.transcriptPath;
+    var displayedText = result.text;
+    var routableText = result.text;
+    final exportPaths = <String>[result.transcriptPath];
+    final continuousStore = _continuousTranscriptStore;
+    if (result.routeEligible && segment != null && continuousStore != null) {
+      try {
+        final snapshot = await continuousStore.append(
+          conversationId: segment.conversationId,
+          text: result.text,
+          deduplicateOverlap: segment.leadingOverlapMs > 0,
+        );
+        displayedText = snapshot.text;
+        routableText = snapshot.appendedText;
+        lastTranscriptPath = snapshot.path;
+        exportPaths.add(snapshot.path);
+        log(
+          'Pipeline',
+          '[WorkBench][Transcript] state=conversation_saved '
+              'segment=$id final=${segment.isConversationFinal}',
+        );
+      } on Object catch (error) {
+        log(
+          'Pipeline',
+          '[WorkBench][Transcript] state=conversation_save_failed '
+              'segment=$id raw=preserved error=${_oneLine(error)}',
+          isError: true,
+        );
+      }
+    }
     unawaited(
-      _exportSharedFiles(
-        <String>[result.transcriptPath],
-        reason: 'transcript',
-        segmentId: id,
-      ),
+      _exportSharedFiles(exportPaths, reason: 'transcript', segmentId: id),
     );
     completedTranscripts++;
-    final displayed = _transcriptTurn.completeTurn(id, result.text);
+    final displayed = _transcriptTurn.completeTurn(
+      segment?.conversationId ?? id,
+      displayedText,
+    );
     if (!displayed) {
       log(
         'Pipeline',
@@ -460,52 +521,84 @@ final class AudioPipelineCoordinator {
       onChanged();
       return;
     }
-    final queuedTranscriptHandler = onQueuedTranscript;
-    if (queuedTranscriptHandler != null) {
-      unawaited(_publishTranscript(queuedTranscriptHandler, id, result.text));
-    }
     final correction = _correction;
-    if (correction != null) {
-      final correctionTerms =
-          correctionTermsProvider?.call().toList(growable: false) ??
-          const <String>[];
+    final correctionTerms =
+        correctionTermsProvider?.call().toList(growable: false) ??
+        const <String>[];
+    final correctionJob = TranscriptCorrectionJob(
+      segmentId: id,
+      rawPath: result.transcriptPath,
+      sttModel: result.model,
+      sttProvider: result.provider,
+      audioMs: result.audioMs,
+      sttDecodeMs: result.decodeMs,
+      sttTotalMs: result.totalMs,
+      queuedAt: result.queuedAt,
+      correctionTerms: correctionTerms,
+      routeWhenCorrected: true,
+      liveTranscript: routableText,
+    );
+    if (routableText.isEmpty) {
       log(
         'Pipeline',
-        '[WorkBench][VoiceRoute] state=awaiting_correction segment=$id '
-            'terms=${correctionTerms.length}',
+        '[WorkBench][VoiceRoute] state=suppressed segment=$id '
+            'reason=overlap_only',
       );
-      unawaited(
-        correction.queue(
-          TranscriptCorrectionJob(
-            segmentId: id,
-            rawPath: result.transcriptPath,
-            sttModel: result.model,
-            sttProvider: result.provider,
-            audioMs: result.audioMs,
-            sttDecodeMs: result.decodeMs,
-            sttTotalMs: result.totalMs,
-            queuedAt: result.queuedAt,
-            correctionTerms: correctionTerms,
-            routeWhenCorrected: true,
-          ),
-        ),
+      await TranscriptCorrectionSupervisor.persistSkipped(
+        correctionJob,
+        reason: 'overlap_only',
       );
+      startup = StartupSnapshot(
+        phase: StartupPhase.ready,
+        message: 'Local audio ready · $activeModelName · $activeProvider',
+        provider: activeProvider,
+      );
+      onChanged();
+      return;
+    }
+    final queuedTranscriptHandler = onQueuedTranscript;
+    if (queuedTranscriptHandler != null) {
+      await _publishTranscript(queuedTranscriptHandler, id, routableText);
+    }
+    final hasWakeWord = transcriptContainsWakeWord(routableText);
+    if (correction != null) {
+      if (hasWakeWord) {
+        log(
+          'Pipeline',
+          '[WorkBench][VoiceRoute] state=awaiting_correction segment=$id '
+              'terms=${correctionTerms.length}',
+        );
+        await correction.queue(correctionJob);
+      } else {
+        log(
+          'Pipeline',
+          '[WorkBench][VoiceRoute] state=correction_skipped segment=$id '
+              'reason=no_wake_word',
+        );
+        await correction.skipIneligible(
+          correctionJob,
+          routableText,
+          reason: 'no_wake_word',
+        );
+      }
     } else {
+      await TranscriptCorrectionSupervisor.persistSkipped(
+        correctionJob,
+        reason: hasWakeWord ? 'correction_unavailable' : 'no_wake_word',
+      );
       final finalTranscriptHandler = onFinalTranscript;
       if (finalTranscriptHandler != null) {
         log(
           'Pipeline',
           '[WorkBench][VoiceRoute] state=raw_fallback segment=$id '
-              'reason=correction_unavailable',
+              'reason=${hasWakeWord ? 'correction_unavailable' : 'no_wake_word'}',
         );
-        unawaited(
-          _publishFinalTranscript(
-            finalTranscriptHandler,
-            FinalTranscriptDelivery(
-              segmentId: id,
-              rawTranscript: result.text,
-              transcript: result.text,
-            ),
+        await _publishFinalTranscript(
+          finalTranscriptHandler,
+          FinalTranscriptDelivery(
+            segmentId: id,
+            rawTranscript: routableText,
+            transcript: routableText,
           ),
         );
       }
@@ -1070,12 +1163,14 @@ final class AudioPipelineCoordinator {
     await _drainDecodeQueue();
     await _vad?.dispose();
     await _transcription?.dispose();
+    await _transcriptHandlingTail;
     await _correction?.dispose();
     await _decoder.dispose();
     _capture = null;
     _vad = null;
     _transcription = null;
     _correction = null;
+    _continuousTranscriptStore = null;
     _transcriptionPaths = null;
     _speechPath = null;
     _inferenceProviders = null;
@@ -1085,6 +1180,7 @@ final class AudioPipelineCoordinator {
     activeVadProvider = null;
     activeCorrectionProvider = null;
     _vadRecovery.clear();
+    _speechSegments.clear();
     _vadRecoveryBytes = 0;
     _decodeQueue.clear();
     _decodeBackpressureReported = false;
@@ -1098,7 +1194,9 @@ final class AudioPipelineCoordinator {
     await _drainDecodeQueue();
     await _vad?.dispose();
     await _transcription?.dispose();
+    await _transcriptHandlingTail;
     await _correction?.dispose();
+    _speechSegments.clear();
     _decodeQueue.clear();
     await _decoder.dispose();
     _correctionConfigStore.removeListener(onChanged);

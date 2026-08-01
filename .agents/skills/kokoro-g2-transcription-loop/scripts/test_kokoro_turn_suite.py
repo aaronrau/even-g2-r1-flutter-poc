@@ -55,6 +55,8 @@ class TurnSuiteTest(unittest.TestCase):
             len(durations["duration_sixty_seconds"].utterances),
             13,
         )
+        self.assertEqual(durations["duration_thirty_seconds"].minimum_chunks, 2)
+        self.assertEqual(durations["duration_sixty_seconds"].minimum_chunks, 3)
         self.assertEqual(boundaries["gap_1200ms_merge"].expected_turns, 1)
         self.assertIsNone(
             boundaries["gap_1450ms_characterize"].expected_turns
@@ -144,6 +146,12 @@ class TurnSuiteTest(unittest.TestCase):
                     "[WorkBench][Transcript][FINAL] "
                     f"segment={segment} text=Where is my red book",
                 ),
+                line(
+                    4.46,
+                    "[WorkBench][Transcription] state=completed "
+                    f"segment={segment} model=test provider=cpu "
+                    "audio_ms=5000 decode_ms=200 windows=1 total_ms=210",
+                ),
             ]
         )
         result = MODULE.analyze_case(
@@ -163,6 +171,137 @@ class TurnSuiteTest(unittest.TestCase):
         self.assertAlmostEqual(
             result.turns[0].queue_to_final_seconds,
             0.2,
+        )
+
+    def test_forced_chunks_remain_one_turn_without_llm_correction(self) -> None:
+        case = MODULE.TurnCase(
+            name="forced",
+            utterances=("The first boundary chunk and the second chunk",),
+            silence_seconds=0.0,
+            expected_turns=1,
+            minimum_chunks=2,
+        )
+        root = "turn-1"
+        continuation = f"{root}-part-2"
+        start = MODULE.loop.playback_marker("playback_start", case.name)
+        end = MODULE.loop.playback_marker("playback_end", case.name)
+        log = "\n".join(
+            [
+                line(
+                    0.0,
+                    "[Even G2/R1][Audio] 32.0 kbit/s • "
+                    "100 frames/s • level 5/255",
+                ),
+                line(0.5, start),
+                line(
+                    1.0,
+                    "[Even G2/R1][Audio] 32.0 kbit/s • "
+                    "100 frames/s • level 90/255",
+                ),
+                line(
+                    2.0,
+                    f"[WorkBench][VAD] state=speech_started segment={root}",
+                ),
+                line(
+                    2.0,
+                    "[WorkBench][TranscriptUI] state=cleared "
+                    f"reason=speech_started segment={root}",
+                ),
+                line(
+                    17.0,
+                    "[WorkBench][VAD] state=speech_chunked "
+                    f"segment={root} reason=durationHardLimit continuation=true",
+                ),
+                line(
+                    17.0,
+                    "[WorkBench][VAD] state=speech_continued "
+                    f"segment={continuation} "
+                    "reason=durationHardLimit overlap_ms=1000",
+                ),
+                line(
+                    17.0,
+                    "[WorkBench][Transcription] state=queued "
+                    f"segment={root} pending=1",
+                ),
+                line(
+                    17.1,
+                    "[WorkBench][Transcription] state=processing "
+                    f"segment={root}",
+                ),
+                line(
+                    17.3,
+                    "[WorkBench][Transcript][FINAL] "
+                    f"segment={root} text=The first boundary chunk",
+                ),
+                line(
+                    17.31,
+                    "[WorkBench][Transcription] state=completed "
+                    f"segment={root} model=test provider=cpu "
+                    "audio_ms=17000 decode_ms=200 windows=1 total_ms=210",
+                ),
+                line(31.0, end),
+                line(
+                    31.1,
+                    "[WorkBench][VAD] state=speech_ending "
+                    f"segment={continuation} delay_ms=1250",
+                ),
+                line(
+                    32.35,
+                    "[WorkBench][VAD] state=buffer_cleared "
+                    f"segment={continuation} bytes=64000 next=ready",
+                ),
+                line(
+                    32.35,
+                    "[WorkBench][VAD] state=speech_ended "
+                    f"segment={continuation} audio_ms=1250",
+                ),
+                line(
+                    32.35,
+                    "[WorkBench][Transcription] state=queued "
+                    f"segment={continuation} pending=1",
+                ),
+                line(
+                    32.45,
+                    "[WorkBench][Transcription] state=processing "
+                    f"segment={continuation}",
+                ),
+                line(
+                    32.65,
+                    "[WorkBench][Transcript][FINAL] "
+                    f"segment={continuation} "
+                    "text=boundary chunk and the second chunk",
+                ),
+                line(
+                    32.66,
+                    "[WorkBench][Transcription] state=completed "
+                    f"segment={continuation} model=test provider=cpu "
+                    "audio_ms=15000 decode_ms=200 windows=1 total_ms=210",
+                ),
+            ]
+        )
+
+        result = MODULE.analyze_case(
+            case,
+            log,
+            baseline_count=1,
+            max_wer=0.25,
+            min_activity_rise=30,
+            min_frames_per_second=90,
+            playback_start_marker=start,
+            playback_end_marker=end,
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.observed_turns, 1)
+        self.assertEqual(result.turns[0].chunk_count, 2)
+        self.assertEqual(result.turns[0].duration_rollovers, 1)
+        self.assertEqual(result.turns[0].maximum_audio_ms, 17000)
+        self.assertTrue(result.turns[0].checks["single_real_endpoint"])
+        self.assertTrue(result.turns[0].checks["no_correction_without_hey"])
+        self.assertTrue(result.turns[0].checks["rollover_overlap_contract"])
+        self.assertEqual(
+            result.turns[0].transcript,
+            "The first boundary chunk and the second chunk",
         )
 
     def test_prior_turn_words_are_detected_in_later_transcript(self) -> None:

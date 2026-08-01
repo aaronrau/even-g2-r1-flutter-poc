@@ -209,6 +209,27 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(report.transcript, "hello glasses")
         self.assertTrue(report.passed)
 
+    def test_report_deduplicates_hard_rollover_boundary_words(self) -> None:
+        log = "\n".join(
+            [
+                "[Even G2/R1][Audio] 32.0 kbit/s • 100 frames/s • level 5/255",
+                "[Even G2/R1][Audio] 32.0 kbit/s • 100 frames/s • level 90/255",
+                "[WorkBench][Transcript][FINAL] segment=1 text=keep the boundary words",
+                "[WorkBench][Transcript][FINAL] segment=2 text=boundary words intact now",
+            ]
+        )
+        report = MODULE.build_report(
+            expected="keep the boundary words intact now",
+            log_text=log,
+            baseline_count=1,
+            max_wer=0.25,
+            min_activity_rise=30,
+            min_frames_per_second=90,
+        )
+
+        self.assertEqual(report.transcript, "keep the boundary words intact now")
+        self.assertTrue(report.passed)
+
     def test_restart_must_recover(self) -> None:
         log = "\n".join(
             [

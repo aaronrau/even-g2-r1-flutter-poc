@@ -117,14 +117,22 @@ expose for a true locked Hub mode.
   optional path cannot delay or route through the ordinary STT, Gemma, glasses,
   or agent WebSocket path.
 - Runs Gemma 4 E4B correction through pinned LiteRT-LM in a dedicated Android
-  process after Parakeet commits the raw transcript. The correction queue is
+  process after Parakeet commits the raw transcript. Complete-word,
+  case-insensitive `hey` detection gates the correction queue, so ambient
+  speech is durably saved without invoking the LLM. Continuous speech uses a
+  soft 15-second boundary: the next short inter-word audio gap or VAD pause
+  closes the chunk before resumed speech, while uninterrupted speech
+  hard-closes at 17 seconds with one second
+  of audio overlap. Exact overlap words are removed when text is appended to
+  one conversation file. The correction queue is
   durable and never blocks capture, VAD, or STT.
 - Recognizes a leading `Hey Memo` locally, including conservative Gemma
   correction of plausible acoustic variants, and consumes the following live
   turns without sending them to the agent WebSocket. Gemma revises the
   app-private memo after each corrected utterance. The Conversation tab shows
   the live and saved note, five seconds of total silence finalizes it, and the
-  G2 page keeps `Double Tap to finish` above the bounded live draft.
+  G2 page keeps `Double Tap to finish` above the bounded live draft and lets
+  swipe down/up page forward/back through longer notes.
 - Saves an authenticated local WebSocket endpoint, secret, upgrade-header mode,
   and agent names under **Tools → Agent connection**. Gemma uses those names as
   correction vocabulary, and only the corrected live transcript is matched

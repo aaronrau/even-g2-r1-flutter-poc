@@ -128,6 +128,41 @@ void main() {
     },
   );
 
+  test('corrects the overlap-deduplicated live transcript', () async {
+    final completed = Completer<CorrectedTranscriptResult>();
+    final supervisor = TranscriptCorrectionSupervisor(
+      speechPath: speech.path,
+      configStore: configStore,
+      modelStore: modelStore,
+      client: client,
+      onCorrected: completed.complete,
+      onUncorrected: (_, _, _) {},
+      onStatus: (_, {isError = false}) {},
+    );
+    addTearDown(supervisor.dispose);
+    await supervisor.start();
+    final raw = File('${speech.path}/overlap.raw.txt')
+      ..writeAsStringSync('boundary words Hey Flux check status\n');
+
+    await supervisor.queue(
+      TranscriptCorrectionJob(
+        segmentId: 'overlap',
+        rawPath: raw.path,
+        sttModel: 'parakeet-0.6b',
+        sttProvider: 'cpu',
+        audioMs: 18000,
+        sttDecodeMs: 80,
+        sttTotalMs: 100,
+        queuedAt: DateTime.now().toUtc(),
+        liveTranscript: 'Hey Flux check status',
+      ),
+    );
+    final result = await completed.future.timeout(const Duration(seconds: 5));
+
+    expect(client.transcripts.single, 'Hey Flux check status');
+    expect(result.originalText, 'Hey Flux check status');
+  });
+
   test(
     'uses a newly saved instruction on the next queued transcript',
     () async {
@@ -419,6 +454,56 @@ void main() {
     );
   });
 
+  test('persists no-wake skips without invoking Gemma', () async {
+    final uncorrected = Completer<String>();
+    final supervisor = TranscriptCorrectionSupervisor(
+      speechPath: speech.path,
+      configStore: configStore,
+      modelStore: modelStore,
+      client: client,
+      onCorrected: (_) {
+        fail('A transcript without Hey must not be corrected.');
+      },
+      onUncorrected: (_, transcript, reason) {
+        expect(reason, 'no_wake_word');
+        uncorrected.complete(transcript);
+      },
+      onStatus: (_, {isError = false}) {},
+    );
+    addTearDown(supervisor.dispose);
+    await supervisor.start();
+    final raw = File('${speech.path}/ambient.raw.txt')
+      ..writeAsStringSync('ordinary ambient conversation\n');
+    final job = TranscriptCorrectionJob(
+      segmentId: 'ambient',
+      rawPath: raw.path,
+      sttModel: 'parakeet-0.6b',
+      sttProvider: 'cpu',
+      audioMs: 15000,
+      sttDecodeMs: 100,
+      sttTotalMs: 120,
+      queuedAt: DateTime.now().toUtc(),
+      routeWhenCorrected: true,
+    );
+
+    await supervisor.skipIneligible(
+      job,
+      raw.readAsStringSync().trim(),
+      reason: 'no_wake_word',
+    );
+
+    expect(await uncorrected.future, 'ordinary ambient conversation');
+    expect(client.instructions, isEmpty);
+    expect(
+      File('${speech.path}/ambient.correction-skipped.json').readAsStringSync(),
+      contains('"reason":"no_wake_word"'),
+    );
+    expect(
+      File('${speech.path}/pending-corrections.json').readAsStringSync(),
+      '{}',
+    );
+  });
+
   test('does not restore a transcript with a durable skip marker', () async {
     File(
       '${speech.path}/terminal.raw.txt',
@@ -447,6 +532,36 @@ void main() {
     expect(
       File('${speech.path}/pending-corrections.json').readAsStringSync(),
       '{}',
+    );
+  });
+
+  test('wake-gates an unmarked ambient transcript during recovery', () async {
+    File(
+      '${speech.path}/unmarked.raw.txt',
+    ).writeAsStringSync('Ambient words from before process restart.\n');
+    final supervisor = TranscriptCorrectionSupervisor(
+      speechPath: speech.path,
+      configStore: configStore,
+      modelStore: modelStore,
+      client: client,
+      onCorrected: (_) {
+        fail('Recovered ambient text must not reach Gemma.');
+      },
+      onUncorrected: (_, _, _) {},
+      onStatus: (_, {isError = false}) {},
+    );
+    addTearDown(supervisor.dispose);
+
+    await supervisor.start();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(supervisor.pendingCount, 0);
+    expect(client.instructions, isEmpty);
+    expect(
+      File(
+        '${speech.path}/unmarked.correction-skipped.json',
+      ).readAsStringSync(),
+      contains('"reason":"no_wake_word"'),
     );
   });
 }
@@ -485,6 +600,7 @@ Future<void> _queue(
 final class _FakeGemmaClient implements GemmaCorrectionClient {
   final List<String> instructions = <String>[];
   final List<String> preparedModelPaths = <String>[];
+  final List<String> transcripts = <String>[];
 
   @override
   Future<void> prepareEngine({
@@ -498,6 +614,7 @@ final class _FakeGemmaClient implements GemmaCorrectionClient {
   Future<GemmaCorrectionResult> correct(GemmaCorrectionRequest request) async {
     instructions.add(request.instructions);
     final source = request.transcript;
+    transcripts.add(source);
     final corrected = switch (source) {
       'run test 15 with --verbose' => 'Run test 15 with --verbose.',
       'Plus, for the latest changes.'

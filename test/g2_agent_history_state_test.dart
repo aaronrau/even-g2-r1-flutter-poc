@@ -117,4 +117,61 @@ void main() {
     );
     expect(rows.last, isNot(contains('second line\n')));
   });
+
+  test('long Memo detail pages forward and backward without wrapping', () {
+    final memo = List<String>.generate(
+      120,
+      (index) => 'memo${index.toString().padLeft(3, '0')}',
+    ).join(' ');
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike'],
+        exchanges: const <AgentExchangeView>[],
+        memo: memo,
+      )
+      ..selectNext()
+      ..showSelectedDetail();
+
+    expect(state.detailPageCount, greaterThan(1));
+    expect(state.render(), contains('[ 1/${state.detailPageCount}'));
+    expect(state.selectPreviousDetailPage(), isFalse);
+    expect(state.selectNextDetailPage(), isTrue);
+    expect(state.render(), contains('[ 2/${state.detailPageCount}'));
+    expect(state.selectPreviousDetailPage(), isTrue);
+    expect(state.detailPageIndex, 0);
+
+    while (state.selectNextDetailPage()) {}
+    expect(state.detailPageIndex, state.detailPageCount - 1);
+    expect(state.render(), contains('memo119'));
+    expect(state.selectNextDetailPage(), isFalse);
+  });
+
+  test('long cached agent response uses the same detail pager', () {
+    final response = List<String>.generate(
+      120,
+      (index) => 'result${index.toString().padLeft(3, '0')}',
+    ).join(' ');
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike'],
+        exchanges: <AgentExchangeView>[
+          AgentExchangeView(
+            id: 'pike-exchange',
+            agent: 'Pike',
+            message: 'report synthetic progress',
+            response: response,
+            sentAt: sentAt,
+            legacy: false,
+          ),
+        ],
+      )
+      ..selectNext()
+      ..selectNext()
+      ..showSelectedDetail();
+
+    expect(state.detailPageCount, greaterThan(1));
+    while (state.selectNextDetailPage()) {}
+    expect(state.render(), contains('result119'));
+    expect(state.render().split('\n'), hasLength(10));
+  });
 }

@@ -38,6 +38,8 @@ App-private speech storage contains:
 <segment>.raw.txt
 <segment>.corrected.txt
 <segment>.transcript.json
+<segment>.correction-skipped.json
+<conversation>.continuous.txt
 pending-transcriptions.json
 pending-corrections.json
 ```
@@ -49,6 +51,17 @@ transcript text. When a shared folder is selected, final WAV and transcript
 files plus `workbench-correction-prompt.txt` are stored there through Android's
 document provider. The prompt file is excluded from the Messages list.
 Legacy `<segment>.txt` files remain readable as original-only transcripts.
+
+Correction is wake-gated before it enters the durable Gemma queue. A live raw
+chunk is eligible only when it contains the complete word `hey`, matched
+case-insensitively. A chunk without that word is saved normally and receives a
+durable `no_wake_word` skip record; startup recovery therefore cannot turn
+ambient speech into a later correction job. During uninterrupted speech, STT
+prefers the next short inter-word audio gap or VAD pause after 15 seconds and
+uses a 17-second safety cap with one second of leading overlap in the
+continuation WAV. The continuous file and
+live correction/route input remove only an exact repeated boundary-word
+sequence; every original per-chunk raw file remains independently durable.
 
 ## Configuration
 

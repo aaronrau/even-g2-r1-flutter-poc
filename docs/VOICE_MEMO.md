@@ -92,11 +92,19 @@ During memo mode, the G2 page shows:
 <current memo note>
 ```
 
+A live note is host-paginated into seven body rows beneath the fixed action and
+status rows. The newest page remains visible as revisions arrive. Swipe down
+advances, swipe up returns, and the first/last page boundaries do not wrap.
+Each multi-page draft shows `[ current/total · Swipe to scroll ]` on its final
+row. These gestures change only the local G2 projection and never route memo
+text to the Voice WebSocket.
+
 A typed double tap is consumed before the normal gesture/audio behavior,
 flushes any active VAD segment, and begins finalization. Memo display ownership
 pauses normal transcript, inbound-message, gesture-label, and visual pulse
 writes without stopping continuous LC3 capture. The phone retains the complete
-note; the glasses projection is sanitized and bounded to 512 characters.
+note; the glasses projection is sanitized, host-paginated, and bounded to 4096
+characters.
 
 ## History, restart, and privacy
 

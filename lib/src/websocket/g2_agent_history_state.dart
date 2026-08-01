@@ -24,6 +24,9 @@ final class G2AgentHistoryState {
   static const int maximumAgents = 5;
   static const int maximumRowRunes = 48;
   static const int maximumPageCharacters = 512;
+  static const int maximumDetailRunes = 4096;
+  static const int detailLineRunes = 48;
+  static const int detailBodyLinesPerPage = 7;
 
   G2AgentHistoryMode mode = G2AgentHistoryMode.closed;
   List<G2AgentHistoryEntry> entries = const <G2AgentHistoryEntry>[];
@@ -31,11 +34,13 @@ final class G2AgentHistoryState {
   String? waitingExchangeId;
   String? detailTitle;
   String? detailText;
+  int detailPageIndex = 0;
   bool waitingTimedOut = false;
 
   bool get isOpen => mode != G2AgentHistoryMode.closed;
   G2AgentHistoryEntry? get selected =>
       entries.isEmpty ? null : entries[selectedIndex];
+  int get detailPageCount => _detailPages().length;
 
   void open({
     required List<String> agents,
@@ -93,6 +98,7 @@ final class G2AgentHistoryState {
     waitingExchangeId = null;
     detailTitle = null;
     detailText = null;
+    detailPageIndex = 0;
     waitingTimedOut = false;
     mode = G2AgentHistoryMode.selector;
   }
@@ -126,6 +132,7 @@ final class G2AgentHistoryState {
       G2AgentHistoryEntryKind.agent =>
         entry.exchange == null ? 'No sent message' : entry.exchange!.response,
     };
+    detailPageIndex = 0;
     mode = G2AgentHistoryMode.detail;
   }
 
@@ -133,6 +140,7 @@ final class G2AgentHistoryState {
     waitingExchangeId = exchange.id;
     detailTitle = exchange.agent;
     detailText = 'Waiting for response…';
+    detailPageIndex = 0;
     waitingTimedOut = false;
     mode = G2AgentHistoryMode.waiting;
   }
@@ -144,6 +152,7 @@ final class G2AgentHistoryState {
     detailText = response.trim().isEmpty
         ? 'Response received'
         : response.trim();
+    detailPageIndex = 0;
     waitingExchangeId = null;
     waitingTimedOut = false;
     mode = G2AgentHistoryMode.detail;
@@ -162,6 +171,7 @@ final class G2AgentHistoryState {
     waitingExchangeId = null;
     detailTitle = title;
     detailText = message;
+    detailPageIndex = 0;
     waitingTimedOut = false;
     mode = G2AgentHistoryMode.detail;
   }
@@ -173,7 +183,25 @@ final class G2AgentHistoryState {
     waitingExchangeId = null;
     detailTitle = null;
     detailText = null;
+    detailPageIndex = 0;
     waitingTimedOut = false;
+  }
+
+  bool selectPreviousDetailPage() {
+    if (mode != G2AgentHistoryMode.detail || detailPageIndex <= 0) {
+      return false;
+    }
+    detailPageIndex--;
+    return true;
+  }
+
+  bool selectNextDetailPage() {
+    if (mode != G2AgentHistoryMode.detail ||
+        detailPageIndex >= detailPageCount - 1) {
+      return false;
+    }
+    detailPageIndex++;
+    return true;
   }
 
   String render() {
@@ -200,10 +228,78 @@ final class G2AgentHistoryState {
   }
 
   String _renderDetail({required bool cancel}) {
-    final title = _oneLine(detailTitle ?? 'History');
-    final body = (detailText ?? '').trim();
-    return '$title\n${_truncate(body, 430)}\n\n'
-        '[ Tap to ${cancel ? 'cancel' : 'dismiss'} ]';
+    final title = _truncate(
+      _oneLine(detailTitle ?? 'History'),
+      detailLineRunes,
+    );
+    final pages = _detailPages();
+    final pageIndex = detailPageIndex.clamp(0, pages.length - 1);
+    final lines = <String>[title, ...pages[pageIndex]];
+    while (lines.length < detailBodyLinesPerPage + 1) {
+      lines.add('');
+    }
+    lines.add('');
+    final action = cancel ? 'cancel' : 'dismiss';
+    lines.add(
+      pages.length == 1
+          ? '[ Tap to $action ]'
+          : '[ ${pageIndex + 1}/${pages.length} · Tap to $action ]',
+    );
+    return lines.join('\n');
+  }
+
+  List<List<String>> _detailPages() {
+    final body = _truncate((detailText ?? '').trim(), maximumDetailRunes);
+    final wrapped = _wrapDetailLines(body);
+    final pages = <List<String>>[];
+    for (
+      var start = 0;
+      start < wrapped.length;
+      start += detailBodyLinesPerPage
+    ) {
+      final end = (start + detailBodyLinesPerPage).clamp(0, wrapped.length);
+      pages.add(wrapped.sublist(start, end));
+    }
+    return pages.isEmpty
+        ? const <List<String>>[
+            <String>[''],
+          ]
+        : pages;
+  }
+
+  static List<String> _wrapDetailLines(String value) {
+    final words = value
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((word) => word.isNotEmpty);
+    final lines = <String>[];
+    var line = '';
+    for (final sourceWord in words) {
+      var remaining = sourceWord;
+      while (remaining.runes.length > detailLineRunes) {
+        if (line.isNotEmpty) {
+          lines.add(line);
+          line = '';
+        }
+        final runes = remaining.runes.toList(growable: false);
+        lines.add(String.fromCharCodes(runes.take(detailLineRunes)));
+        remaining = String.fromCharCodes(runes.skip(detailLineRunes));
+      }
+      if (remaining.isEmpty) {
+        continue;
+      }
+      final candidate = line.isEmpty ? remaining : '$line $remaining';
+      if (candidate.runes.length <= detailLineRunes) {
+        line = candidate;
+      } else {
+        lines.add(line);
+        line = remaining;
+      }
+    }
+    if (line.isNotEmpty) {
+      lines.add(line);
+    }
+    return lines;
   }
 
   static String _oneLine(String value) =>

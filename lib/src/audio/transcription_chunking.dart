@@ -41,36 +41,62 @@ List<TranscriptionSampleWindow> planTranscriptionWindows({
 }
 
 String mergeTranscriptionWindows(Iterable<String> transcripts) {
-  final merged = <String>[];
+  var merged = '';
   for (final transcript in transcripts) {
-    final incoming = transcript
-        .trim()
-        .split(RegExp(r'\s+'))
-        .where((word) => word.isNotEmpty)
-        .toList(growable: false);
-    if (incoming.isEmpty) {
+    final unique = removeTranscriptionOverlap(
+      previous: merged,
+      incoming: transcript,
+    );
+    if (unique.isEmpty) {
       continue;
     }
-    var overlap = 0;
-    final maximumOverlap = min(20, min(merged.length, incoming.length));
-    for (var candidate = maximumOverlap; candidate > 0; candidate--) {
-      var matches = true;
-      for (var offset = 0; offset < candidate; offset++) {
-        final previous = merged[merged.length - candidate + offset];
-        if (_normalizeWord(previous) != _normalizeWord(incoming[offset])) {
-          matches = false;
-          break;
-        }
-      }
-      if (matches) {
-        overlap = candidate;
+    merged = <String>[if (merged.isNotEmpty) merged, unique].join(' ');
+  }
+  return merged.trim();
+}
+
+/// Removes the exact word sequence repeated by two overlapping audio windows.
+///
+/// Only a suffix of [previous] that exactly matches a prefix of [incoming] is
+/// removed, so unmatched words on either side of the capture boundary remain.
+String removeTranscriptionOverlap({
+  required String previous,
+  required String incoming,
+  int maximumWords = 20,
+}) {
+  assert(maximumWords > 0);
+  final previousWords = _words(previous);
+  final incomingWords = _words(incoming);
+  if (incomingWords.isEmpty || previousWords.isEmpty) {
+    return incomingWords.join(' ');
+  }
+  var overlap = 0;
+  final maximumOverlap = min(
+    maximumWords,
+    min(previousWords.length, incomingWords.length),
+  );
+  for (var candidate = maximumOverlap; candidate > 0; candidate--) {
+    var matches = true;
+    for (var offset = 0; offset < candidate; offset++) {
+      final prior = previousWords[previousWords.length - candidate + offset];
+      if (_normalizeWord(prior) != _normalizeWord(incomingWords[offset])) {
+        matches = false;
         break;
       }
     }
-    merged.addAll(incoming.skip(overlap));
+    if (matches) {
+      overlap = candidate;
+      break;
+    }
   }
-  return merged.join(' ').trim();
+  return incomingWords.skip(overlap).join(' ').trim();
 }
+
+List<String> _words(String value) => value
+    .trim()
+    .split(RegExp(r'\s+'))
+    .where((word) => word.isNotEmpty)
+    .toList(growable: false);
 
 String _normalizeWord(String value) =>
     value.toLowerCase().replaceAll(RegExp(r'^[^a-z0-9]+|[^a-z0-9]+$'), '');

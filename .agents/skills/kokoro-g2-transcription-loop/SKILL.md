@@ -89,9 +89,13 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
    It exercises one continuous long phrase, short phrases with 400 ms pauses,
    separate questions with 2 second pauses, and closely queued turns with 1.8
    second pauses. It verifies the 1,250 ms retained endpoint tail, the nominal
-   1.75-second total-silence boundary, segment ordering, buffer clearing, UI
-   clearing, transcript accuracy, and safety independently for each turn. The
-   runner restores the original computer speaker volume even when a case fails.
+   1.75-second total-silence boundary, a soft 15-second inter-word/VAD-pause
+   boundary with a 17-second overlapped hard fallback, one real endpoint per logical
+   continuous turn, boundary-deduplicated combined transcript accuracy,
+   no Gemma correction for fixtures without the complete word `hey`, segment
+   ordering, buffer clearing, UI clearing, and safety independently for each
+   turn. The runner restores the original computer speaker volume even when a
+   case fails.
 
    Select the comprehensive duration or silence-boundary profiles when the
    task requires shorter speech, longer continuous speech, or different pause

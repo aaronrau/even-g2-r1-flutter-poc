@@ -923,6 +923,25 @@ final class WearableController extends ChangeNotifier
     }
   }
 
+  Future<void> _moveActiveMemoPage(AgentHistorySelectionMove move) async {
+    try {
+      switch (move) {
+        case AgentHistorySelectionMove.previous:
+          await g2.selectPreviousMemoPage();
+        case AgentHistorySelectionMove.next:
+          await g2.selectNextMemoPage();
+        case AgentHistorySelectionMove.none:
+          break;
+      }
+    } on Object {
+      addLog(
+        'Memo',
+        '[WorkBench][MemoDisplay] state=page_failed',
+        isError: true,
+      );
+    }
+  }
+
   void _handleVadSpeechEvent(VadSpeechEvent event) {
     switch (event.type) {
       case VadSpeechEventType.started:
@@ -950,8 +969,26 @@ final class WearableController extends ChangeNotifier
           case AgentHistorySelectionMove.none:
             break;
         }
+      } else if (_agentHistory.mode == G2AgentHistoryMode.detail) {
+        final changed = switch (resolveAgentHistorySelectionMove(event.type)) {
+          AgentHistorySelectionMove.previous =>
+            _agentHistory.selectPreviousDetailPage(),
+          AgentHistorySelectionMove.next =>
+            _agentHistory.selectNextDetailPage(),
+          AgentHistorySelectionMove.none => false,
+        };
+        if (changed) {
+          _queueAgentHistoryDisplay();
+        }
       }
       return true;
+    }
+    if (_voiceMemo.isActive) {
+      final memoMove = resolveAgentHistorySelectionMove(event.type);
+      if (memoMove != AgentHistorySelectionMove.none) {
+        unawaited(_moveActiveMemoPage(memoMove));
+        return true;
+      }
     }
     if (event.type == 0) {
       if (_voiceMemo.isActive) {

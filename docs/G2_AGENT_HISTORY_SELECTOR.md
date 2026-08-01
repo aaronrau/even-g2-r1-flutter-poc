@@ -77,8 +77,11 @@ Agent One
 
 The response body may wrap because this is a detail view, not a selector row.
 The newest correlated `message.completed`, `message.progress`, or requested
-`summary.result` text is shown. A final tap clears the private text and restores
-the audio visualizer.
+`summary.result` text is shown. Memo and response details use seven body lines
+per page with a bounded `[ current/total · Tap to dismiss ]` footer. Swipe down
+advances one page and swipe up returns one page; pages stop at either boundary
+instead of wrapping. A final tap clears the private text and restores the audio
+visualizer.
 
 ### Waiting for a response
 
@@ -142,7 +145,9 @@ Tapping either empty row shows the same one-line state plus
 | Gesture | Result |
 | --- | --- |
 | Tap | Dismiss the entire interaction; if waiting, cancel the local wait |
-| Swipe up/down | Ignore |
+| Swipe up in Memo/response detail | Show the previous page |
+| Swipe down in Memo/response detail | Show the next page |
+| Swipe up/down while waiting | Ignore |
 | Double tap | Ignore |
 
 When a response arrives, the interaction stays open until the user taps. There
@@ -162,6 +167,7 @@ normal
                                                   └─ tap/cancel ─► normal
 
 detail
+  ├─ swipe up/down ─► previous/next bounded detail page
   └─ tap ─► normal
 ```
 

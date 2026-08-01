@@ -126,12 +126,25 @@ The package README, patch, licenses, and SHA-256 runtime manifest are under
   pre-roll and then retains the endpoint-tail PCM. That handoff prevents prior
   speech from leaking into the next turn without dropping the opening of a
   near-boundary next utterance.
-- Continuous speech remains one VAD turn until endpoint silence or the
-  15-minute segment safety limit. Work Bench does not emit partial live
-  transcripts from the middle of that turn. Natural pauses may finalize
-  multiple turns; their WAV, STT, and correction jobs retain segment IDs and
-  ordered durable ledgers, while the separate bounded glasses FIFO presents
-  each result as `Queued` then `Saved` or `Sent`.
+- Continuous speech remains one logical VAD conversation until endpoint
+  silence. At 15 seconds, the current chunk begins looking for the next short
+  low-energy inter-word gap as well as a VAD-low pause. Once audio or VAD
+  resumes, Work Bench closes the old WAV before writing that first resumed
+  speech frame and starts the next WAV without overlap. If no credible word
+  boundary appears, a 17-second hard limit closes the
+  chunk and prepends the final one second of audio to its continuation. This
+  overlap is padding for STT word-boundary safety; exact repeated leading words
+  are removed from the continuous transcript and live route input. A duration
+  rollover never emits a false silence endpoint, clears the visible
+  conversation, or arms Memo's silence timer. Each original raw chunk remains
+  independently durable, and recognized text is appended by atomic replacement
+  to one `<conversation>.continuous.txt` file. Natural endpoint pauses close
+  the logical conversation. The bounded glasses FIFO presents each unique
+  recognized chunk as `Queued` then `Saved` or `Sent`.
+- Gemma correction is eligible only when a recognized chunk contains the
+  complete word `hey`, case-insensitively. Ordinary ambient chunks bypass the
+  LLM, receive a durable `no_wake_word` skip record so they cannot be restored
+  into the correction queue after restart, and remain available as raw text.
 - A wearable disconnect flushes an active VAD segment before changing link
   state. Raw journals, WAV files, and completed transcripts are never deleted
   by a model restart.
@@ -143,7 +156,8 @@ workbench/audio/
 ├── journal/lc3-<UTC timestamp>.wblc3
 └── speech/
     ├── <segment>.wav
-    ├── <segment>.txt
+    ├── <segment>.raw.txt
+    ├── <conversation>.continuous.txt
     ├── pending-transcriptions.json
     └── transcripts.jsonl
 ```

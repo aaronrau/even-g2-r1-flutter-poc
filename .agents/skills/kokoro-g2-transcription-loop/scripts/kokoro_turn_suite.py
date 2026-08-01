@@ -19,6 +19,7 @@ import kokoro_g2_loop as loop
 ENDPOINT_TAIL_MS = 1250
 ENDPOINT_AUDIO_MIN_MS = 1200
 ENDPOINT_AUDIO_MAX_MS = 1350
+MAXIMUM_CHUNK_AUDIO_MS = 19500
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class TurnCase:
     clip_seconds: float | None = None
     repeat_count: int = 1
     score_transcript: bool = True
+    minimum_chunks: int = 1
 
     @property
     def expected_transcripts(self) -> tuple[str, ...]:
@@ -224,12 +226,14 @@ DURATION_CASES = (
         utterances=LONG_UTTERANCES[:6],
         silence_seconds=0.1,
         expected_turns=1,
+        minimum_chunks=2,
     ),
     TurnCase(
         name="duration_sixty_seconds",
         utterances=LONG_UTTERANCES,
         silence_seconds=0.1,
         expected_turns=1,
+        minimum_chunks=3,
     ),
 )
 
@@ -292,12 +296,27 @@ ENDED_RE = re.compile(
     r"\[WorkBench\]\[VAD\] state=speech_ended segment=(?P<id>\S+) "
     r"audio_ms=(?P<audioMs>\d+)"
 )
+CHUNKED_RE = re.compile(
+    r"\[WorkBench\]\[VAD\] state=speech_chunked segment=(?P<id>\S+) "
+    r"reason=(?P<reason>\S+) continuation=true"
+)
+CONTINUED_RE = re.compile(
+    r"\[WorkBench\]\[VAD\] state=speech_continued segment=(?P<id>\S+) "
+    r"reason=\S+ overlap_ms=(?P<overlapMs>\d+)"
+)
 QUEUED_RE = re.compile(
     r"\[WorkBench\]\[Transcription\] state=queued segment=(?P<id>\S+) "
     r"pending=(?P<pending>\d+)"
 )
 PROCESSING_RE = re.compile(
     r"\[WorkBench\]\[Transcription\] state=processing segment=(?P<id>\S+)"
+)
+COMPLETED_RE = re.compile(
+    r"\[WorkBench\]\[Transcription\] state=completed segment=(?P<id>\S+) "
+    r".* audio_ms=(?P<audioMs>\d+)"
+)
+CORRECTION_QUEUED_RE = re.compile(
+    r"\[WorkBench\]\[Correction\] state=queued segment=(?P<id>\S+)"
 )
 FINAL_RE = re.compile(
     r"\[WorkBench\]\[Transcript\]\[FINAL\] "
@@ -320,6 +339,10 @@ class Marker:
 @dataclass(frozen=True)
 class TurnResult:
     segment_id: str
+    segment_ids: tuple[str, ...]
+    chunk_count: int
+    duration_rollovers: int
+    maximum_audio_ms: int | None
     expected: str
     transcript: str | None
     word_error_rate: float | None
@@ -377,7 +400,13 @@ def _markers(
         value: str | int | None = None
         if value_group is not None:
             value = match.group(value_group)
-            if value_group in {"delay", "bytes", "pending", "audioMs"}:
+            if value_group in {
+                "delay",
+                "bytes",
+                "pending",
+                "audioMs",
+                "overlapMs",
+            }:
                 value = int(value)
         result.append(
             Marker(
@@ -392,6 +421,27 @@ def _markers(
 
 def _by_segment(markers: list[Marker]) -> dict[str, Marker]:
     return {marker.segment_id: marker for marker in markers}
+
+
+def _belongs_to_turn(root_segment_id: str, segment_id: str) -> bool:
+    return (
+        segment_id == root_segment_id
+        or segment_id.startswith(f"{root_segment_id}-part-")
+    )
+
+
+def _turn_markers(
+    root_segment_id: str,
+    markers: dict[str, Marker],
+) -> list[Marker]:
+    return sorted(
+        (
+            marker
+            for marker in markers.values()
+            if _belongs_to_turn(root_segment_id, marker.segment_id)
+        ),
+        key=lambda marker: marker.line,
+    )
 
 
 def _leaked_prior_words(
@@ -439,8 +489,12 @@ def analyze_case(
     endings = _by_segment(_markers(lines, ENDING_RE, "delay"))
     buffers = _by_segment(_markers(lines, BUFFER_RE, "bytes"))
     ended = _by_segment(_markers(lines, ENDED_RE, "audioMs"))
+    chunked = _by_segment(_markers(lines, CHUNKED_RE, "reason"))
+    continued = _by_segment(_markers(lines, CONTINUED_RE, "overlapMs"))
     queued = _by_segment(_markers(lines, QUEUED_RE, "pending"))
     processing = _by_segment(_markers(lines, PROCESSING_RE))
+    completed = _by_segment(_markers(lines, COMPLETED_RE, "audioMs"))
+    correction_queued = _by_segment(_markers(lines, CORRECTION_QUEUED_RE))
     finals = _by_segment(_markers(lines, FINAL_RE, "text"))
     ui_clears = _by_segment(_markers(lines, UI_CLEAR_RE))
 
@@ -488,13 +542,34 @@ def analyze_case(
             if index < len(expected_transcripts)
             else ""
         )
-        ending = endings.get(segment_id)
-        buffer = buffers.get(segment_id)
-        end = ended.get(segment_id)
-        queue = queued.get(segment_id)
-        process = processing.get(segment_id)
-        final = finals.get(segment_id)
-        transcript = str(final.value) if final is not None else None
+        turn_endings = _turn_markers(segment_id, endings)
+        turn_buffers = _turn_markers(segment_id, buffers)
+        turn_ended = _turn_markers(segment_id, ended)
+        turn_chunked = _turn_markers(segment_id, chunked)
+        turn_continued = _turn_markers(segment_id, continued)
+        turn_queued = _turn_markers(segment_id, queued)
+        turn_processing = _turn_markers(segment_id, processing)
+        turn_completed = _turn_markers(segment_id, completed)
+        turn_correction_queued = _turn_markers(segment_id, correction_queued)
+        turn_finals = _turn_markers(segment_id, finals)
+        ending = turn_endings[-1] if turn_endings else None
+        buffer = turn_buffers[-1] if turn_buffers else None
+        end = turn_ended[-1] if turn_ended else None
+        queue = turn_queued[0] if turn_queued else None
+        final = turn_finals[-1] if turn_finals else None
+        transcript = (
+            loop.merge_overlapping_transcripts(
+                str(item.value) for item in turn_finals
+            )
+            if turn_finals
+            else None
+        )
+        segment_ids = tuple(item.segment_id for item in turn_finals)
+        completed_audio_ms = [
+            int(item.value)
+            for item in turn_completed
+            if isinstance(item.value, int)
+        ]
         endpoint_seconds = (
             end.seconds - ending.seconds
             if ending is not None and end is not None
@@ -516,26 +591,65 @@ def analyze_case(
             if expected and transcript is not None
             else set()
         )
-        ordered_markers = [
-            marker
-            for marker in (
-                start,
-                ui_clears.get(segment_id),
-                ending,
-                buffer,
-                end,
-                queue,
-                process,
-                final,
+        ui_clear = ui_clears.get(segment_id)
+        initial_order = (
+            ui_clear is not None and start.line <= ui_clear.line
+        )
+        endpoint_order = (
+            ending is not None
+            and buffer is not None
+            and end is not None
+            and ending.line <= buffer.line <= end.line
+        )
+        transcription_order = (
+            len(turn_queued)
+            == len(turn_processing)
+            == len(turn_finals)
+            == len(turn_completed)
+            and all(
+                queue_marker.line
+                <= process_marker.line
+                <= final_marker.line
+                <= completed_marker.line
+                for queue_marker, process_marker, final_marker, completed_marker
+                in zip(
+                    turn_queued,
+                    turn_processing,
+                    turn_finals,
+                    turn_completed,
+                )
             )
-            if marker is not None
-        ]
+        )
+        expected_has_wake_word = bool(
+            re.search(
+                r"(^|[^A-Za-z0-9_])hey(?=$|[^A-Za-z0-9_])",
+                expected,
+                flags=re.IGNORECASE,
+            )
+        )
+        rollover_overlap_contract = (
+            len(turn_continued) == len(turn_chunked)
+            and [item.segment_id for item in turn_continued]
+            == list(segment_ids[1:])
+            and all(
+                (
+                    chunk.value == "durationHardLimit"
+                    and continuation.value == 1000
+                )
+                or (
+                    chunk.value
+                    in {"durationPause", "durationWordBoundary"}
+                    and continuation.value == 0
+                )
+                for chunk, continuation in zip(turn_chunked, turn_continued)
+            )
+        )
         checks = {
             "expected_turn": (
                 case.expected_turns is None
                 or index < len(expected_transcripts)
             ),
-            "ui_cleared_at_start": segment_id in ui_clears,
+            "ui_cleared_at_start": ui_clear is not None,
             "endpoint_configured_1250_ms": (
                 ending is not None and ending.value == ENDPOINT_TAIL_MS
             ),
@@ -551,18 +665,27 @@ def analyze_case(
                 and isinstance(buffer.value, int)
                 and buffer.value > 0
             ),
-            "queued": queue is not None,
-            "processed": process is not None,
-            "final_transcript": final is not None,
-            "marker_order": (
-                len(ordered_markers) == 8
+            "queued": bool(turn_queued),
+            "processed": bool(turn_processing),
+            "final_transcript": bool(turn_finals),
+            "minimum_chunk_count": len(turn_finals) >= case.minimum_chunks,
+            "bounded_chunk_audio": (
+                len(completed_audio_ms) == len(turn_finals)
                 and all(
-                    left.line <= right.line
-                    for left, right in zip(
-                        ordered_markers,
-                        ordered_markers[1:],
-                    )
+                    value <= MAXIMUM_CHUNK_AUDIO_MS
+                    for value in completed_audio_ms
                 )
+            ),
+            "single_real_endpoint": len(turn_ended) == 1,
+            "duration_rollovers_are_not_endpoints": (
+                len(turn_chunked) == max(0, len(turn_finals) - 1)
+            ),
+            "rollover_overlap_contract": rollover_overlap_contract,
+            "no_correction_without_hey": (
+                expected_has_wake_word or not turn_correction_queued
+            ),
+            "marker_order": (
+                initial_order and endpoint_order and transcription_order
             ),
             "transcript_accuracy": (
                 not case.score_transcript
@@ -573,6 +696,12 @@ def analyze_case(
         turn_results.append(
             TurnResult(
                 segment_id=segment_id,
+                segment_ids=segment_ids,
+                chunk_count=len(turn_finals),
+                duration_rollovers=len(turn_chunked),
+                maximum_audio_ms=(
+                    max(completed_audio_ms) if completed_audio_ms else None
+                ),
                 expected=expected,
                 transcript=transcript,
                 word_error_rate=wer,
@@ -596,15 +725,18 @@ def analyze_case(
         )
 
     characterization = case.expected_turns is None
+    logical_final_count = sum(item.chunk_count > 0 for item in turn_results)
+    assigned_final_count = sum(item.chunk_count for item in turn_results)
     case_checks = {
         "expected_turn_count": (
             characterization or len(starts) == case.expected_turns
         ),
         "expected_final_count": (
-            len(finals) == len(starts)
+            logical_final_count == len(starts)
             if characterization
-            else len(finals) == case.expected_turns
+            else logical_final_count == case.expected_turns
         ),
+        "all_final_chunks_assigned": assigned_final_count == len(finals),
         "segment_ids_unique": len({item.segment_id for item in starts}) == len(starts),
         "all_turns_passed": (
             (characterization or len(turn_results) == case.expected_turns)
@@ -859,15 +991,29 @@ def _wait_for_case_result(
             encoding="utf-8",
             errors="replace",
         )
-        starts = log_text.count("[WorkBench][VAD] state=speech_started")
-        finals = log_text.count("[WorkBench][Transcript][FINAL]")
+        lines = log_text.splitlines()
+        starts = _markers(lines, START_RE)
+        ended_ids = {
+            marker.segment_id for marker in _markers(lines, ENDED_RE, "audioMs")
+        }
+        final_ids = {
+            marker.segment_id for marker in _markers(lines, FINAL_RE, "text")
+        }
+        completed_ids = {
+            marker.segment_id
+            for marker in _markers(lines, COMPLETED_RE, "audioMs")
+        }
         if time.monotonic() < minimum_deadline:
             continue
-        if case.expected_turns == 0 or starts == 0:
+        if case.expected_turns == 0 or not starts:
             return
-        if case.expected_turns is None and finals >= starts:
+        finished_turns = len(ended_ids & final_ids & completed_ids)
+        if case.expected_turns is None and finished_turns >= len(starts):
             return
-        if case.expected_turns is not None and finals >= case.expected_turns:
+        if (
+            case.expected_turns is not None
+            and finished_turns >= case.expected_turns
+        ):
             return
 
 

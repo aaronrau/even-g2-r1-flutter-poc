@@ -17,6 +17,11 @@ typedef UncorrectedTranscriptSink =
       String reason,
     );
 
+bool transcriptContainsWakeWord(String transcript) => RegExp(
+  r'(^|[^A-Za-z0-9_])hey(?=$|[^A-Za-z0-9_])',
+  caseSensitive: false,
+).hasMatch(transcript);
+
 final class TranscriptCorrectionJob {
   const TranscriptCorrectionJob({
     required this.segmentId,
@@ -29,6 +34,7 @@ final class TranscriptCorrectionJob {
     required this.queuedAt,
     this.correctionTerms = const <String>[],
     this.routeWhenCorrected = false,
+    this.liveTranscript,
     this.attempts = 0,
     this.nextAttemptAt,
   });
@@ -43,6 +49,11 @@ final class TranscriptCorrectionJob {
   final DateTime queuedAt;
   final List<String> correctionTerms;
   final bool routeWhenCorrected;
+
+  /// Optional live-process input after rollover overlap removal. It is never
+  /// written to the pending ledger; restored jobs remain read-only and do not
+  /// route to the agent bridge.
+  final String? liveTranscript;
   final int attempts;
   final DateTime? nextAttemptAt;
 
@@ -57,6 +68,7 @@ final class TranscriptCorrectionJob {
     queuedAt: queuedAt,
     correctionTerms: correctionTerms,
     routeWhenCorrected: routeWhenCorrected,
+    liveTranscript: liveTranscript,
     attempts: attempts + 1,
     nextAttemptAt: DateTime.now().toUtc().add(delay),
   );
@@ -224,6 +236,36 @@ final class TranscriptCorrectionSupervisor {
     _schedulePump(Duration.zero);
   }
 
+  Future<void> skipIneligible(
+    TranscriptCorrectionJob job,
+    String rawText, {
+    required String reason,
+  }) async {
+    if (_disposed) {
+      return;
+    }
+    await persistSkipped(job, reason: reason);
+    _pending.remove(job.segmentId);
+    await _persistPending();
+    onStatus(
+      '[WorkBench][Correction] state=skipped_ineligible '
+      'segment=${job.segmentId} reason=$reason raw=preserved '
+      'pending=${_pending.length}',
+    );
+    onUncorrected(job, rawText, reason);
+  }
+
+  static Future<void> persistSkipped(
+    TranscriptCorrectionJob job, {
+    required String reason,
+  }) => _atomicWriteJson(_skippedPathForRaw(job.rawPath), <String, Object>{
+    'version': 1,
+    'segment': job.segmentId,
+    'reason': reason,
+    'attempts': job.attempts,
+    'skippedAt': DateTime.now().toUtc().toIso8601String(),
+  });
+
   void _schedulePump(Duration delay) {
     if (_disposed) {
       return;
@@ -276,7 +318,7 @@ final class TranscriptCorrectionSupervisor {
       );
       return;
     }
-    final rawText = (await rawFile.readAsString()).trim();
+    final rawText = (job.liveTranscript ?? await rawFile.readAsString()).trim();
     if (rawText.isEmpty) {
       await _finishWithoutCorrection(
         job,
@@ -470,13 +512,24 @@ final class TranscriptCorrectionSupervisor {
     int? attempts,
     bool isError = false,
   }) async {
-    await _atomicWriteJson(_skippedPathForRaw(job.rawPath), <String, Object>{
-      'version': 1,
-      'segment': job.segmentId,
-      'reason': reason,
-      'attempts': attempts ?? job.attempts,
-      'skippedAt': DateTime.now().toUtc().toIso8601String(),
-    });
+    final retained = attempts == null
+        ? job
+        : TranscriptCorrectionJob(
+            segmentId: job.segmentId,
+            rawPath: job.rawPath,
+            sttModel: job.sttModel,
+            sttProvider: job.sttProvider,
+            audioMs: job.audioMs,
+            sttDecodeMs: job.sttDecodeMs,
+            sttTotalMs: job.sttTotalMs,
+            queuedAt: job.queuedAt,
+            correctionTerms: job.correctionTerms,
+            routeWhenCorrected: job.routeWhenCorrected,
+            liveTranscript: job.liveTranscript,
+            attempts: attempts,
+            nextAttemptAt: job.nextAttemptAt,
+          );
+    await persistSkipped(retained, reason: reason);
     _pending.remove(job.segmentId);
     await _persistPending();
     onStatus(
@@ -549,7 +602,28 @@ final class TranscriptCorrectionSupervisor {
           File(_skippedPathForRaw(job.rawPath)).existsSync() ||
           File(_correctedPathForRaw(job.rawPath)).existsSync(),
     );
+    var wakeGated = 0;
+    for (final job in _pending.values.toList(growable: false)) {
+      try {
+        final rawText = await File(job.rawPath).readAsString();
+        if (transcriptContainsWakeWord(rawText)) {
+          continue;
+        }
+        await persistSkipped(job, reason: 'no_wake_word');
+        _pending.remove(job.segmentId);
+        wakeGated++;
+      } on Object {
+        // Leave unreadable jobs in the existing recovery path. Processing will
+        // preserve the ledger entry or record the storage failure explicitly.
+      }
+    }
     await _persistPending();
+    if (wakeGated > 0) {
+      onStatus(
+        '[WorkBench][Correction] state=recovery_wake_gated '
+        'skipped=$wakeGated pending=${_pending.length}',
+      );
+    }
     if (_pending.isNotEmpty) {
       onStatus(
         '[WorkBench][Correction] state=jobs_recovered '

@@ -80,6 +80,8 @@ final class G2Connection {
   bool _fullPageTextActive = false;
   String _memoDisplayNote = '';
   String _memoDisplayStatus = '';
+  List<String> _memoDisplayPages = const <String>[];
+  int _memoDisplayPageIndex = 0;
   Uint8List? _lastAudioPacket;
   String? _activeAudioSource;
   DateTime? _lastAudioSummaryAt;
@@ -650,8 +652,24 @@ final class G2Connection {
   Future<void> showMemo({required String note, required String status}) async {
     _requireConnected();
     _fullPageTextActive = false;
+    final wasActive = _memoDisplayActive;
+    final wasAtLastPage =
+        _memoDisplayPages.isEmpty ||
+        _memoDisplayPageIndex >= _memoDisplayPages.length - 1;
     _memoDisplayNote = _boundedMemoText(note);
     _memoDisplayStatus = status.replaceAll(RegExp(r'\s+'), ' ').trim();
+    _memoDisplayPages = G2Protocol.memoPageContents(
+      _memoDisplayNote,
+      status: _memoDisplayStatus,
+    );
+    if (!wasActive || wasAtLastPage) {
+      _memoDisplayPageIndex = _memoDisplayPages.length - 1;
+    } else {
+      _memoDisplayPageIndex = _memoDisplayPageIndex.clamp(
+        0,
+        _memoDisplayPages.length - 1,
+      );
+    }
     _pulseTimer?.cancel();
     _pulseTimer = null;
     _visibleGestureTimer?.cancel();
@@ -663,14 +681,11 @@ final class G2Connection {
     } else {
       await _sendPayload(
         G2Ids.serviceEvenHub,
-        _protocol.updateMemoPage(_memoDisplayNote, status: _memoDisplayStatus),
+        _protocol.updateText(_currentMemoPage),
         reserveFlag: true,
         priority: AsyncWritePriority.high,
       );
-      _lastPageContent = G2Protocol.memoPageContent(
-        _memoDisplayNote,
-        status: _memoDisplayStatus,
-      );
+      _lastPageContent = _currentMemoPage;
     }
     _log(
       'G2 TX',
@@ -685,6 +700,8 @@ final class G2Connection {
     _memoDisplayActive = false;
     _memoDisplayNote = '';
     _memoDisplayStatus = '';
+    _memoDisplayPages = const <String>[];
+    _memoDisplayPageIndex = 0;
     _lastPageContent = '';
     if (!isConnected || terminalModeEnabled) {
       _pageCreated = false;
@@ -697,24 +714,28 @@ final class G2Connection {
 
   Future<void> _createMemoPage() async {
     _fullPageTextActive = false;
+    if (!_pageCreated) {
+      await _sendPayload(
+        G2Ids.serviceEvenHub,
+        _protocol.createTextPage(_currentMemoPage),
+        reserveFlag: true,
+        priority: AsyncWritePriority.high,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+    }
     await _sendPayload(
       G2Ids.serviceEvenHub,
-      _protocol.createMemoPage(_memoDisplayNote, status: _memoDisplayStatus),
+      _protocol.rebuildTextPage(_currentMemoPage),
       reserveFlag: true,
       priority: AsyncWritePriority.high,
     );
-    _lastPageContent = G2Protocol.memoPageContent(
-      _memoDisplayNote,
-      status: _memoDisplayStatus,
-    );
+    _lastPageContent = _currentMemoPage;
     _pageCreated = true;
     pageSessionStatus = 'memo page created';
     _onChanged();
   }
 
   static String _boundedMemoText(String value) {
-    const maximumPageCharacters = 512;
-    const reservedHeaderCharacters = 48;
     final normalized = value
         .replaceAll(
           RegExp(r'[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]'),
@@ -722,12 +743,43 @@ final class G2Connection {
         )
         .trim();
     final runes = normalized.runes.toList(growable: false);
-    final maximumNoteCharacters =
-        maximumPageCharacters - reservedHeaderCharacters;
-    if (runes.length <= maximumNoteCharacters) {
+    if (runes.length <= G2Protocol.maximumMemoRunes) {
       return normalized;
     }
-    return '${String.fromCharCodes(runes.take(maximumNoteCharacters - 1))}…';
+    return '${String.fromCharCodes(runes.take(G2Protocol.maximumMemoRunes - 1))}…';
+  }
+
+  String get _currentMemoPage => _memoDisplayPages.isEmpty
+      ? G2Protocol.memoPageContent(_memoDisplayNote, status: _memoDisplayStatus)
+      : _memoDisplayPages[_memoDisplayPageIndex];
+
+  Future<bool> selectPreviousMemoPage() =>
+      _selectMemoPage(_memoDisplayPageIndex - 1);
+
+  Future<bool> selectNextMemoPage() =>
+      _selectMemoPage(_memoDisplayPageIndex + 1);
+
+  Future<bool> _selectMemoPage(int index) async {
+    if (!_memoDisplayActive ||
+        index < 0 ||
+        index >= _memoDisplayPages.length ||
+        index == _memoDisplayPageIndex) {
+      return false;
+    }
+    _memoDisplayPageIndex = index;
+    await _sendPayload(
+      G2Ids.serviceEvenHub,
+      _protocol.updateText(_currentMemoPage),
+      reserveFlag: true,
+      priority: AsyncWritePriority.high,
+    );
+    _lastPageContent = _currentMemoPage;
+    _onChanged();
+    _log(
+      'G2 TX',
+      'Memo display page ${index + 1}/${_memoDisplayPages.length} sent',
+    );
+    return true;
   }
 
   Future<void> sendTestDrawing() async {
@@ -2351,6 +2403,8 @@ final class G2Connection {
     _fullPageTextActive = false;
     _memoDisplayNote = '';
     _memoDisplayStatus = '';
+    _memoDisplayPages = const <String>[];
+    _memoDisplayPageIndex = 0;
     _nativeMenuOpen = false;
     _awaitingNativeMenuOpenConfirm = false;
     _lastR1SourceActivityAt = null;

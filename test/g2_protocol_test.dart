@@ -143,6 +143,24 @@ void main() {
       expect(update, containsAllInOrder(utf8.encode('Remember the final')));
     });
 
+    test('paginates a long live Memo into fixed-height swipe pages', () {
+      final note = List<String>.generate(
+        120,
+        (index) => 'memo${index.toString().padLeft(3, '0')}',
+      ).join(' ');
+      final pages = G2Protocol.memoPageContents(note, status: 'Updating');
+
+      expect(pages.length, greaterThan(1));
+      expect(pages.first, contains('[ Double Tap to finish ]'));
+      expect(pages.first, contains('[ 1/${pages.length} · Swipe to scroll ]'));
+      expect(pages.last, contains('memo119'));
+      expect(pages.last.split('\n'), hasLength(10));
+      expect(
+        pages.last,
+        contains('[ ${pages.length}/${pages.length} · Swipe to scroll ]'),
+      );
+    });
+
     test('clears text with the firmware-compatible newline update', () {
       final protocol = G2Protocol();
       final command = protocol.clearText();

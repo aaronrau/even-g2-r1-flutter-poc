@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
@@ -9,7 +10,7 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 import 'nnapi_attestation.dart';
 
 typedef VadStatusSink = void Function(String message, {bool isError});
-typedef SpeechSegmentSink = void Function(String id, String wavPath);
+typedef SpeechSegmentSink = void Function(VadSpeechSegment segment);
 typedef VadSpeechEventSink = void Function(VadSpeechEvent event);
 
 enum VadSpeechEventType { started, ended }
@@ -30,6 +31,150 @@ const Duration vadPreRollDuration = Duration(seconds: 2);
 const Duration vadDetectorSilenceDuration = Duration(milliseconds: 500);
 const Duration vadTranscriptionDelay = Duration(milliseconds: 1250);
 const Duration vadTotalSilenceDuration = Duration(milliseconds: 1750);
+const Duration preferredVadSegmentDuration = Duration(seconds: 15);
+const Duration maximumVadSegmentDuration = Duration(seconds: 17);
+const Duration vadRolloverOverlapDuration = Duration(seconds: 1);
+const Duration vadWordBoundaryQuietDuration = Duration(milliseconds: 75);
+
+enum VadSegmentEndReason {
+  silence,
+  durationLimit,
+  durationPause,
+  durationWordBoundary,
+  durationHardLimit,
+  flush,
+  close,
+  recovery,
+}
+
+final class VadSpeechSegment {
+  const VadSpeechSegment({
+    required this.id,
+    required this.wavPath,
+    required this.conversationId,
+    required this.isConversationFinal,
+    required this.endReason,
+    this.leadingOverlapMs = 0,
+  });
+
+  final String id;
+  final String wavPath;
+  final String conversationId;
+  final bool isConversationFinal;
+  final VadSegmentEndReason endReason;
+  final int leadingOverlapMs;
+}
+
+final class VadSegmentDurationTracker {
+  VadSegmentDurationTracker({
+    required int sampleRate,
+    this.preferredDuration = preferredVadSegmentDuration,
+    this.maximumDuration = maximumVadSegmentDuration,
+  }) : assert(sampleRate > 0),
+       assert(preferredDuration > Duration.zero),
+       assert(maximumDuration > Duration.zero),
+       assert(maximumDuration >= preferredDuration),
+       _preferredSamples =
+           sampleRate *
+           preferredDuration.inMilliseconds ~/
+           Duration.millisecondsPerSecond,
+       _maximumSamples =
+           sampleRate *
+           maximumDuration.inMilliseconds ~/
+           Duration.millisecondsPerSecond;
+
+  final Duration preferredDuration;
+  final Duration maximumDuration;
+  final int _preferredSamples;
+  final int _maximumSamples;
+  int _samples = 0;
+
+  int get samples => _samples;
+  bool get shouldPreferVadPause => _samples >= _preferredSamples;
+  bool get reachedHardLimit => _samples >= _maximumSamples;
+
+  bool willPreferVadPause(int incomingSamples) =>
+      _samples + incomingSamples >= _preferredSamples;
+
+  bool shouldSplitAtVadResume({
+    required bool detected,
+    required bool endpointActive,
+    int incomingSamples = 0,
+  }) => detected && endpointActive && willPreferVadPause(incomingSamples);
+
+  bool add(int samples) {
+    assert(samples >= 0);
+    _samples += samples;
+    return reachedHardLimit;
+  }
+
+  void reset() {
+    _samples = 0;
+  }
+}
+
+/// Finds a short low-energy gap followed by resumed audio. Silero deliberately
+/// waits for a longer pause before lowering its VAD state, so this detector is
+/// used only after the soft duration target to select an inter-word boundary.
+final class VadWordBoundaryDetector {
+  VadWordBoundaryDetector({
+    required int sampleRate,
+    this.quietDuration = vadWordBoundaryQuietDuration,
+    this.absoluteQuietRms = 650,
+    this.quietToSpeechRatio = 0.35,
+  }) : assert(sampleRate > 0),
+       assert(quietDuration > Duration.zero),
+       assert(absoluteQuietRms > 0),
+       assert(quietToSpeechRatio > 0 && quietToSpeechRatio < 1),
+       _quietSamplesRequired =
+           sampleRate *
+           quietDuration.inMilliseconds ~/
+           Duration.millisecondsPerSecond;
+
+  final Duration quietDuration;
+  final double absoluteQuietRms;
+  final double quietToSpeechRatio;
+  final int _quietSamplesRequired;
+  double _speechRms = 0;
+  int _quietSamples = 0;
+
+  bool observe(Uint8List pcm16, {required bool seekBoundary}) {
+    final sampleCount = pcm16.length ~/ 2;
+    if (sampleCount == 0) {
+      return false;
+    }
+    final rms = _pcm16Rms(pcm16);
+    final quietThreshold = max(
+      absoluteQuietRms,
+      _speechRms * quietToSpeechRatio,
+    );
+    final isQuiet = _speechRms > 0 && rms <= quietThreshold;
+    if (!seekBoundary) {
+      _quietSamples = 0;
+      if (!isQuiet) {
+        _updateSpeechRms(rms);
+      }
+      return false;
+    }
+    if (isQuiet) {
+      _quietSamples += sampleCount;
+      return false;
+    }
+    final foundBoundary = _quietSamples >= _quietSamplesRequired;
+    _quietSamples = 0;
+    _updateSpeechRms(rms);
+    return foundBoundary;
+  }
+
+  void reset() {
+    _speechRms = 0;
+    _quietSamples = 0;
+  }
+
+  void _updateSpeechRms(double rms) {
+    _speechRms = _speechRms == 0 ? rms : (_speechRms * 0.9) + (rms * 0.1);
+  }
+}
 
 final class VadEndpointBuffer {
   VadEndpointBuffer({required int sampleRate, required Duration duration})
@@ -256,6 +401,16 @@ final class VadSupervisor {
           VadSpeechEvent(type: VadSpeechEventType.started, segmentId: id),
         );
         return;
+      case 'speech_continued':
+        final id = event['id']! as String;
+        onStatus(
+          '[WorkBench][VAD] state=speech_continued segment=$id '
+          'reason=${event['reason']} overlap_ms=${event['overlapMs']}',
+        );
+        onSpeechEvent?.call(
+          VadSpeechEvent(type: VadSpeechEventType.started, segmentId: id),
+        );
+        return;
       case 'speech_ending':
         onStatus(
           '[WorkBench][VAD] state=speech_ending segment=${event['id']} '
@@ -271,18 +426,38 @@ final class VadSupervisor {
       case 'segment':
         final id = event['id']! as String;
         final endpointAudioMs = event['endpointAudioMs']! as int;
-        onStatus(
-          '[WorkBench][VAD] state=speech_ended segment=$id '
-          'audio_ms=$endpointAudioMs',
+        final isConversationFinal = event['isConversationFinal']! as bool;
+        final endReason = VadSegmentEndReason.values.byName(
+          event['endReason']! as String,
         );
-        onSpeechEvent?.call(
-          VadSpeechEvent(
-            type: VadSpeechEventType.ended,
-            segmentId: id,
-            endpointAudioMs: endpointAudioMs,
+        if (isConversationFinal) {
+          onStatus(
+            '[WorkBench][VAD] state=speech_ended segment=$id '
+            'audio_ms=$endpointAudioMs reason=${endReason.name}',
+          );
+          onSpeechEvent?.call(
+            VadSpeechEvent(
+              type: VadSpeechEventType.ended,
+              segmentId: id,
+              endpointAudioMs: endpointAudioMs,
+            ),
+          );
+        } else {
+          onStatus(
+            '[WorkBench][VAD] state=speech_chunked segment=$id '
+            'reason=${endReason.name} continuation=true',
+          );
+        }
+        onSegment(
+          VadSpeechSegment(
+            id: id,
+            wavPath: event['path']! as String,
+            conversationId: event['conversationId']! as String,
+            isConversationFinal: isConversationFinal,
+            endReason: endReason,
+            leadingOverlapMs: (event['leadingOverlapMs'] as int?) ?? 0,
           ),
         );
-        onSegment(id, event['path']! as String);
         return;
       case 'error':
         final error = StateError('${event['message']}');
@@ -373,22 +548,31 @@ void _vadWorker(Map<String, Object> bootstrap) {
       2 *
       vadPreRollDuration.inMilliseconds ~/
       Duration.millisecondsPerSecond;
-  const maximumSegmentSamples = sampleRate * 60 * 15;
-
+  final rolloverOverlapBytes =
+      sampleRate *
+      2 *
+      vadRolloverOverlapDuration.inMilliseconds ~/
+      Duration.millisecondsPerSecond;
   final events = bootstrap['events']! as SendPort;
   final modelPath = bootstrap['modelPath']! as String;
   final outputPath = bootstrap['outputPath']! as String;
   final providers = (bootstrap['providers']! as List<Object?>).cast<String>();
   final commands = ReceivePort();
   final preRoll = VadPreRollBuffer(maximumBytes: preRollBytes);
+  final rolloverOverlap = VadPreRollBuffer(maximumBytes: rolloverOverlapBytes);
   final endpoint = VadEndpointBuffer(
     sampleRate: sampleRate,
     duration: vadTranscriptionDelay,
   );
+  final segmentDuration = VadSegmentDurationTracker(sampleRate: sampleRate);
+  final wordBoundary = VadWordBoundaryDetector(sampleRate: sampleRate);
   RandomAccessFile? segmentFile;
   String? segmentId;
+  String? conversationId;
   String? partialPath;
   var segmentSamples = 0;
+  var segmentLeadingOverlapMs = 0;
+  var conversationPart = 0;
   var wasDetected = false;
 
   void writeHeader(RandomAccessFile file, int samples) {
@@ -415,39 +599,91 @@ void _vadWorker(Map<String, Object> bootstrap) {
     file.writeFromSync(header.buffer.asUint8List());
   }
 
-  void beginSegment() {
-    final now = DateTime.now().toUtc();
+  void beginSegment({
+    bool continuation = false,
+    List<Uint8List> leadingOverlapChunks = const <Uint8List>[],
+    VadSegmentEndReason? continuationReason,
+  }) {
+    if (!continuation) {
+      final now = DateTime.now().toUtc();
+      conversationId =
+          '${now.microsecondsSinceEpoch}-${now.toIso8601String().substring(11, 19).replaceAll(':', '')}';
+      conversationPart = 0;
+    }
+    final activeConversationId = conversationId;
+    if (activeConversationId == null) {
+      throw StateError('A VAD continuation has no active conversation.');
+    }
+    conversationPart++;
     final preRollBytesAtStart = preRoll.sizeBytes;
-    segmentId =
-        '${now.microsecondsSinceEpoch}-${now.toIso8601String().substring(11, 19).replaceAll(':', '')}';
+    segmentId = conversationPart == 1
+        ? activeConversationId
+        : '$activeConversationId-part-$conversationPart';
     partialPath = '$outputPath/$segmentId.part.wav';
     segmentFile = File(partialPath!).openSync(mode: FileMode.write);
     writeHeader(segmentFile!, 0);
     segmentSamples = 0;
-    for (final chunk in preRoll.chunks) {
-      segmentFile!.writeFromSync(chunk);
-      segmentSamples += chunk.length ~/ 2;
+    segmentLeadingOverlapMs = 0;
+    segmentDuration.reset();
+    wordBoundary.reset();
+    rolloverOverlap.clear();
+    if (!continuation) {
+      for (final chunk in preRoll.chunks) {
+        segmentFile!.writeFromSync(chunk);
+        segmentSamples += chunk.length ~/ 2;
+      }
+    } else {
+      var leadingOverlapBytes = 0;
+      for (final chunk in leadingOverlapChunks) {
+        segmentFile!.writeFromSync(chunk);
+        segmentSamples += chunk.length ~/ 2;
+        leadingOverlapBytes += chunk.length;
+        rolloverOverlap.add(chunk);
+      }
+      segmentLeadingOverlapMs =
+          leadingOverlapBytes *
+          Duration.millisecondsPerSecond ~/
+          (sampleRate * 2);
     }
     endpoint.reset();
-    events.send(<String, Object>{
-      'type': 'speech_started',
-      'id': segmentId!,
-      'preRollMs':
-          preRollBytesAtStart *
-          Duration.millisecondsPerSecond ~/
-          (sampleRate * 2),
-      'preRollBytes': preRollBytesAtStart,
-    });
+    if (!continuation) {
+      events.send(<String, Object>{
+        'type': 'speech_started',
+        'id': segmentId!,
+        'preRollMs':
+            preRollBytesAtStart *
+            Duration.millisecondsPerSecond ~/
+            (sampleRate * 2),
+        'preRollBytes': preRollBytesAtStart,
+      });
+    } else {
+      events.send(<String, Object>{
+        'type': 'speech_continued',
+        'id': segmentId!,
+        'reason':
+            (continuationReason ?? VadSegmentEndReason.durationPause).name,
+        'overlapMs': segmentLeadingOverlapMs,
+      });
+    }
   }
 
-  void finishSegment({bool preserveEndpointPreRoll = false}) {
+  void finishSegment({
+    bool preserveEndpointPreRoll = false,
+    required bool isConversationFinal,
+    required VadSegmentEndReason endReason,
+  }) {
     final file = segmentFile;
     final id = segmentId;
+    final activeConversationId = conversationId;
     final part = partialPath;
-    if (file == null || id == null || part == null) {
+    if (file == null ||
+        id == null ||
+        activeConversationId == null ||
+        part == null) {
       return;
     }
     final endpointAudioMs = endpoint.capturedMilliseconds;
+    final leadingOverlapMs = segmentLeadingOverlapMs;
     writeHeader(file, segmentSamples);
     file.flushSync();
     file.closeSync();
@@ -457,6 +693,8 @@ void _vadWorker(Map<String, Object> bootstrap) {
     segmentId = null;
     partialPath = null;
     segmentSamples = 0;
+    segmentLeadingOverlapMs = 0;
+    segmentDuration.reset();
     endpoint.reset();
     if (!preserveEndpointPreRoll) {
       final clearedBytes = preRoll.clear();
@@ -470,8 +708,16 @@ void _vadWorker(Map<String, Object> bootstrap) {
       'type': 'segment',
       'id': id,
       'path': finalPath,
+      'conversationId': activeConversationId,
+      'isConversationFinal': isConversationFinal,
+      'endReason': endReason.name,
       'endpointAudioMs': endpointAudioMs,
+      'leadingOverlapMs': leadingOverlapMs,
     });
+    if (isConversationFinal) {
+      conversationId = null;
+      conversationPart = 0;
+    }
   }
 
   void recoverInterruptedSegments() {
@@ -499,6 +745,9 @@ void _vadWorker(Map<String, Object> bootstrap) {
         'type': 'segment',
         'id': '$id-recovered',
         'path': recoveredPath,
+        'conversationId': '$id-recovered',
+        'isConversationFinal': true,
+        'endReason': VadSegmentEndReason.recovery.name,
         'endpointAudioMs': 0,
       });
     }
@@ -598,16 +847,42 @@ void _vadWorker(Map<String, Object> bootstrap) {
           final samples = _pcm16ToFloat(pcm);
           detector.acceptWaveform(samples);
           final detected = detector.isDetected();
+          final chunkSamples = pcm.length ~/ 2;
+          final splitAtVadResume =
+              segmentFile != null &&
+              segmentDuration.shouldSplitAtVadResume(
+                detected: detected,
+                endpointActive: endpoint.isActive,
+                incomingSamples: chunkSamples,
+              );
+          final splitAtWordBoundary =
+              segmentFile != null &&
+              wordBoundary.observe(
+                pcm,
+                seekBoundary: segmentDuration.willPreferVadPause(chunkSamples),
+              );
+          if (splitAtVadResume || splitAtWordBoundary) {
+            final reason = splitAtVadResume
+                ? VadSegmentEndReason.durationPause
+                : VadSegmentEndReason.durationWordBoundary;
+            finishSegment(
+              preserveEndpointPreRoll: true,
+              isConversationFinal: false,
+              endReason: reason,
+            );
+            beginSegment(continuation: true, continuationReason: reason);
+          }
           if (detected && segmentFile == null) {
             beginSegment();
           }
           if (segmentFile != null) {
             segmentFile!.writeFromSync(pcm);
-            segmentSamples += pcm.length ~/ 2;
+            segmentSamples += chunkSamples;
+            segmentDuration.add(chunkSamples);
+            rolloverOverlap.add(pcm);
             if (detected) {
               endpoint.reset();
             } else if (wasDetected) {
-              final chunkSamples = pcm.length ~/ 2;
               final endpointComplete = endpoint.begin(chunkSamples);
               final clearedBytes = preRoll.clear();
               events.send(<String, Object>{
@@ -621,19 +896,37 @@ void _vadWorker(Map<String, Object> bootstrap) {
                 'bytes': clearedBytes,
               });
               if (endpointComplete) {
-                finishSegment(preserveEndpointPreRoll: true);
+                finishSegment(
+                  preserveEndpointPreRoll: true,
+                  isConversationFinal: true,
+                  endReason: VadSegmentEndReason.silence,
+                );
               }
             } else if (endpoint.isActive) {
-              final chunkSamples = pcm.length ~/ 2;
               if (endpoint.add(chunkSamples)) {
-                finishSegment(preserveEndpointPreRoll: true);
+                finishSegment(
+                  preserveEndpointPreRoll: true,
+                  isConversationFinal: true,
+                  endReason: VadSegmentEndReason.silence,
+                );
               }
             }
-            if (segmentSamples >= maximumSegmentSamples) {
-              finishSegment();
-              if (detected) {
-                beginSegment();
-              }
+            if (segmentFile != null &&
+                detected &&
+                segmentDuration.reachedHardLimit) {
+              final leadingOverlapChunks = rolloverOverlap.chunks
+                  .map(Uint8List.fromList)
+                  .toList(growable: false);
+              finishSegment(
+                preserveEndpointPreRoll: true,
+                isConversationFinal: false,
+                endReason: VadSegmentEndReason.durationHardLimit,
+              );
+              beginSegment(
+                continuation: true,
+                leadingOverlapChunks: leadingOverlapChunks,
+                continuationReason: VadSegmentEndReason.durationHardLimit,
+              );
             }
           }
           preRoll.add(pcm);
@@ -641,12 +934,18 @@ void _vadWorker(Map<String, Object> bootstrap) {
           return;
         case 'flush':
           detector.flush();
-          finishSegment();
+          finishSegment(
+            isConversationFinal: true,
+            endReason: VadSegmentEndReason.flush,
+          );
           wasDetected = false;
           return;
         case 'close':
           detector.flush();
-          finishSegment();
+          finishSegment(
+            isConversationFinal: true,
+            endReason: VadSegmentEndReason.close,
+          );
           detector.free();
           events.send(<String, Object>{'type': 'closed'});
           commands.close();
@@ -675,4 +974,16 @@ Float32List _pcm16ToFloat(Uint8List pcm) {
     samples[index] = input.getInt16(index * 2, Endian.little) / 32768.0;
   }
   return samples;
+}
+
+double _pcm16Rms(Uint8List pcm) {
+  final input = ByteData.sublistView(pcm);
+  var squareSum = 0.0;
+  var samples = 0;
+  for (var offset = 0; offset + 1 < pcm.length; offset += 2) {
+    final sample = input.getInt16(offset, Endian.little);
+    squareSum += sample * sample;
+    samples++;
+  }
+  return samples == 0 ? 0 : sqrt(squareSum / samples);
 }

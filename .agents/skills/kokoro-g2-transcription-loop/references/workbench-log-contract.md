@@ -44,6 +44,34 @@ the same normalized, padded fixture. The original volume is restored in a
 [WorkBench][Transcript][FINAL] segment=<id> text=<recognized test phrase>
 ```
 
+Continuous speech is one logical turn. At 15 seconds, Work Bench searches for
+the next credible end-of-word boundary: either a short low-energy inter-word
+gap followed by resumed audio, or a VAD-low pause followed by resumed VAD. The
+old chunk closes before the resumed PCM is written and the continuation has no
+overlap. If uninterrupted speech reaches 17 seconds without either boundary,
+the hard rollover prepends the final 1,000 ms of the old chunk to the
+continuation. Every non-final duration chunk emits one of these paired
+contracts:
+
+```text
+[WorkBench][VAD] state=speech_chunked segment=<id> reason=durationPause continuation=true
+[WorkBench][VAD] state=speech_continued segment=<next-id> reason=durationPause overlap_ms=0
+[WorkBench][VAD] state=speech_chunked segment=<id> reason=durationWordBoundary continuation=true
+[WorkBench][VAD] state=speech_continued segment=<next-id> reason=durationWordBoundary overlap_ms=0
+[WorkBench][VAD] state=speech_chunked segment=<id> reason=durationHardLimit continuation=true
+[WorkBench][VAD] state=speech_continued segment=<next-id> reason=durationHardLimit overlap_ms=1000
+```
+
+The chunk receives its own queued, processing, completed, and final transcript
+markers. It must not receive `speech_ended`, and `speech_continued` must not
+clear the UI or arm a silence timeout. The eventual silence endpoint uses the
+final continuation segment. The turn-suite scorer combines ordered chunk
+transcripts for WER, removes only an exact suffix/prefix word match introduced
+by hard-overlap padding, requires every reported `audio_ms` to remain at or
+below 19,500 ms (including initial pre-roll), validates the reason/overlap pair,
+and requires no Gemma correction queue marker when the fixed expected text
+lacks the complete word `hey`, case-insensitively.
+
 `speech_ending` marks the last positive VAD transition and the configured
 endpoint delay. `speech_ended audio_ms` reports the PCM duration captured after
 that transition. Validate `audio_ms` rather than logcat wall time because

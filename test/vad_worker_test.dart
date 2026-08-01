@@ -37,6 +37,73 @@ void main() {
     expect(vadPreRollDuration, const Duration(seconds: 2));
   });
 
+  test('prefers a pause after 15 seconds and hard-caps at 17 seconds', () {
+    expect(preferredVadSegmentDuration, const Duration(seconds: 15));
+    expect(maximumVadSegmentDuration, const Duration(seconds: 17));
+    expect(vadRolloverOverlapDuration, const Duration(seconds: 1));
+    expect(vadWordBoundaryQuietDuration, const Duration(milliseconds: 75));
+    final tracker = VadSegmentDurationTracker(sampleRate: 16000);
+
+    for (var second = 0; second < 14; second++) {
+      expect(tracker.add(16000), isFalse);
+    }
+    expect(tracker.samples, 14 * 16000);
+    expect(tracker.add(16000), isFalse);
+    expect(tracker.shouldPreferVadPause, isTrue);
+    expect(
+      tracker.shouldSplitAtVadResume(detected: true, endpointActive: true),
+      isTrue,
+    );
+    expect(
+      tracker.shouldSplitAtVadResume(detected: true, endpointActive: false),
+      isFalse,
+    );
+    expect(tracker.add(16000), isFalse);
+    expect(tracker.add(16000), isTrue);
+    expect(tracker.reachedHardLimit, isTrue);
+
+    tracker.reset();
+    expect(tracker.samples, 0);
+    expect(tracker.shouldPreferVadPause, isFalse);
+    expect(tracker.add(160), isFalse);
+  });
+
+  test('selects the first credible inter-word quiet gap after soft target', () {
+    final detector = VadWordBoundaryDetector(sampleRate: 1000);
+
+    expect(
+      detector.observe(
+        _pcm(samples: 100, amplitude: 2000),
+        seekBoundary: false,
+      ),
+      isFalse,
+    );
+    expect(
+      detector.observe(_pcm(samples: 40, amplitude: 100), seekBoundary: true),
+      isFalse,
+    );
+    expect(
+      detector.observe(_pcm(samples: 40, amplitude: 100), seekBoundary: true),
+      isFalse,
+    );
+    expect(
+      detector.observe(_pcm(samples: 50, amplitude: 2000), seekBoundary: true),
+      isTrue,
+    );
+  });
+
+  test('does not treat a short low-energy phoneme as a word boundary', () {
+    final detector = VadWordBoundaryDetector(sampleRate: 1000);
+
+    detector.observe(_pcm(samples: 100, amplitude: 2000), seekBoundary: false);
+    detector.observe(_pcm(samples: 50, amplitude: 100), seekBoundary: true);
+
+    expect(
+      detector.observe(_pcm(samples: 50, amplitude: 2000), seekBoundary: true),
+      isFalse,
+    );
+  });
+
   test('pre-roll retains the newest continuous PCM chunks', () {
     final buffer = VadPreRollBuffer(maximumBytes: 6)
       ..add(Uint8List.fromList(<int>[1, 2]))
@@ -80,4 +147,13 @@ void main() {
       <int>[7, 8],
     ]);
   });
+}
+
+Uint8List _pcm({required int samples, required int amplitude}) {
+  final bytes = Uint8List(samples * 2);
+  final data = ByteData.sublistView(bytes);
+  for (var index = 0; index < samples; index++) {
+    data.setInt16(index * 2, amplitude, Endian.little);
+  }
+  return bytes;
 }

@@ -157,18 +157,23 @@ No intentional gap may reach the endpoint boundary in these stimuli.
 | --- | ---: | --- |
 | B1 | 1 second | One turn |
 | B2 | 5 seconds | One turn |
-| B3 | 15 seconds | One turn |
-| B4 | 30 seconds | One turn |
-| B5 | 60 seconds | One turn |
-| B6 | 2 minutes | One turn; extended check |
-| B7 | 5 minutes | One turn; soak check |
-| B8 | 15 minutes | One forced maximum-duration close followed by a clean new turn |
+| B3 | 15 seconds | One logical turn; no forced mid-word close at the soft target |
+| B4 | 30 seconds | One logical turn; at least two ordered STT chunks append to one continuous transcript |
+| B5 | 60 seconds | One logical turn; bounded chunks continue without a false silence endpoint |
+| B6 | 2 minutes | One logical turn; extended bounded-queue check |
+| B7 | 5 minutes | One logical turn; soak check with continuous durable appends |
+| B8 | 15 minutes | One logical turn; soft-pause or overlapped hard rollovers remain bounded |
 
 For B1–B5, transcript WER remains a hard assertion. B6–B8 additionally measure
-WAV finalization time, peak memory, storage growth, transcription latency, and
-whether audio/ring processing remains responsive. The 15-minute case validates
-the configured maximum segment boundary and is not part of the quick physical
-suite.
+WAV finalization time, peak memory, storage growth, transcription latency,
+ordered append integrity, and whether audio/ring processing remains responsive.
+Every case longer than 15 seconds validates that duration rollovers do not emit
+`speech_ended` until a real endpoint and do not create an unbounded STT job.
+The scorer accepts at most 19.5 seconds of WAV audio (including the initial
+two-second pre-roll or a continuation's one-second overlap), requires
+`durationPause` and `durationWordBoundary` continuations to report zero overlap, requires
+`durationHardLimit` continuations to report exactly 1,000 ms, deduplicates the
+exact recognized boundary sequence for WER, and still fails on missing words.
 
 ### Phase C: silence-gap boundary
 

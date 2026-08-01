@@ -50,4 +50,24 @@ void main() {
       'First complete clause. Second complete clause.',
     );
   });
+
+  test('returns only new boundary words for a rollover transcript', () {
+    expect(
+      removeTranscriptionOverlap(
+        previous: 'Please keep the final boundary word.',
+        incoming: 'boundary word and continue safely.',
+      ),
+      'and continue safely.',
+    );
+  });
+
+  test('does not remove a non-boundary repeated phrase', () {
+    expect(
+      removeTranscriptionOverlap(
+        previous: 'Repeat this once and then stop.',
+        incoming: 'Repeat this once because it is a new sentence.',
+      ),
+      'Repeat this once because it is a new sentence.',
+    );
+  });
 }

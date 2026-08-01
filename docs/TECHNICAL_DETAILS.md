@@ -46,6 +46,11 @@ firmware scroll indicator. Pulse writes pause while history owns the page.
 Dismissal rebuilds the compact visualizer without stopping continuous LC3
 capture.
 
+Memo and agent-response details are host-paginated rather than relying on
+firmware text scrolling. Each page reserves one title row, seven wrapped body
+rows, one spacer, and one action/page row. Swipe down advances, swipe up goes
+back, and neither boundary wraps. Waiting status remains a single page.
+
 The microphone notification format observed in MentraOS and on hardware is:
 
 - 16,000 Hz;
