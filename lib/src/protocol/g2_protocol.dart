@@ -563,9 +563,14 @@ final class G2Protocol {
   static const int fullPageTextWidth = 576;
   static const int fullPageTextHeight = 288;
   static const int fullPageDetailTextWidth = 544;
-  static const int fullPageIndicatorX = 560;
-  static const int fullPageIndicatorWidth = 8;
-  static const int fullPageIndicatorMinimumHeight = 16;
+  // G2 image containers accept width 20–288 and height 20–144. Keep the
+  // visible thumb at 8 px by placing it at the right of a valid 20 px image
+  // whose remaining pixels are black/invisible on the display.
+  static const int fullPageIndicatorX = 556;
+  static const int fullPageIndicatorWidth = 20;
+  static const int fullPageIndicatorBarWidth = 8;
+  static const int fullPageIndicatorMinimumHeight = 20;
+  static const int fullPageIndicatorMaximumHeight = 144;
   static const int maximumMemoRunes = 4096;
   static const int memoLineRunes = 48;
   static const int memoBodyLinesPerPage = 7;
@@ -849,6 +854,7 @@ final class G2Protocol {
     required int pageIndex,
     required int pageCount,
   }) {
+    final renderPageIndicator = showPageIndicator && pageCount > 1;
     final eventCapture = ProtoWriter()
       ..writeInt32(1, 0)
       ..writeInt32(2, 0)
@@ -867,7 +873,7 @@ final class G2Protocol {
       ..writeInt32(2, fullPageTextY)
       ..writeInt32(
         3,
-        showPageIndicator ? fullPageDetailTextWidth : fullPageTextWidth,
+        renderPageIndicator ? fullPageDetailTextWidth : fullPageTextWidth,
       )
       ..writeInt32(4, fullPageTextHeight)
       ..writeInt32(5, 0)
@@ -880,12 +886,12 @@ final class G2Protocol {
       ..writeString(12, content);
 
     final page = ProtoWriter()
-      ..writeInt32(1, showPageIndicator ? 3 : 2)
+      ..writeInt32(1, renderPageIndicator ? 3 : 2)
       ..writeMessage(3, eventCapture.takeBytes());
     // Keep the body last so the diagnostic reader, which retains the final
     // repeated protobuf field, continues to expose the primary text object.
     page.writeMessage(3, text.takeBytes());
-    if (showPageIndicator) {
+    if (renderPageIndicator) {
       final geometry = detailPageIndicatorGeometry(
         pageIndex: pageIndex,
         pageCount: pageCount,
@@ -914,7 +920,7 @@ final class G2Protocol {
     final index = pageIndex.clamp(0, count - 1);
     final height = (fullPageTextHeight / count).ceil().clamp(
       fullPageIndicatorMinimumHeight,
-      fullPageTextHeight,
+      fullPageIndicatorMaximumHeight,
     );
     final travel = fullPageTextHeight - height;
     final y = count == 1 ? 0 : ((travel * index) / (count - 1)).round();
@@ -929,9 +935,23 @@ final class G2Protocol {
       pageIndex: pageIndex,
       pageCount: pageCount,
     );
-    return G2Bitmap.solid(
+    final pixels = List<int>.filled(
+      fullPageIndicatorWidth * geometry.height,
+      0,
+    );
+    final barStart = fullPageIndicatorWidth - fullPageIndicatorBarWidth;
+    for (var y = 0; y < geometry.height; y++) {
+      final rowStart = y * fullPageIndicatorWidth;
+      pixels.fillRange(
+        rowStart + barStart,
+        rowStart + fullPageIndicatorWidth,
+        0xff,
+      );
+    }
+    return G2Bitmap.build4Bit(
       width: fullPageIndicatorWidth,
       height: geometry.height,
+      grayscale: pixels,
     );
   }
 

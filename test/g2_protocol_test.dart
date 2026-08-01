@@ -164,7 +164,25 @@ void main() {
         G2Protocol.fullPageIndicatorWidth,
       );
       expect(header.getInt32(22, Endian.little), geometry.height);
-      expect(bitmap.skip(118), everyElement(0xff));
+      final packedRowBytes = (G2Protocol.fullPageIndicatorWidth + 1) ~/ 2;
+      final paddedRowBytes = (packedRowBytes + 3) & ~3;
+      final blackBytes =
+          (G2Protocol.fullPageIndicatorWidth -
+              G2Protocol.fullPageIndicatorBarWidth) ~/
+          2;
+      final barBytes = G2Protocol.fullPageIndicatorBarWidth ~/ 2;
+      for (var row = 0; row < geometry.height; row++) {
+        final offset = 118 + row * paddedRowBytes;
+        expect(bitmap.sublist(offset, offset + blackBytes), everyElement(0x00));
+        expect(
+          bitmap.sublist(offset + blackBytes, offset + blackBytes + barBytes),
+          everyElement(0xff),
+        );
+        expect(
+          bitmap.sublist(offset + packedRowBytes, offset + paddedRowBytes),
+          everyElement(0x00),
+        );
+      }
     });
 
     test('positions one continuous thumb at top, middle, and bottom', () {
@@ -188,7 +206,45 @@ void main() {
       expect(top, (y: 0, height: 96));
       expect(middle, (y: 96, height: 96));
       expect(bottom, (y: 192, height: 96));
-      expect(single, (y: 0, height: G2Protocol.fullPageTextHeight));
+      expect(single, (y: 0, height: G2Protocol.fullPageIndicatorMaximumHeight));
+    });
+
+    test('keeps every multi-page thumb inside G2 image limits', () {
+      for (var pageCount = 2; pageCount <= 100; pageCount++) {
+        for (var pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+          final geometry = G2Protocol.detailPageIndicatorGeometry(
+            pageIndex: pageIndex,
+            pageCount: pageCount,
+          );
+          expect(
+            geometry.height,
+            inInclusiveRange(20, 144),
+            reason: 'page ${pageIndex + 1}/$pageCount',
+          );
+          expect(
+            geometry.y + geometry.height,
+            lessThanOrEqualTo(G2Protocol.fullPageTextHeight),
+            reason: 'page ${pageIndex + 1}/$pageCount',
+          );
+        }
+      }
+    });
+
+    test('omits the image container when a detail has one page', () {
+      final protocol = G2Protocol();
+      final rebuild = protocol.rebuildTextPage(
+        'one page',
+        showPageIndicator: true,
+        pageIndex: 0,
+        pageCount: 1,
+      );
+      final outer = ProtoReader(rebuild).readFields();
+      final page = ProtoReader(outer[7]! as Uint8List).readFields();
+      final body = ProtoReader(page[3]! as Uint8List).readFields();
+
+      expect(page[1], 2);
+      expect(page[4], isNull);
+      expect(body[3], G2Protocol.fullPageTextWidth);
     });
 
     test('builds a memo page with a persistent double-tap action header', () {

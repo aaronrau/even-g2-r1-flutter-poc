@@ -4,6 +4,83 @@ import 'package:even_g2_r1_poc/src/wearable_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'coalesces duplicate display work while the first render is active',
+    () async {
+      final queue = CoalescedDisplayQueue();
+      final started = Completer<void>();
+      final release = Completer<void>();
+      var renders = 0;
+
+      Future<void> render() async {
+        renders++;
+        if (!started.isCompleted) {
+          started.complete();
+        }
+        await release.future;
+      }
+
+      final first = queue.schedule(key: 'same-page', render: render);
+      await started.future;
+      final duplicates = List<Future<void>>.generate(
+        20,
+        (_) => queue.schedule(key: 'same-page', render: render),
+      );
+      release.complete();
+      await Future.wait(<Future<void>>[first, ...duplicates]);
+
+      expect(renders, 1);
+    },
+  );
+
+  test('renders a changed display once after the active render', () async {
+    final queue = CoalescedDisplayQueue();
+    final started = Completer<void>();
+    final release = Completer<void>();
+    final rendered = <String>[];
+
+    final first = queue.schedule(
+      key: 'selector',
+      render: () async {
+        rendered.add('selector');
+        started.complete();
+        await release.future;
+      },
+    );
+    await started.future;
+    final detail = queue.schedule(
+      key: 'detail-1',
+      render: () async => rendered.add('detail-1'),
+    );
+    final duplicate = queue.schedule(
+      key: 'detail-1',
+      render: () async => rendered.add('duplicate'),
+    );
+    release.complete();
+    await Future.wait(<Future<void>>[first, detail, duplicate]);
+
+    expect(rendered, <String>['selector', 'detail-1']);
+  });
+
+  test('retries a display key after a failed render', () async {
+    final queue = CoalescedDisplayQueue();
+    var attempts = 0;
+    var failures = 0;
+
+    await queue.schedule(
+      key: 'detail',
+      render: () async {
+        attempts++;
+        throw StateError('synthetic display failure');
+      },
+      onError: (_) => failures++,
+    );
+    await queue.schedule(key: 'detail', render: () async => attempts++);
+
+    expect(attempts, 2);
+    expect(failures, 1);
+  });
+
   test('double tap requests an agent update outside a voice memo', () {
     expect(
       resolveWearableGestureAction(gestureType: 3, memoActive: false),

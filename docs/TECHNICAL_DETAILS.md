@@ -48,12 +48,23 @@ stopping continuous LC3 capture.
 Memo and agent-response details are host-paginated rather than relying on
 firmware text scrolling. Each page reserves one title row, seven wrapped body
 rows, one spacer, and one action/page row. Swipe down advances, swipe up goes
-back, and neither boundary wraps. A separate 8-pixel-wide image container at
-the right edge renders one continuous solid foreground rectangle beside the
-`544x288` detail body. The container itself is only as tall as the thumb, so
-there is no background track. A one-page detail uses the full height; on
-multi-page details the rectangle shrinks and moves proportionally. Selector and
-waiting pages retain the full `576x288` body and do not create the image.
+back, and neither boundary wraps. A separate firmware-valid 20-pixel-wide
+image container at the right edge renders one continuous 8-pixel solid
+foreground rectangle beside the `544x288` detail body. Its other 12 pixels are
+black, so no background track is visible. One-page details omit the unnecessary
+indicator because a 288-pixel image would exceed the G2's 144-pixel
+image-container height limit. On multi-page details the rectangle shrinks and
+moves proportionally. Selector and waiting pages retain the full `576x288`
+body and do not create the image.
+History rendering is serialized and coalesced by page signature before it
+reaches BLE, including while a prior render is in flight. Firmware
+notifications therefore cannot recursively resend the same page. The thumb
+bitmap waits for the same 300 ms page-settle interval as the proven drawing
+tool. A completed controlled rebuild cancels any stale recovery scheduled by
+the firmware's expected page-replacement lifecycle events. The phone's
+`Test detail thumb` action closes an open history selector, sends synthetic
+top, middle, and bottom pages at two-second intervals without private history,
+then restores the Hub page automatically.
 
 The microphone notification format observed in MentraOS and on hardware is:
 

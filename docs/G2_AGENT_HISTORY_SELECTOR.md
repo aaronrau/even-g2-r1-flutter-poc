@@ -94,14 +94,15 @@ after the swipe that generated the app event; rebuilding resets that viewport
 to the top and re-registers the invisible gesture-capture container. This keeps
 Memo and agent detail paging visibly synchronized with app state.
 
-Detail mode adds one 8-pixel-wide image container at the right edge. The image
-is a single continuous solid rectangle, and the container is only as tall as
-that foreground thumb, so there are no segmented glyphs and no background
-track. A one-page detail uses the full height. For multiple pages, the thumb
-shrinks and moves from top to bottom in proportion to the current host page.
-Keeping it separate from the 544-pixel-wide body preserves bounded host
-pagination and does not depend on overflowing the firmware's native text
-viewport. Selector and waiting pages do not create the image container.
+Multi-page detail mode adds one firmware-valid 20-pixel-wide image container at
+the right edge. Its final 8 pixels form one continuous solid rectangle; the
+other 12 are black, so there are no segmented glyphs or visible background
+track. The thumb shrinks and moves from top to bottom in proportion to the
+current host page. A one-page detail does not need an indicator and therefore
+does not create the otherwise over-height image. Keeping the multi-page image
+separate from the 544-pixel-wide body preserves bounded host pagination and
+does not depend on overflowing the firmware's native text viewport. Selector
+and waiting pages do not create the image container.
 
 ### Waiting for a response
 
@@ -365,9 +366,10 @@ gesture-controlled ownership.
 4. Tap and swipe events route through that state before ordinary gesture
    display. Active Memo remains the first gate; double tap retains its existing
    shortcut only while the selector is closed.
-5. Persistent selector pages use the full 576×288 G2 text container. Detail
-   pages use a 544×288 body and one variable-height, 8-pixel-wide right-edge
-   bitmap thumb. Both use high-priority bounded writes.
+5. Persistent selector pages use the full 576×288 G2 text container.
+   Multi-page details use a 544×288 body and one variable-height right-edge
+   bitmap with a visible 8-pixel thumb inside a valid 20-pixel container. Both
+   use high-priority bounded writes.
 6. The latest saved Memo is read locally without routing it through WebSocket
    or the agent exchange store.
 7. Selector rendering reads app-private atomic records and does not wait on a
@@ -403,8 +405,10 @@ gesture-controlled ownership.
 - selector ownership prevents transcript and unrelated inbound overwrite;
 - matching response replaces waiting;
 - Memo preempts selector;
-- detail pages render a proportional right-edge indicator without changing
-  selector or waiting geometry;
+- multi-page details render a proportional right-edge indicator without
+  changing selector or waiting geometry;
+- duplicate notifications and state callbacks coalesce to one page render and
+  one thumb upload while that signature is queued, active, or already shown;
 - dismiss clears private text before restoring the pulse;
 - BLE timeout cannot stall later selector writes;
 - disconnect/reconnect rerenders no more than one bounded private page.
@@ -454,8 +458,9 @@ harness cannot mechanically actuate the wearable.
 - Swipes select deterministically and wrap.
 - Only acknowledged commands appear as sent.
 - Selecting a command shows its most recent correlated response.
-- Every Memo or agent detail shows a right-edge page-position indicator that
-  remains visible and tracks bounded swipe paging.
+- Every multi-page Memo or agent detail shows a right-edge page-position
+  indicator that remains visible and tracks bounded swipe paging; one-page
+  details do not allocate an image container.
 - A missing response issues exactly one read-only summary request and shows a
   persistent waiting state.
 - A matching result replaces waiting; unrelated results do not.

@@ -597,14 +597,22 @@ final class G2Connection {
       );
       return;
     }
+    // This controlled replacement makes any previously scheduled recovery
+    // obsolete. Lifecycle events emitted by this rebuild may schedule a new
+    // one, which is cancelled only after the replacement fully settles.
+    _pageRestoreTimer?.cancel();
+    _pageRestoreTimer = null;
     _pulseTimer?.cancel();
     _pulseTimer = null;
     _visibleGestureTimer?.cancel();
     _visibleGestureTimer = null;
     _visibleGesturePageLabel = null;
-    _fullPageTextIndicatorActive = showPageIndicator;
     _fullPageTextPageCount = pageCount < 1 ? 1 : pageCount;
     _fullPageTextPageIndex = pageIndex.clamp(0, _fullPageTextPageCount - 1);
+    // A single page does not scroll, and its 288 px full-height thumb would
+    // exceed the G2 image-container maximum height of 144 px.
+    _fullPageTextIndicatorActive =
+        showPageIndicator && _fullPageTextPageCount > 1;
     if (!_fullPageTextActive || !_pageCreated) {
       _fullPageTextActive = true;
       await _createFullPageText(content);
@@ -625,7 +633,9 @@ final class G2Connection {
         priority: AsyncWritePriority.high,
       );
       _lastPageContent = content;
-      await _sendFullPageTextIndicator();
+      if (await _sendFullPageTextIndicator()) {
+        _finishControlledPageRebuild('full-page text updated');
+      }
     }
     _log(
       'G2 TX',
@@ -679,25 +689,27 @@ final class G2Connection {
       priority: AsyncWritePriority.high,
     );
     _lastPageContent = content;
-    _pageCreated = true;
-    pageSessionStatus = 'full-page text created';
-    _onChanged();
-    await _sendFullPageTextIndicator();
+    if (await _sendFullPageTextIndicator()) {
+      _finishControlledPageRebuild('full-page text created');
+    }
   }
 
-  Future<void> _sendFullPageTextIndicator() async {
+  Future<bool> _sendFullPageTextIndicator() async {
     if (!_fullPageTextIndicatorActive) {
-      return;
+      return isConnected && _fullPageTextActive;
     }
     final pageIndex = _fullPageTextPageIndex;
     final pageCount = _fullPageTextPageCount;
-    await Future<void>.delayed(const Duration(milliseconds: 120));
+    // A full-page rebuild can emit abnormal_exit/system_exit while firmware
+    // replaces its prior container. Give that transition the same settle time
+    // as the proven drawing path before uploading the separate thumb bitmap.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
     if (!isConnected ||
         !_fullPageTextActive ||
         !_fullPageTextIndicatorActive ||
         pageIndex != _fullPageTextPageIndex ||
         pageCount != _fullPageTextPageCount) {
-      return;
+      return false;
     }
     final geometry = G2Protocol.detailPageIndicatorGeometry(
       pageIndex: pageIndex,
@@ -719,6 +731,19 @@ final class G2Connection {
       'Detail page thumb sent (${pageIndex + 1}/$pageCount; '
           'y=${geometry.y}; height=${geometry.height})',
     );
+    return true;
+  }
+
+  void _finishControlledPageRebuild(String status) {
+    // Lifecycle exits produced by our own page replacement may have scheduled
+    // recovery while the write was in flight. The completed rebuild already
+    // owns the foreground, so that recovery is stale and must not race a
+    // second page/image sequence onto BLE.
+    _pageRestoreTimer?.cancel();
+    _pageRestoreTimer = null;
+    _pageCreated = true;
+    pageSessionStatus = status;
+    _onChanged();
   }
 
   Future<void> showMemo({required String note, required String status}) async {
@@ -874,6 +899,36 @@ final class G2Connection {
       reserveFlag: true,
     );
     _log('G2 drawing TX', 'img-10 • 64x64 • ${bitmap.length} byte 4-bit BMP');
+  }
+
+  /// Exercises the exact detail-thumb page and image sequence without opening
+  /// private history or requiring a wearable gesture.
+  Future<void> sendTestDetailThumb() async {
+    _requireConnected();
+    if (_memoDisplayActive) {
+      throw StateError(
+        'Finish the active Memo before testing the detail thumb.',
+      );
+    }
+    const content =
+        '[ Detail thumb test ]\n'
+        'Synthetic display content\n'
+        'No private history is used\n'
+        '\n'
+        '[ Test restores automatically ]';
+    try {
+      for (var pageIndex = 0; pageIndex < 3; pageIndex++) {
+        await showFullPageText(
+          content,
+          showPageIndicator: true,
+          pageIndex: pageIndex,
+          pageCount: 3,
+        );
+        await Future<void>.delayed(const Duration(seconds: 2));
+      }
+    } finally {
+      await exitFullPageText();
+    }
   }
 
   Future<void> setTerminalMode(bool enabled) {

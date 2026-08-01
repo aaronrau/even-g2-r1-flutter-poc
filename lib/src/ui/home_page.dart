@@ -795,6 +795,12 @@ final class _HomePageState extends State<HomePage> {
                       : () => _run(g2.sendTestDrawing),
                   child: const Text('Test drawing'),
                 ),
+                OutlinedButton(
+                  onPressed: _busy || !g2.isConnected
+                      ? null
+                      : () => _run(controller.sendTestDetailThumb),
+                  child: const Text('Test detail thumb'),
+                ),
               ],
             ),
           ],

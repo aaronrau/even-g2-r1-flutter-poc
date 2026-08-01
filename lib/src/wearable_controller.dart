@@ -34,6 +34,48 @@ enum WearableGestureAction { ignore, finishMemo, requestAgentSummary }
 
 enum AgentHistorySelectionMove { none, previous, next }
 
+/// Serializes display work and suppresses a duplicate key while it is queued,
+/// in flight, or already rendered.
+final class CoalescedDisplayQueue {
+  Future<void> _tail = Future<void>.value();
+  Object? _claimedKey;
+
+  Future<void> schedule({
+    required Object key,
+    required Future<void> Function() render,
+    void Function(Object error)? onError,
+  }) {
+    final operation = _tail.then<void>((_) async {
+      if (_claimedKey == key) {
+        return;
+      }
+      _claimedKey = key;
+      try {
+        await render();
+      } on Object {
+        if (_claimedKey == key) {
+          _claimedKey = null;
+        }
+        rethrow;
+      }
+    });
+    final guarded = operation.then<void>(
+      (_) {},
+      onError: (Object error) {
+        onError?.call(error);
+      },
+    );
+    _tail = guarded;
+    return guarded;
+  }
+
+  void reset() {
+    _claimedKey = null;
+  }
+
+  Future<void> waitForIdle() => _tail;
+}
+
 WearableGestureAction resolveWearableGestureAction({
   required int gestureType,
   required bool memoActive,
@@ -149,7 +191,7 @@ final class WearableController extends ChangeNotifier
   Timer? _audioNotifyTimer;
   Timer? _backgroundNotifyTimer;
   Future<void> _memoDisplayTail = Future<void>.value();
-  Future<void> _historyDisplayTail = Future<void>.value();
+  final CoalescedDisplayQueue _historyDisplayQueue = CoalescedDisplayQueue();
   final G2AgentHistoryState _agentHistory = G2AgentHistoryState();
   Timer? _agentHistoryWaitTimer;
   bool _agentExchangeStoreReady = false;
@@ -832,6 +874,9 @@ final class WearableController extends ChangeNotifier
   }
 
   void _connectionChanged() {
+    if (!g2.isConnected) {
+      _historyDisplayQueue.reset();
+    }
     if (_g2UnexpectedlyDisconnected && g2.isConnected) {
       _g2UnexpectedlyDisconnected = false;
       _audioPipeline.handleWearableReconnect();
@@ -839,9 +884,6 @@ final class WearableController extends ChangeNotifier
     _safeNotify();
     _glassesStatusQueue.connectionChanged();
     _queueMemoDisplaySync();
-    if (_agentHistory.isOpen && g2.isConnected) {
-      _queueAgentHistoryDisplay();
-    }
     final active = _hasWearableSession;
     if (_runtimeSessionActive != active) {
       _runtimeSessionActive = active;
@@ -872,6 +914,7 @@ final class WearableController extends ChangeNotifier
       _agentHistoryWaitTimer?.cancel();
       _agentHistoryWaitTimer = null;
       _agentHistory.close();
+      _historyDisplayQueue.reset();
       _glassesStatusQueue.setPaused(true, owner: 'memo');
     }
     _safeNotify();
@@ -1140,29 +1183,52 @@ final class WearableController extends ChangeNotifier
   }
 
   void _queueAgentHistoryDisplay() {
-    final operation = _historyDisplayTail.then((_) => _showAgentHistory());
-    _historyDisplayTail = operation.then<void>(
-      (_) {},
-      onError: (Object _) {
-        addLog(
-          'WebSocket',
-          '[WorkBench][AgentHistory] state=display_failed',
-          isError: true,
-        );
-      },
-    );
+    unawaited(_showAgentHistory());
+  }
+
+  Future<void> sendTestDetailThumb() async {
+    if (_agentHistory.isOpen) {
+      await _closeAgentHistory(clearDisplay: false);
+    }
+    await _historyDisplayQueue.waitForIdle();
+    await g2.sendTestDetailThumb();
   }
 
   Future<void> _showAgentHistory() async {
     if (_disposed || !_agentHistory.isOpen || !g2.isConnected) {
       return;
     }
+    final generation = _agentHistoryGeneration;
     final isDetail = _agentHistory.mode == G2AgentHistoryMode.detail;
-    await g2.showFullPageText(
-      _agentHistory.render(),
-      showPageIndicator: isDetail,
-      pageIndex: isDetail ? _agentHistory.detailPageIndex : 0,
-      pageCount: isDetail ? _agentHistory.detailPageCount : 1,
+    final content = _agentHistory.render();
+    final pageIndex = isDetail ? _agentHistory.detailPageIndex : 0;
+    final pageCount = isDetail ? _agentHistory.detailPageCount : 1;
+    final key =
+        '$generation\u0000${_agentHistory.mode.name}\u0000'
+        '$pageIndex\u0000$pageCount\u0000$content';
+    await _historyDisplayQueue.schedule(
+      key: key,
+      render: () async {
+        if (_disposed ||
+            generation != _agentHistoryGeneration ||
+            !_agentHistory.isOpen ||
+            !g2.isConnected) {
+          return;
+        }
+        await g2.showFullPageText(
+          content,
+          showPageIndicator: isDetail,
+          pageIndex: pageIndex,
+          pageCount: pageCount,
+        );
+      },
+      onError: (_) {
+        addLog(
+          'WebSocket',
+          '[WorkBench][AgentHistory] state=display_failed',
+          isError: true,
+        );
+      },
     );
   }
 
@@ -1177,6 +1243,7 @@ final class WearableController extends ChangeNotifier
       _agentHistoryWaitTimer?.cancel();
       _agentHistoryWaitTimer = null;
       _agentHistory.close();
+      _historyDisplayQueue.reset();
       if (clearDisplay && g2.isConnected && !g2.isMemoDisplayActive) {
         try {
           await g2.exitFullPageText();
