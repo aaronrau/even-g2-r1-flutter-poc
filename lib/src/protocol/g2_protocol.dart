@@ -564,11 +564,11 @@ final class G2Protocol {
   static const int fullPageTextHeight = 288;
   static const int fullPageDetailTextWidth = 544;
   // G2 image containers accept width 20–288 and height 20–144. Keep the
-  // visible thumb at 8 px by placing it at the right of a valid 20 px image
+  // visible thumb at 4 px by placing it at the right of a valid 20 px image
   // whose remaining pixels are black/invisible on the display.
   static const int fullPageIndicatorX = 556;
   static const int fullPageIndicatorWidth = 20;
-  static const int fullPageIndicatorBarWidth = 8;
+  static const int fullPageIndicatorBarWidth = 4;
   static const int fullPageIndicatorMinimumHeight = 20;
   static const int fullPageIndicatorMaximumHeight = 144;
   static const int maximumMemoRunes = 4096;

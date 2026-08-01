@@ -95,8 +95,8 @@ to the top and re-registers the invisible gesture-capture container. This keeps
 Memo and agent detail paging visibly synchronized with app state.
 
 Multi-page detail mode adds one firmware-valid 20-pixel-wide image container at
-the right edge. Its final 8 pixels form one continuous solid rectangle; the
-other 12 are black, so there are no segmented glyphs or visible background
+the right edge. Its final 4 pixels form one continuous solid rectangle; the
+other 16 are black, so there are no segmented glyphs or visible background
 track. The thumb shrinks and moves from top to bottom in proportion to the
 current host page. A one-page detail does not need an indicator and therefore
 does not create the otherwise over-height image. Keeping the multi-page image
@@ -368,7 +368,7 @@ gesture-controlled ownership.
    shortcut only while the selector is closed.
 5. Persistent selector pages use the full 576×288 G2 text container.
    Multi-page details use a 544×288 body and one variable-height right-edge
-   bitmap with a visible 8-pixel thumb inside a valid 20-pixel container. Both
+   bitmap with a visible 4-pixel thumb inside a valid 20-pixel container. Both
    use high-priority bounded writes.
 6. The latest saved Memo is read locally without routing it through WebSocket
    or the agent exchange store.

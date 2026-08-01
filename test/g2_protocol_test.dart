@@ -147,6 +147,7 @@ void main() {
       );
       final header = ByteData.sublistView(bitmap);
 
+      expect(G2Protocol.fullPageIndicatorBarWidth, 4);
       expect(page[1], 3);
       expect(body[3], G2Protocol.fullPageDetailTextWidth);
       expect(indicator[1], G2Protocol.fullPageIndicatorX);

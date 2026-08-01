@@ -49,8 +49,8 @@ Memo and agent-response details are host-paginated rather than relying on
 firmware text scrolling. Each page reserves one title row, seven wrapped body
 rows, one spacer, and one action/page row. Swipe down advances, swipe up goes
 back, and neither boundary wraps. A separate firmware-valid 20-pixel-wide
-image container at the right edge renders one continuous 8-pixel solid
-foreground rectangle beside the `544x288` detail body. Its other 12 pixels are
+image container at the right edge renders one continuous 4-pixel solid
+foreground rectangle beside the `544x288` detail body. Its other 16 pixels are
 black, so no background track is visible. One-page details omit the unnecessary
 indicator because a 288-pixel image would exceed the G2's 144-pixel
 image-container height limit. On multi-page details the rectangle shrinks and
