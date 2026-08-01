@@ -224,6 +224,9 @@ final class _HomePageState extends State<HomePage> {
   Widget _buildConversationEnrollmentPrompt() {
     final theme = Theme.of(context);
     final preparing = controller.conversationAnalysisStarting;
+    final checking = controller.conversationAnalysisState == 'enrolling';
+    final accepted = controller.acceptedConversationEnrollmentSamples;
+    final required = controller.requiredConversationEnrollmentSamples;
     return Container(
       constraints: const BoxConstraints(minHeight: 48),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -245,8 +248,10 @@ final class _HomePageState extends State<HomePage> {
             child: Text(
               preparing
                   ? 'Preparing private speaker analysis…'
-                  : 'Speak one clear sentence now. It will be saved as your '
-                        '“You” voice signature.',
+                  : checking
+                  ? 'Checking voice sample ${accepted + 1} of $required…'
+                  : 'Voice sample ${accepted + 1} of $required: speak one '
+                        'clear sentence, then pause while it is checked.',
               style: theme.textTheme.bodyMedium,
             ),
           ),
@@ -420,6 +425,11 @@ final class _HomePageState extends State<HomePage> {
         sharedFolderName: controller.sharedAudioFolder?.displayName,
         analysisEnabled: controller.conversationAnalysisEnabled,
         needsEnrollment: controller.conversationNeedsEnrollment,
+        enrollmentPending: controller.conversationEnrollmentPending,
+        acceptedEnrollmentSamples:
+            controller.acceptedConversationEnrollmentSamples,
+        requiredEnrollmentSamples:
+            controller.requiredConversationEnrollmentSamples,
         analysisState: controller.conversationAnalysisState,
         knownSpeakerCount: controller.knownSpeakerCount,
         pendingConversationCount: controller.pendingConversationCount,
@@ -478,6 +488,11 @@ final class _HomePageState extends State<HomePage> {
     final enabled = controller.conversationAnalysisEnabled;
     final error = controller.conversationAnalysisError;
     final state = controller.conversationAnalysisState.replaceAll('_', ' ');
+    final enrollmentPending =
+        controller.conversationNeedsEnrollment ||
+        controller.conversationEnrollmentPending;
+    final accepted = controller.acceptedConversationEnrollmentSamples;
+    final required = controller.requiredConversationEnrollmentSamples;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -515,9 +530,10 @@ final class _HomePageState extends State<HomePage> {
             if (enabled) ...<Widget>[
               const SizedBox(height: 8),
               Text(
-                controller.conversationNeedsEnrollment
-                    ? 'Speak one clear sentence. The next speech segment '
-                          'becomes your saved “You” signature.'
+                enrollmentPending
+                    ? 'Voice sample ${accepted + 1} of $required: speak one '
+                          'clear sentence, then pause while it is checked. '
+                          'Only you should speak for all three samples.'
                     : 'New voices are assigned a saved speaker label and '
                           'matched again in future conversations.',
                 style: theme.textTheme.bodyMedium,
@@ -531,7 +547,7 @@ final class _HomePageState extends State<HomePage> {
                 spacing: 8,
                 runSpacing: 8,
                 children: <Widget>[
-                  if (controller.conversationNeedsEnrollment)
+                  if (enrollmentPending)
                     FilledButton.icon(
                       onPressed: _busy
                           ? null

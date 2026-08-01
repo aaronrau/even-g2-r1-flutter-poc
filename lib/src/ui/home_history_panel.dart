@@ -17,6 +17,9 @@ final class HomeHistoryPanel extends StatefulWidget {
     this.voiceMemos = const <VoiceMemoRecord>[],
     required this.analysisEnabled,
     required this.needsEnrollment,
+    this.enrollmentPending = false,
+    this.acceptedEnrollmentSamples = 0,
+    this.requiredEnrollmentSamples = 3,
     required this.analysisState,
     required this.knownSpeakerCount,
     required this.pendingConversationCount,
@@ -47,6 +50,9 @@ final class HomeHistoryPanel extends StatefulWidget {
   final List<VoiceMemoRecord> voiceMemos;
   final bool analysisEnabled;
   final bool needsEnrollment;
+  final bool enrollmentPending;
+  final int acceptedEnrollmentSamples;
+  final int requiredEnrollmentSamples;
   final String analysisState;
   final int knownSpeakerCount;
   final int pendingConversationCount;
@@ -542,13 +548,17 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         label: 'Loading conversations…',
       );
     }
-    if (widget.needsEnrollment && chronological.isEmpty) {
+    final enrollmentNeeded = widget.needsEnrollment || widget.enrollmentPending;
+    final enrollmentPrompt =
+        'Voice sample ${widget.acceptedEnrollmentSamples + 1} of '
+        '${widget.requiredEnrollmentSamples}: speak one clear sentence, '
+        'then pause while it is checked.';
+    if (enrollmentNeeded && chronological.isEmpty) {
       return Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 320),
           child: Text(
-            'Speak one clear sentence. The next detected speech becomes your '
-            'saved “You” voice signature.',
+            enrollmentPrompt,
             textAlign: TextAlign.center,
             style: theme.textTheme.bodyMedium,
           ),
@@ -599,7 +609,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                 style: theme.textTheme.bodyMedium,
               ),
               if (widget.analysisEnabled &&
-                  !widget.needsEnrollment &&
+                  !enrollmentNeeded &&
                   widget.onResetPrimarySpeaker != null) ...<Widget>[
                 const SizedBox(height: 12),
                 _buildResetPrimarySpeakerButton(),
@@ -635,12 +645,8 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         ),
         const SizedBox(height: 8),
         if (widget.analysisEnabled) ...<Widget>[
-          if (widget.needsEnrollment)
-            Text(
-              'Speak one clear sentence. The next detected speech becomes '
-              'your new saved “You” voice signature.',
-              style: theme.textTheme.bodyMedium,
-            )
+          if (enrollmentNeeded)
+            Text(enrollmentPrompt, style: theme.textTheme.bodyMedium)
           else if (widget.onResetPrimarySpeaker != null)
             Align(
               alignment: Alignment.centerRight,

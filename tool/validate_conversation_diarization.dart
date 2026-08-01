@@ -8,7 +8,24 @@ import 'package:even_g2_r1_poc/src/audio/speech_model.dart';
 
 Future<void> main(List<String> arguments) async {
   final options = _parseOptions(arguments);
-  final enrollment = _requiredFile(options, 'enrollment');
+  final enrollmentFiles = (options['enrollments'] ?? '')
+      .split(',')
+      .map((path) => path.trim())
+      .where((path) => path.isNotEmpty)
+      .map(File.new)
+      .toList();
+  if (enrollmentFiles.isEmpty) {
+    final enrollment = _requiredFile(options, 'enrollment');
+    enrollmentFiles.addAll(
+      List<File>.filled(minimumPrimarySpeakerEnrollmentSamples, enrollment),
+    );
+  }
+  if (enrollmentFiles.length < minimumPrimarySpeakerEnrollmentSamples ||
+      enrollmentFiles.any((file) => !file.existsSync())) {
+    throw const FormatException(
+      '--enrollments must contain at least three available WAV files.',
+    );
+  }
   final conversation = _optionalFile(options, 'conversation');
   final turns = (options['turns'] ?? '')
       .split(',')
@@ -100,18 +117,37 @@ Future<void> main(List<String> arguments) async {
     await supervisor.start();
     var profiles = const <SpeakerProfile>[];
 
-    pending = Completer<ConversationAnalysisResult>();
-    supervisor.analyze(
-      segmentId: 'offline-enrollment',
-      wavPath: enrollment.path,
-      profiles: profiles,
-      enrollment: true,
-    );
-    final enrolled = await pending.future.timeout(const Duration(minutes: 2));
-    profiles = enrolled.profiles;
-    if (profiles.length != 1 || !profiles.single.isPrimary) {
+    for (
+      var index = 0;
+      index < minimumPrimarySpeakerEnrollmentSamples;
+      index++
+    ) {
+      pending = Completer<ConversationAnalysisResult>();
+      supervisor.analyze(
+        segmentId: 'offline-enrollment-${index + 1}',
+        wavPath: enrollmentFiles[index].path,
+        profiles: profiles,
+        enrollment: true,
+      );
+      final enrolled = await pending.future.timeout(const Duration(minutes: 2));
+      profiles = enrolled.profiles;
+      final primaries = profiles.where((profile) => profile.isPrimary);
+      final primary = primaries.isEmpty ? null : primaries.first;
+      if (primary == null ||
+          (index + 1 < minimumPrimarySpeakerEnrollmentSamples &&
+              !primary.enrollmentInProgress)) {
+        throw StateError('Offline enrollment sample progress is invalid.');
+      }
+    }
+    if (profiles.length != 1 ||
+        !profiles.single.isPrimary ||
+        !profiles.single.calibrationComplete ||
+        profiles.single.enrollmentInProgress) {
       throw StateError('Offline enrollment did not create one primary user.');
     }
+    final enrollmentProfileCount = profiles.length;
+    final calibratedSignatureThreshold =
+        profiles.single.signatureMatchThreshold;
 
     pending = null;
     await supervisor.restartForTest();
@@ -250,7 +286,9 @@ Future<void> main(List<String> arguments) async {
     stdout.writeln(
       const JsonEncoder.withIndent('  ').convert(<String, Object>{
         'passed': true,
-        'enrollmentProfiles': enrolled.profiles.length,
+        'enrollmentProfiles': enrollmentProfileCount,
+        'enrollmentSamples': minimumPrimarySpeakerEnrollmentSamples,
+        'calibratedSignatureThreshold': calibratedSignatureThreshold,
         'firstConversationTurns': firstConversationTurns,
         'secondConversationTurns': secondConversationTurns,
         'stableAttribution': _sameValues(firstLabels, secondLabels),
@@ -301,8 +339,9 @@ Map<String, String> _parseOptions(List<String> arguments) {
     final key = arguments[index];
     if (!key.startsWith('--') || index + 1 >= arguments.length) {
       throw const FormatException(
-        'Use --enrollment WAV --conversation WAV '
-        'or --enrollment WAV --turns WAV,WAV '
+        'Use --enrollments WAV,WAV,WAV --conversation WAV '
+        'or --enrollments WAV,WAV,WAV --turns WAV,WAV '
+        '(legacy --enrollment WAV reuses one fixture three times) '
         '[--expected-turns "TEXT|TEXT"] [--repository-root DIRECTORY] '
         '[--cluster-threshold NUMBER] [--signature-threshold NUMBER] '
         '[--minimum-speakers NUMBER].',

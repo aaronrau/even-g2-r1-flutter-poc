@@ -231,6 +231,10 @@ final class WearableController extends ChangeNotifier
   bool get conversationNeedsEnrollment => _conversationAnalysis.needsEnrollment;
   bool get conversationEnrollmentPending =>
       _conversationAnalysis.isEnrollmentPending;
+  int get acceptedConversationEnrollmentSamples =>
+      _conversationAnalysis.acceptedEnrollmentSamples;
+  int get requiredConversationEnrollmentSamples =>
+      _conversationAnalysis.requiredEnrollmentSamples;
   String get conversationAnalysisState => _conversationAnalysis.state;
   String? get conversationAnalysisError => _conversationAnalysis.error;
   int get knownSpeakerCount => _conversationAnalysis.knownSpeakerCount;

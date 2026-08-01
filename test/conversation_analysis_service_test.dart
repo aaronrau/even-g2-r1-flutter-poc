@@ -85,6 +85,13 @@ void main() {
       expect(service.pendingCount, 1);
       expect(service.isEnrollmentPending, isTrue);
       expect(service.state, 'enrolling');
+
+      service.acceptFinalizedSegment(
+        '${resetMicros + 2}-too-soon',
+        '${temporary.path}/too-soon.wav',
+      );
+      expect(service.pendingCount, 1);
+      expect(logs, contains(contains('sample_analysis_in_progress')));
     },
   );
 }

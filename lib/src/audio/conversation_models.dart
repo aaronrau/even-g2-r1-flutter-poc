@@ -6,6 +6,9 @@ const int maximumNonPrimarySpeakerProfiles = 16;
 // af_maple/af_sol near-collision measured at 0.6390.
 const double defaultSpeakerSignatureMatchThreshold = 0.64;
 const double speakerSignatureLearningThreshold = 0.78;
+const int minimumPrimarySpeakerEnrollmentSamples = 3;
+const double maximumCalibratedSpeakerSignatureMatchThreshold = 0.90;
+const double speakerEnrollmentCalibrationMargin = 0.04;
 
 final class ConversationModelPaths {
   const ConversationModelPaths({
@@ -72,6 +75,9 @@ final class SpeakerProfile {
     required this.updatedAt,
     this.signatures = const <List<double>>[],
     this.isPrimary = false,
+    this.signatureMatchThreshold = defaultSpeakerSignatureMatchThreshold,
+    this.calibrationComplete = true,
+    this.enrollmentSignatures = const <List<double>>[],
   });
 
   factory SpeakerProfile.fromJson(Map<String, Object?> json) {
@@ -129,6 +135,44 @@ final class SpeakerProfile {
         signatures.add(signature);
       }
     }
+    final rawEnrollmentSignatures = json['enrollmentSignatures'];
+    final enrollmentSignatures = <List<double>>[];
+    if (rawEnrollmentSignatures != null) {
+      if (rawEnrollmentSignatures is! List<Object?>) {
+        throw const FormatException(
+          'The saved speaker enrollment samples are invalid.',
+        );
+      }
+      for (final rawSignature in rawEnrollmentSignatures) {
+        if (rawSignature is! List<Object?>) {
+          throw const FormatException(
+            'The saved speaker enrollment samples are invalid.',
+          );
+        }
+        final signature = rawSignature
+            .whereType<num>()
+            .map((value) => value.toDouble())
+            .toList(growable: false);
+        if (signature.length != values.length ||
+            signature.length != rawSignature.length ||
+            signature.any((value) => !value.isFinite)) {
+          throw const FormatException(
+            'The saved speaker enrollment samples are invalid.',
+          );
+        }
+        enrollmentSignatures.add(signature);
+      }
+    }
+    final rawThreshold = json['signatureMatchThreshold'];
+    final signatureMatchThreshold = rawThreshold == null
+        ? defaultSpeakerSignatureMatchThreshold
+        : rawThreshold is num
+        ? rawThreshold.toDouble()
+        : double.nan;
+    if (!isValidSpeakerSignatureThreshold(signatureMatchThreshold) ||
+        enrollmentSignatures.length >= minimumPrimarySpeakerEnrollmentSamples) {
+      throw const FormatException('The saved speaker calibration is invalid.');
+    }
     return SpeakerProfile(
       id: id.trim(),
       label: label.trim(),
@@ -138,6 +182,10 @@ final class SpeakerProfile {
       createdAt: createdAt.toUtc(),
       updatedAt: updatedAt.toUtc(),
       isPrimary: json['isPrimary'] == true,
+      signatureMatchThreshold: signatureMatchThreshold,
+      // Profiles written before calibrated enrollment existed remain valid.
+      calibrationComplete: json['calibrationComplete'] != false,
+      enrollmentSignatures: enrollmentSignatures,
     );
   }
 
@@ -149,6 +197,14 @@ final class SpeakerProfile {
   final DateTime createdAt;
   final DateTime updatedAt;
   final bool isPrimary;
+  final double signatureMatchThreshold;
+  final bool calibrationComplete;
+  final List<List<double>> enrollmentSignatures;
+
+  int get acceptedEnrollmentSamples => enrollmentSignatures.length;
+
+  bool get enrollmentInProgress =>
+      !calibrationComplete || enrollmentSignatures.isNotEmpty;
 
   SpeakerProfile merge(List<double> candidate, DateTime now) {
     if (candidate.length != embedding.length ||
@@ -182,6 +238,9 @@ final class SpeakerProfile {
       createdAt: createdAt,
       updatedAt: now.toUtc(),
       isPrimary: isPrimary,
+      signatureMatchThreshold: signatureMatchThreshold,
+      calibrationComplete: calibrationComplete,
+      enrollmentSignatures: enrollmentSignatures,
     );
   }
 
@@ -194,7 +253,157 @@ final class SpeakerProfile {
     'createdAt': createdAt.toUtc().toIso8601String(),
     'updatedAt': updatedAt.toUtc().toIso8601String(),
     'isPrimary': isPrimary,
+    'signatureMatchThreshold': signatureMatchThreshold,
+    'calibrationComplete': calibrationComplete,
+    'enrollmentSignatures': enrollmentSignatures,
   };
+}
+
+/// Adds one verified single-speaker sample to a primary enrollment session.
+///
+/// An existing calibrated profile remains unchanged until all three update
+/// samples agree. A new profile is deliberately marked incomplete so it can
+/// never identify ordinary speech as `You` before calibration finishes.
+SpeakerProfile acceptPrimarySpeakerEnrollmentSample({
+  required SpeakerProfile? primary,
+  required List<double> candidate,
+  required DateTime now,
+}) {
+  if (candidate.isEmpty || candidate.any((value) => !value.isFinite)) {
+    throw StateError('Enrollment did not contain a valid voice signature.');
+  }
+  final normalized = normalizeSpeakerEmbedding(candidate);
+  if (speakerSimilarity(normalized, normalized) < 0) {
+    throw StateError('Enrollment did not contain a usable voice signature.');
+  }
+  if (primary != null && normalized.length != primary.embedding.length) {
+    throw StateError('Enrollment voice signature dimensions did not match.');
+  }
+
+  final priorEnrollment =
+      primary?.enrollmentSignatures ?? const <List<double>>[];
+  if (priorEnrollment.isEmpty && primary?.calibrationComplete == true) {
+    final priorSimilarity = speakerProfileSimilarity(primary!, normalized);
+    if (!speakerSignatureMatches(
+      priorSimilarity,
+      threshold: primary.signatureMatchThreshold,
+    )) {
+      throw StateError(
+        'This enrollment sample does not match the saved You signature. '
+        'Reset You first if the saved signature is no longer valid.',
+      );
+    }
+  }
+  for (final prior in priorEnrollment) {
+    if (!speakerSignatureMatches(speakerSimilarity(prior, normalized))) {
+      throw StateError(
+        'This enrollment sample does not match the earlier voice samples. '
+        'Only the same person should speak for all three samples.',
+      );
+    }
+  }
+
+  final pending = <List<double>>[...priorEnrollment, normalized];
+  if (pending.length < minimumPrimarySpeakerEnrollmentSamples) {
+    if (primary == null) {
+      return SpeakerProfile(
+        id: 'primary-user',
+        label: 'You',
+        embedding: normalized,
+        signatures: <List<double>>[normalized],
+        sampleCount: 1,
+        createdAt: now.toUtc(),
+        updatedAt: now.toUtc(),
+        isPrimary: true,
+        calibrationComplete: false,
+        enrollmentSignatures: pending,
+      );
+    }
+    return SpeakerProfile(
+      id: primary.id,
+      label: primary.label,
+      embedding: primary.embedding,
+      signatures: primary.signatures,
+      sampleCount: primary.sampleCount,
+      createdAt: primary.createdAt,
+      updatedAt: now.toUtc(),
+      isPrimary: true,
+      signatureMatchThreshold: primary.signatureMatchThreshold,
+      calibrationComplete: primary.calibrationComplete,
+      enrollmentSignatures: pending,
+    );
+  }
+
+  final calibratedThreshold = calibrateSpeakerSignatureMatchThreshold(pending);
+  if (primary == null || !primary.calibrationComplete) {
+    final centroid = normalizeSpeakerEmbedding(
+      List<double>.generate(
+        normalized.length,
+        (index) =>
+            pending.fold<double>(
+              0,
+              (sum, signature) => sum + signature[index],
+            ) /
+            pending.length,
+        growable: false,
+      ),
+    );
+    return SpeakerProfile(
+      id: primary?.id ?? 'primary-user',
+      label: 'You',
+      embedding: centroid,
+      signatures: pending,
+      sampleCount: pending.length,
+      createdAt: primary?.createdAt ?? now.toUtc(),
+      updatedAt: now.toUtc(),
+      isPrimary: true,
+      signatureMatchThreshold: calibratedThreshold,
+    );
+  }
+
+  var updated = primary;
+  for (final signature in pending) {
+    updated = updated.merge(signature, now);
+  }
+  return SpeakerProfile(
+    id: updated.id,
+    label: updated.label,
+    embedding: updated.embedding,
+    signatures: updated.signatures,
+    sampleCount: updated.sampleCount,
+    createdAt: updated.createdAt,
+    updatedAt: now.toUtc(),
+    isPrimary: true,
+    signatureMatchThreshold: calibratedThreshold,
+  );
+}
+
+double calibrateSpeakerSignatureMatchThreshold(List<List<double>> signatures) {
+  if (signatures.length < minimumPrimarySpeakerEnrollmentSamples) {
+    throw ArgumentError.value(
+      signatures.length,
+      'signatures',
+      'At least three enrollment samples are required.',
+    );
+  }
+  var weakestSimilarity = 1.0;
+  for (var left = 0; left < signatures.length; left++) {
+    for (var right = left + 1; right < signatures.length; right++) {
+      final similarity = speakerSimilarity(signatures[left], signatures[right]);
+      if (!similarity.isFinite || similarity < 0) {
+        throw ArgumentError.value(
+          signatures,
+          'signatures',
+          'Enrollment samples must contain compatible non-zero signatures.',
+        );
+      }
+      weakestSimilarity = min(weakestSimilarity, similarity);
+    }
+  }
+  return (weakestSimilarity - speakerEnrollmentCalibrationMargin).clamp(
+    defaultSpeakerSignatureMatchThreshold,
+    maximumCalibratedSpeakerSignatureMatchThreshold,
+  );
 }
 
 List<SpeakerProfile> retainNonPrimarySpeakerProfiles(

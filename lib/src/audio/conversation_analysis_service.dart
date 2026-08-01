@@ -70,13 +70,27 @@ final class ConversationAnalysisService {
 
   bool get isStarting => _starting;
   bool get isReady => _supervisor?.isReady ?? false;
+  SpeakerProfile? get _primaryProfile {
+    for (final profile in _profiles) {
+      if (profile.isPrimary) {
+        return profile;
+      }
+    }
+    return null;
+  }
+
   bool get needsEnrollment =>
-      enabled && !_profiles.any((profile) => profile.isPrimary);
+      enabled &&
+      (_primaryProfile == null || _primaryProfile!.enrollmentInProgress);
   bool get isEnrollmentPending =>
       _enrollmentRequested ||
       _activeJobEnrollment ||
       _jobs.any((job) => job.enrollment);
-  int get knownSpeakerCount => _profiles.length;
+  int get acceptedEnrollmentSamples =>
+      _primaryProfile?.acceptedEnrollmentSamples ?? 0;
+  int get requiredEnrollmentSamples => minimumPrimarySpeakerEnrollmentSamples;
+  int get knownSpeakerCount =>
+      _profiles.where((profile) => profile.calibrationComplete).length;
   int get pendingCount => _jobs.length + (_jobActive && _jobs.isEmpty ? 1 : 0);
 
   Future<void> initialize() async {
@@ -158,7 +172,8 @@ final class ConversationAnalysisService {
     log(
       'Conversation',
       '[WorkBench][Conversation] state=enrollment_waiting '
-          'prompt=speak_once',
+          'accepted=$acceptedEnrollmentSamples '
+          'required=$requiredEnrollmentSamples',
     );
     onChanged();
   }
@@ -243,7 +258,18 @@ final class ConversationAnalysisService {
       onChanged();
       return;
     }
-    _enrollmentRequested = false;
+    if (enrollment &&
+        (_activeJobEnrollment || _jobs.any((job) => job.enrollment))) {
+      log(
+        'Conversation',
+        '[WorkBench][Conversation] state=enrollment_segment_skipped '
+            'reason=sample_analysis_in_progress '
+            'accepted=$acceptedEnrollmentSamples '
+            'required=$requiredEnrollmentSamples',
+      );
+      onChanged();
+      return;
+    }
     if (enrollment) {
       _minimumEnrollmentSegmentMicros = null;
     }
@@ -364,8 +390,34 @@ final class ConversationAnalysisService {
         await _sharedAudioExportStore.exportFiles(<String>[retained.textPath]);
         completedConversations++;
       }
-      state = 'ready';
-      error = null;
+      final primary = _primaryProfile;
+      if (result.enrollment &&
+          (primary == null || primary.enrollmentInProgress)) {
+        _enrollmentRequested = true;
+        _minimumEnrollmentSegmentMicros = _nowMicros();
+        state = 'waiting_for_enrollment_speech';
+        error = null;
+        log(
+          'Conversation',
+          '[WorkBench][Conversation] state=enrollment_waiting '
+              'accepted=$acceptedEnrollmentSamples '
+              'required=$requiredEnrollmentSamples',
+        );
+      } else {
+        _enrollmentRequested = false;
+        _minimumEnrollmentSegmentMicros = null;
+        state = 'ready';
+        error = null;
+        if (result.enrollment && primary != null) {
+          log(
+            'Conversation',
+            '[WorkBench][Conversation] state=enrollment_complete '
+                'accepted=$requiredEnrollmentSamples '
+                'signature_match_threshold='
+                '${primary.signatureMatchThreshold.toStringAsFixed(3)}',
+          );
+        }
+      }
     } catch (caught) {
       _fail(caught, stateName: 'storage_failed');
     } finally {
@@ -377,13 +429,17 @@ final class ConversationAnalysisService {
   }
 
   void _onFailure(String segmentId, Object caught) {
+    final failedEnrollment = _activeJobEnrollment;
     _removeJob(segmentId);
     _jobActive = false;
     _activeJobEnrollment = false;
     error = _oneLine(caught);
-    state = 'analysis_failed';
-    if (!_profiles.any((profile) => profile.isPrimary)) {
+    state = failedEnrollment
+        ? 'waiting_for_enrollment_speech'
+        : 'analysis_failed';
+    if (failedEnrollment || needsEnrollment) {
       _enrollmentRequested = true;
+      _minimumEnrollmentSegmentMicros = _nowMicros();
     }
     unawaited(_persistJobs());
     _dispatch();

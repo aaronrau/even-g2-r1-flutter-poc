@@ -382,7 +382,9 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('asks for one clear enrollment sentence', (tester) async {
+  testWidgets('shows progress through three enrollment samples', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       _app(
         const HomeHistoryPanel(
@@ -390,6 +392,9 @@ void main() {
           conversations: <SharedConversationTurn>[],
           analysisEnabled: true,
           needsEnrollment: true,
+          enrollmentPending: true,
+          acceptedEnrollmentSamples: 1,
+          requiredEnrollmentSamples: 3,
           analysisState: 'waiting_for_enrollment_speech',
           knownSpeakerCount: 0,
           pendingConversationCount: 0,
@@ -402,8 +407,8 @@ void main() {
     await tester.tap(find.text('Conversation'));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Speak one clear sentence'), findsOneWidget);
-    expect(find.textContaining('“You” voice signature'), findsOneWidget);
+    expect(find.textContaining('Voice sample 2 of 3'), findsOneWidget);
+    expect(find.textContaining('pause while it is checked'), findsOneWidget);
   });
 
   testWidgets('shows live and saved voice memos in Conversation', (

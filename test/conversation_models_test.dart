@@ -86,6 +86,139 @@ void main() {
     );
   });
 
+  test('primary enrollment requires three consistent voice samples', () {
+    final now = DateTime.utc(2026, 1, 1);
+    final first = acceptPrimarySpeakerEnrollmentSample(
+      primary: null,
+      candidate: const <double>[1, 0],
+      now: now,
+    );
+
+    expect(first.calibrationComplete, isFalse);
+    expect(first.acceptedEnrollmentSamples, 1);
+    expect(first.enrollmentInProgress, isTrue);
+
+    final second = acceptPrimarySpeakerEnrollmentSample(
+      primary: first,
+      candidate: const <double>[0.8, 0.6],
+      now: now.add(const Duration(seconds: 1)),
+    );
+    expect(second.calibrationComplete, isFalse);
+    expect(second.acceptedEnrollmentSamples, 2);
+
+    final complete = acceptPrimarySpeakerEnrollmentSample(
+      primary: second,
+      candidate: const <double>[0.75, 0.6614378278],
+      now: now.add(const Duration(seconds: 2)),
+    );
+    expect(complete.calibrationComplete, isTrue);
+    expect(complete.enrollmentInProgress, isFalse);
+    expect(complete.acceptedEnrollmentSamples, 0);
+    expect(complete.sampleCount, minimumPrimarySpeakerEnrollmentSamples);
+    expect(complete.signatures, hasLength(3));
+    expect(complete.signatureMatchThreshold, closeTo(0.71, 0.001));
+    expect(
+      speakerSignatureMatches(
+        0.70,
+        threshold: complete.signatureMatchThreshold,
+      ),
+      isFalse,
+    );
+
+    final restored = SpeakerProfile.fromJson(complete.toJson());
+    expect(restored.signatureMatchThreshold, complete.signatureMatchThreshold);
+    expect(restored.calibrationComplete, isTrue);
+  });
+
+  test('inconsistent enrollment sample is rejected without advancing', () {
+    final now = DateTime.utc(2026, 1, 1);
+    final first = acceptPrimarySpeakerEnrollmentSample(
+      primary: null,
+      candidate: const <double>[1, 0],
+      now: now,
+    );
+
+    expect(
+      () => acceptPrimarySpeakerEnrollmentSample(
+        primary: first,
+        candidate: const <double>[0, 1],
+        now: now.add(const Duration(seconds: 1)),
+      ),
+      throwsA(isA<StateError>()),
+    );
+    expect(first.acceptedEnrollmentSamples, 1);
+    expect(first.calibrationComplete, isFalse);
+  });
+
+  test('voice update keeps the saved profile atomic until sample three', () {
+    final now = DateTime.utc(2026, 1, 1);
+    final saved = SpeakerProfile(
+      id: 'primary-user',
+      label: 'You',
+      embedding: const <double>[1, 0],
+      signatures: const <List<double>>[
+        <double>[1, 0],
+      ],
+      sampleCount: 1,
+      createdAt: now,
+      updatedAt: now,
+      isPrimary: true,
+    );
+    final first = acceptPrimarySpeakerEnrollmentSample(
+      primary: saved,
+      candidate: const <double>[0.95, 0.3122499],
+      now: now.add(const Duration(seconds: 1)),
+    );
+    final second = acceptPrimarySpeakerEnrollmentSample(
+      primary: first,
+      candidate: const <double>[0.90, 0.4358899],
+      now: now.add(const Duration(seconds: 2)),
+    );
+
+    expect(first.embedding, saved.embedding);
+    expect(second.embedding, saved.embedding);
+    expect(second.sampleCount, saved.sampleCount);
+    expect(second.acceptedEnrollmentSamples, 2);
+
+    final complete = acceptPrimarySpeakerEnrollmentSample(
+      primary: second,
+      candidate: const <double>[0.85, 0.5267827],
+      now: now.add(const Duration(seconds: 3)),
+    );
+    expect(complete.calibrationComplete, isTrue);
+    expect(complete.enrollmentInProgress, isFalse);
+    expect(complete.sampleCount, 4);
+    expect(complete.embedding, isNot(saved.embedding));
+    expect(
+      complete.signatureMatchThreshold,
+      maximumCalibratedSpeakerSignatureMatchThreshold,
+    );
+  });
+
+  test('legacy primary profile remains calibrated after JSON migration', () {
+    final now = DateTime.utc(2026, 1, 1);
+    final legacy =
+        SpeakerProfile(
+            id: 'primary-user',
+            label: 'You',
+            embedding: const <double>[1, 0],
+            sampleCount: 1,
+            createdAt: now,
+            updatedAt: now,
+            isPrimary: true,
+          ).toJson()
+          ..remove('signatureMatchThreshold')
+          ..remove('calibrationComplete')
+          ..remove('enrollmentSignatures');
+
+    final restored = SpeakerProfile.fromJson(legacy);
+    expect(restored.calibrationComplete, isTrue);
+    expect(
+      restored.signatureMatchThreshold,
+      defaultSpeakerSignatureMatchThreshold,
+    );
+  });
+
   test('resetting You retains every non-primary speaker profile', () {
     final now = DateTime.utc(2026, 1, 1);
     final primary = SpeakerProfile(

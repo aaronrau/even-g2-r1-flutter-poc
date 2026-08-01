@@ -562,17 +562,11 @@ _WorkerAnalysisResult _analyzeConversation({
         final primaryIndex = profiles.indexWhere(
           (profile) => profile.isPrimary,
         );
-        final primary = primaryIndex < 0
-            ? SpeakerProfile(
-                id: 'primary-user',
-                label: 'You',
-                embedding: embedding,
-                sampleCount: 1,
-                createdAt: now,
-                updatedAt: now,
-                isPrimary: true,
-              )
-            : profiles[primaryIndex].merge(embedding, now);
+        final primary = acceptPrimarySpeakerEnrollmentSample(
+          primary: primaryIndex < 0 ? null : profiles[primaryIndex],
+          candidate: embedding,
+          now: now,
+        );
         if (primaryIndex < 0) {
           profiles.add(primary);
         } else {
@@ -586,19 +580,23 @@ _WorkerAnalysisResult _analyzeConversation({
       }
       SpeakerProfile? best;
       var bestScore = -1.0;
+      var nearestKnownScore = -1.0;
       for (final profile in profiles) {
+        if (!profile.calibrationComplete || profile.enrollmentInProgress) {
+          continue;
+        }
         final score = speakerProfileSimilarity(profile, embedding);
-        if (score > bestScore) {
+        nearestKnownScore = max(nearestKnownScore, score);
+        final threshold = profile.isPrimary
+            ? profile.signatureMatchThreshold
+            : signatureMatchThreshold;
+        if (speakerSignatureMatches(score, threshold: threshold) &&
+            score > bestScore) {
           bestScore = score;
           best = profile;
         }
       }
-      if (best == null ||
-          !speakerSignatureMatches(
-            bestScore,
-            threshold: signatureMatchThreshold,
-          )) {
-        final nearestKnownScore = bestScore;
+      if (best == null) {
         createdSpeakers++;
         best = SpeakerProfile(
           id: 'speaker-${now.microsecondsSinceEpoch}-$createdSpeakers',
