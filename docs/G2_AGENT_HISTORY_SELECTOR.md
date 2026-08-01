@@ -94,13 +94,14 @@ after the swipe that generated the app event; rebuilding resets that viewport
 to the top and re-registers the invisible gesture-capture container. This keeps
 Memo and agent detail paging visibly synchronized with app state.
 
-Detail mode also reserves a separate 24-pixel-wide text container at the right
-edge for a persistent ten-row page-position indicator. A one-page detail shows
-a full-height handle. For multiple pages, the handle shrinks and moves from top
-to bottom in proportion to the current host page. Keeping the indicator
-separate from the 544-pixel-wide body preserves bounded host pagination and
-does not depend on overflowing the firmware's native text viewport. Selector
-and waiting pages do not show this indicator.
+Detail mode adds one 8-pixel-wide image container at the right edge. The image
+is a single continuous solid rectangle, and the container is only as tall as
+that foreground thumb, so there are no segmented glyphs and no background
+track. A one-page detail uses the full height. For multiple pages, the thumb
+shrinks and moves from top to bottom in proportion to the current host page.
+Keeping it separate from the 544-pixel-wide body preserves bounded host
+pagination and does not depend on overflowing the firmware's native text
+viewport. Selector and waiting pages do not create the image container.
 
 ### Waiting for a response
 
@@ -365,8 +366,8 @@ gesture-controlled ownership.
    display. Active Memo remains the first gate; double tap retains its existing
    shortcut only while the selector is closed.
 5. Persistent selector pages use the full 576×288 G2 text container. Detail
-   pages use a 544×288 body and a separate 24×288 right-edge page indicator.
-   Both use high-priority bounded writes.
+   pages use a 544×288 body and one variable-height, 8-pixel-wide right-edge
+   bitmap thumb. Both use high-priority bounded writes.
 6. The latest saved Memo is read locally without routing it through WebSocket
    or the agent exchange store.
 7. Selector rendering reads app-private atomic records and does not wait on a

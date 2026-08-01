@@ -136,6 +136,19 @@ abstract final class G2Bitmap {
     return output;
   }
 
+  /// A single solid rectangle with no background or segmented text glyphs.
+  static Uint8List solid({
+    required int width,
+    required int height,
+    int grayscale = 0xff,
+  }) {
+    return build4Bit(
+      width: width,
+      height: height,
+      grayscale: List<int>.filled(width * height, grayscale & 0xff),
+    );
+  }
+
   /// A high-contrast pattern used to prove the complete page/image data path.
   static Uint8List testPattern({int width = 64, int height = 64}) {
     final pixels = List<int>.filled(width * height, 0);
@@ -550,9 +563,9 @@ final class G2Protocol {
   static const int fullPageTextWidth = 576;
   static const int fullPageTextHeight = 288;
   static const int fullPageDetailTextWidth = 544;
-  static const int fullPageIndicatorX = 552;
-  static const int fullPageIndicatorWidth = 24;
-  static const int fullPageIndicatorRows = 10;
+  static const int fullPageIndicatorX = 560;
+  static const int fullPageIndicatorWidth = 8;
+  static const int fullPageIndicatorMinimumHeight = 16;
   static const int maximumMemoRunes = 4096;
   static const int memoLineRunes = 48;
   static const int memoBodyLinesPerPage = 7;
@@ -869,31 +882,23 @@ final class G2Protocol {
     final page = ProtoWriter()
       ..writeInt32(1, showPageIndicator ? 3 : 2)
       ..writeMessage(3, eventCapture.takeBytes());
-    if (showPageIndicator) {
-      final indicator = ProtoWriter()
-        ..writeInt32(1, fullPageIndicatorX)
-        ..writeInt32(2, fullPageTextY)
-        ..writeInt32(3, fullPageIndicatorWidth)
-        ..writeInt32(4, fullPageTextHeight)
-        ..writeInt32(5, 0)
-        ..writeInt32(6, 0)
-        ..writeInt32(7, 0)
-        ..writeInt32(8, 4)
-        ..writeInt32(9, 2)
-        ..writeString(10, 'poc-scroll')
-        ..writeInt32(11, 0)
-        ..writeString(
-          12,
-          detailPageIndicatorContent(
-            pageIndex: pageIndex,
-            pageCount: pageCount,
-          ),
-        );
-      page.writeMessage(3, indicator.takeBytes());
-    }
     // Keep the body last so the diagnostic reader, which retains the final
     // repeated protobuf field, continues to expose the primary text object.
     page.writeMessage(3, text.takeBytes());
+    if (showPageIndicator) {
+      final geometry = detailPageIndicatorGeometry(
+        pageIndex: pageIndex,
+        pageCount: pageCount,
+      );
+      final indicator = ProtoWriter()
+        ..writeInt32(1, fullPageIndicatorX)
+        ..writeInt32(2, geometry.y)
+        ..writeInt32(3, fullPageIndicatorWidth)
+        ..writeInt32(4, geometry.height)
+        ..writeInt32(5, 10)
+        ..writeString(6, 'img-10');
+      page.writeMessage(4, indicator.takeBytes());
+    }
     return _evenHubMessage(
       command: command,
       subField: subField,
@@ -901,25 +906,33 @@ final class G2Protocol {
     );
   }
 
-  static String detailPageIndicatorContent({
+  static ({int y, int height}) detailPageIndicatorGeometry({
     required int pageIndex,
     required int pageCount,
   }) {
     final count = pageCount < 1 ? 1 : pageCount;
     final index = pageIndex.clamp(0, count - 1);
-    final handleRows = (fullPageIndicatorRows / count).ceil().clamp(
-      1,
-      fullPageIndicatorRows,
+    final height = (fullPageTextHeight / count).ceil().clamp(
+      fullPageIndicatorMinimumHeight,
+      fullPageTextHeight,
     );
-    final travel = fullPageIndicatorRows - handleRows;
-    final handleStart = count == 1
-        ? 0
-        : ((travel * index) / (count - 1)).round();
-    return List<String>.generate(
-      fullPageIndicatorRows,
-      (row) => row >= handleStart && row < handleStart + handleRows ? '█' : '│',
-      growable: false,
-    ).join('\n');
+    final travel = fullPageTextHeight - height;
+    final y = count == 1 ? 0 : ((travel * index) / (count - 1)).round();
+    return (y: y, height: height);
+  }
+
+  static Uint8List detailPageIndicatorBitmap({
+    required int pageIndex,
+    required int pageCount,
+  }) {
+    final geometry = detailPageIndicatorGeometry(
+      pageIndex: pageIndex,
+      pageCount: pageCount,
+    );
+    return G2Bitmap.solid(
+      width: fullPageIndicatorWidth,
+      height: geometry.height,
+    );
   }
 
   Uint8List createMemoPage(String note, {required String status}) {

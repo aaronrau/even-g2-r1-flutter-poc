@@ -625,6 +625,7 @@ final class G2Connection {
         priority: AsyncWritePriority.high,
       );
       _lastPageContent = content;
+      await _sendFullPageTextIndicator();
     }
     _log(
       'G2 TX',
@@ -681,6 +682,43 @@ final class G2Connection {
     _pageCreated = true;
     pageSessionStatus = 'full-page text created';
     _onChanged();
+    await _sendFullPageTextIndicator();
+  }
+
+  Future<void> _sendFullPageTextIndicator() async {
+    if (!_fullPageTextIndicatorActive) {
+      return;
+    }
+    final pageIndex = _fullPageTextPageIndex;
+    final pageCount = _fullPageTextPageCount;
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    if (!isConnected ||
+        !_fullPageTextActive ||
+        !_fullPageTextIndicatorActive ||
+        pageIndex != _fullPageTextPageIndex ||
+        pageCount != _fullPageTextPageCount) {
+      return;
+    }
+    final geometry = G2Protocol.detailPageIndicatorGeometry(
+      pageIndex: pageIndex,
+      pageCount: pageCount,
+    );
+    await _sendPayload(
+      G2Ids.serviceEvenHub,
+      _protocol.updateImage(
+        G2Protocol.detailPageIndicatorBitmap(
+          pageIndex: pageIndex,
+          pageCount: pageCount,
+        ),
+      ),
+      reserveFlag: true,
+      priority: AsyncWritePriority.high,
+    );
+    _log(
+      'G2 TX',
+      'Detail page thumb sent (${pageIndex + 1}/$pageCount; '
+          'y=${geometry.y}; height=${geometry.height})',
+    );
   }
 
   Future<void> showMemo({required String note, required String status}) async {

@@ -48,11 +48,12 @@ stopping continuous LC3 capture.
 Memo and agent-response details are host-paginated rather than relying on
 firmware text scrolling. Each page reserves one title row, seven wrapped body
 rows, one spacer, and one action/page row. Swipe down advances, swipe up goes
-back, and neither boundary wraps. A separate `24x288` text container at the
-right edge renders a ten-row page-position track beside the `544x288` detail
-body. A one-page detail shows a full-height handle; on multi-page details the
-handle shrinks and moves proportionally. Selector and waiting pages retain the
-full `576x288` body and do not show the indicator.
+back, and neither boundary wraps. A separate 8-pixel-wide image container at
+the right edge renders one continuous solid foreground rectangle beside the
+`544x288` detail body. The container itself is only as tall as the thumb, so
+there is no background track. A one-page detail uses the full height; on
+multi-page details the rectangle shrinks and moves proportionally. Selector and
+waiting pages retain the full `576x288` body and do not create the image.
 
 The microphone notification format observed in MentraOS and on hardware is:
 
