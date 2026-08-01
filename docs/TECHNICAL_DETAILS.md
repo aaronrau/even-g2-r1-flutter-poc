@@ -41,7 +41,7 @@ The agent history selector uses the Hub rebuild command to replace that compact
 `520x64` gesture slot with a dedicated `576x288` full-page text container. A
 startup/create command is not reused because firmware accepts it only at page
 startup and otherwise retains the existing visualizer geometry. This gives
-Dismiss, Memo, and five agent rows the full vertical viewport and a full-height
+`[x]`, Memo, and five agent rows the full vertical viewport and a full-height
 firmware scroll indicator. Pulse writes pause while history owns the page.
 Dismissal rebuilds the compact visualizer without stopping continuous LC3
 capture.

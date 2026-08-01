@@ -5,7 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   final sentAt = DateTime.utc(2026, 1, 1);
 
-  test('opens with Dismiss first and renders Memo plus five agents', () {
+  test('opens with [x] first and renders Memo plus five agents', () {
     final state = G2AgentHistoryState();
     state.open(
       agents: const <String>[
@@ -33,7 +33,7 @@ void main() {
     expect(state.selected?.kind, G2AgentHistoryEntryKind.dismiss);
     expect(state.entries[1].kind, G2AgentHistoryEntryKind.memo);
     expect(state.entries.last.label, 'Agent Five');
-    expect(state.render(), startsWith('> Dismiss\n  Memo · Remember'));
+    expect(state.render(), startsWith('> [x]\n  Memo · Remember'));
     expect(state.render().split('\n'), hasLength(7));
     expect(
       state.render().runes.length,
@@ -51,12 +51,13 @@ void main() {
     state.selectPrevious();
     expect(state.selected?.label, 'Pike');
     state.selectNext();
-    expect(state.selected?.label, 'Dismiss');
+    expect(state.selected?.label, '[x]');
     state.selectNext();
     expect(state.selected?.label, 'Memo');
     state.showSelectedDetail();
 
     expect(state.mode, G2AgentHistoryMode.detail);
+    expect(state.render(), startsWith('[ Memo ]\n'));
     expect(state.render(), contains('No saved memo'));
     expect(state.render(), contains('[ Tap to dismiss ]'));
   });
@@ -170,8 +171,39 @@ void main() {
       ..showSelectedDetail();
 
     expect(state.detailPageCount, greaterThan(1));
+    expect(state.render(), startsWith('[ Agent: Pike ]\n'));
     while (state.selectNextDetailPage()) {}
+    expect(state.render(), startsWith('[ Agent: Pike ]\n'));
     expect(state.render(), contains('result119'));
     expect(state.render().split('\n'), hasLength(10));
+  });
+
+  test('detail pages preserve carriage returns and paragraph breaks', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike'],
+        exchanges: <AgentExchangeView>[
+          AgentExchangeView(
+            id: 'pike-exchange',
+            agent: 'Pike',
+            message: 'report synthetic progress',
+            response:
+                'First result\r\nSecond result\rThird result\n\nFinal paragraph.',
+            sentAt: sentAt,
+            legacy: false,
+          ),
+        ],
+      )
+      ..selectNext()
+      ..selectNext()
+      ..showSelectedDetail();
+
+    expect(
+      state.render(),
+      contains(
+        '[ Agent: Pike ]\nFirst result\nSecond result\nThird result\n\n'
+        'Final paragraph.',
+      ),
+    );
   });
 }

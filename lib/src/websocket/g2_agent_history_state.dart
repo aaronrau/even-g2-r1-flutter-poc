@@ -34,6 +34,7 @@ final class G2AgentHistoryState {
   String? waitingExchangeId;
   String? detailTitle;
   String? detailText;
+  bool detailTitleIsAgent = false;
   int detailPageIndex = 0;
   bool waitingTimedOut = false;
 
@@ -68,7 +69,7 @@ final class G2AgentHistoryState {
     final rows = <G2AgentHistoryEntry>[
       const G2AgentHistoryEntry(
         kind: G2AgentHistoryEntryKind.dismiss,
-        label: 'Dismiss',
+        label: '[x]',
         preview: '',
       ),
       G2AgentHistoryEntry(
@@ -98,6 +99,7 @@ final class G2AgentHistoryState {
     waitingExchangeId = null;
     detailTitle = null;
     detailText = null;
+    detailTitleIsAgent = false;
     detailPageIndex = 0;
     waitingTimedOut = false;
     mode = G2AgentHistoryMode.selector;
@@ -123,6 +125,7 @@ final class G2AgentHistoryState {
       return;
     }
     detailTitle = entry.label;
+    detailTitleIsAgent = entry.kind == G2AgentHistoryEntryKind.agent;
     detailText = switch (entry.kind) {
       G2AgentHistoryEntryKind.dismiss => '',
       G2AgentHistoryEntryKind.memo =>
@@ -139,6 +142,7 @@ final class G2AgentHistoryState {
   void showWaiting(AgentExchangeView exchange) {
     waitingExchangeId = exchange.id;
     detailTitle = exchange.agent;
+    detailTitleIsAgent = true;
     detailText = 'Waiting for response…';
     detailPageIndex = 0;
     waitingTimedOut = false;
@@ -170,6 +174,7 @@ final class G2AgentHistoryState {
   void showError(String title, String message) {
     waitingExchangeId = null;
     detailTitle = title;
+    detailTitleIsAgent = true;
     detailText = message;
     detailPageIndex = 0;
     waitingTimedOut = false;
@@ -183,6 +188,7 @@ final class G2AgentHistoryState {
     waitingExchangeId = null;
     detailTitle = null;
     detailText = null;
+    detailTitleIsAgent = false;
     detailPageIndex = 0;
     waitingTimedOut = false;
   }
@@ -228,10 +234,10 @@ final class G2AgentHistoryState {
   }
 
   String _renderDetail({required bool cancel}) {
-    final title = _truncate(
-      _oneLine(detailTitle ?? 'History'),
-      detailLineRunes,
-    );
+    final titleLabel = detailTitleIsAgent
+        ? 'Agent: ${_oneLine(detailTitle ?? 'Unknown')}'
+        : _oneLine(detailTitle ?? 'History');
+    final title = '[ ${_truncate(titleLabel, detailLineRunes - 4)} ]';
     final pages = _detailPages();
     final pageIndex = detailPageIndex.clamp(0, pages.length - 1);
     final lines = <String>[title, ...pages[pageIndex]];
@@ -268,10 +274,26 @@ final class G2AgentHistoryState {
   }
 
   static List<String> _wrapDetailLines(String value) {
-    final words = value
-        .trim()
-        .split(RegExp(r'\s+'))
-        .where((word) => word.isNotEmpty);
+    final lines = <String>[];
+    final normalized = value.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    for (final sourceLine in normalized.split('\n')) {
+      final paragraph = sourceLine
+          .replaceAll(RegExp(r'[\t\f\v ]+'), ' ')
+          .trim();
+      if (paragraph.isEmpty) {
+        lines.add('');
+        continue;
+      }
+      lines.addAll(_wrapDetailParagraph(paragraph));
+    }
+    while (lines.isNotEmpty && lines.last.isEmpty) {
+      lines.removeLast();
+    }
+    return lines;
+  }
+
+  static List<String> _wrapDetailParagraph(String value) {
+    final words = value.split(' ').where((word) => word.isNotEmpty);
     final lines = <String>[];
     var line = '';
     for (final sourceWord in words) {

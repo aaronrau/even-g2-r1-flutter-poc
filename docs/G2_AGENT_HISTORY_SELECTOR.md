@@ -23,11 +23,11 @@ The requested "most recent message sent to all the agents" is interpreted as
 one selector row per agent, where each row contains that agent's most recent
 positively acknowledged command. The target glasses layout contains:
 
-1. `Dismiss`
+1. `[x]`
 2. `Memo`
 3. up to five configured agent rows
 
-`Dismiss` is always the initially selected row. This makes opening the selector
+`[x]` is always the initially selected row. This makes opening the selector
 safe: a second tap closes it unless the user intentionally swipes to private
 content.
 
@@ -45,7 +45,7 @@ whitespace in private content are collapsed, and each line is ellipsized to the
 tested G2 width. A representative seven-row page is:
 
 ```text
-> Dismiss
+> [x]
   Memo · latest saved memo…
   Agent One · latest sent command…
   Agent Two · No sent message
@@ -69,7 +69,7 @@ rebuilds the visualizer page and resumes pulse rendering.
 Selecting an agent command with a correlated saved response opens:
 
 ```text
-Agent One
+[ Agent: Agent One ]
 <bounded most recent correlated response>
 
 [ Tap to dismiss ]
@@ -82,6 +82,11 @@ per page with a bounded `[ current/total · Tap to dismiss ]` footer. Swipe down
 advances one page and swipe up returns one page; pages stop at either boundary
 instead of wrapping. A final tap clears the private text and restores the audio
 visualizer.
+
+Every detail page begins with `[ Memo ]` or `[ Agent: <name> ]`. Explicit LF,
+CRLF, and CR line breaks in saved Memo or response text remain hard line breaks;
+blank paragraph separators remain blank display rows. Only horizontal spacing
+is normalized before long lines are wrapped.
 
 Each logical page change rebuilds the full-height text surface instead of only
 updating its content. Current G2 firmware preserves the native text viewport
@@ -128,7 +133,7 @@ Tapping either empty row shows the same one-line state plus
 
 | Gesture | Result |
 | --- | --- |
-| Tap | Open selector with `Dismiss` selected |
+| Tap | Open selector with `[x]` selected |
 | Double tap | Request progress for the last successfully sent agent |
 | Swipe up/down | Preserve the existing ordinary gesture behavior |
 | Double tap during active Memo | Finalize Memo; do not open the selector |
@@ -138,9 +143,9 @@ Tapping either empty row shows the same one-line state plus
 
 | Gesture | Result |
 | --- | --- |
-| Swipe up | Select the previous row, wrapping before `Dismiss` |
+| Swipe up | Select the previous row, wrapping before `[x]` |
 | Swipe down | Select the next row, wrapping after the last row |
-| Tap on `Dismiss` | Clear the selector and restore the audio visualizer |
+| Tap on `[x]` | Clear the selector and restore the audio visualizer |
 | Tap on Memo | Show the most recent saved Memo, or the empty state |
 | Tap on an agent with a command | Show a correlated response or request one |
 | Tap on an agent without a command | Show `No sent message`; do not send |
@@ -163,9 +168,9 @@ is no automatic two-second clear on selector, waiting, or detail pages.
 
 ```text
 normal
-  └─ tap ─► selector(dismiss selected)
+  └─ tap ─► selector([x] selected)
                ├─ swipe ─► selector(other row selected)
-               ├─ tap Dismiss ─► normal
+               ├─ tap [x] ─► normal
                ├─ tap Memo/empty ─► detail
                ├─ tap agent + cached response ─► detail
                └─ tap agent + no response ─► waiting
@@ -362,8 +367,8 @@ gesture-controlled ownership.
 
 ### Pure state tests
 
-- opening always selects `Dismiss`;
-- swipe up/down wraps across Dismiss, Memo, and five agent rows;
+- opening always selects `[x]`;
+- swipe up/down wraps across `[x]`, Memo, and five agent rows;
 - every selector row is one line and the page remains under 512 characters;
 - empty Memo and agent rows never send;
 - tap on cached response enters detail;
@@ -399,7 +404,7 @@ representative phone:
 
 1. send one acknowledged command to each of five synthetic agents;
 2. connect the physical G2/R1 pair;
-3. tap and verify `Dismiss` is selected first;
+3. tap and verify `[x]` is selected first;
 4. swipe through Memo and every agent, checking one-line truncation;
 5. select an agent with a cached response and tap again to dismiss;
 6. select an agent without a response, verify one summary request, wait for its
@@ -419,7 +424,7 @@ explicit privacy rules.
 
 On 2026-07-30, the checked-in Android validator ran on the representative
 physical phone against an isolated loopback fixture with five synthetic agent
-rows. It verified Dismiss-first selection, Memo selection and detail display,
+rows. It verified `[x]`-first selection, Memo selection and detail display,
 Pike command persistence, the missing-response waiting page, one correlated
 summary request, matching response replacement, and final dismissal. The
 fixture did not connect to or send work to any configured agent session.
@@ -431,8 +436,8 @@ harness cannot mechanically actuate the wearable.
 
 ## Acceptance criteria
 
-- Tap opens the selector with `Dismiss` selected.
-- Dismiss, Memo, and up to five agent rows render as one line each.
+- Tap opens the selector with `[x]` selected.
+- `[x]`, Memo, and up to five agent rows render as one line each.
 - Swipes select deterministically and wrap.
 - Only acknowledged commands appear as sent.
 - Selecting a command shows its most recent correlated response.
