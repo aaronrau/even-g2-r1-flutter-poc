@@ -149,7 +149,11 @@ void main() {
 
       expect(G2Protocol.fullPageIndicatorBarWidth, 4);
       expect(page[1], 3);
-      expect(body[3], G2Protocol.fullPageDetailTextWidth);
+      expect(
+        body[3],
+        G2Protocol.fullPageTextWidth,
+        reason: 'The edge thumb must not narrow the detail text viewport.',
+      );
       expect(indicator[1], G2Protocol.fullPageIndicatorX);
       expect(indicator[2], geometry.y);
       expect(indicator[3], G2Protocol.fullPageIndicatorWidth);

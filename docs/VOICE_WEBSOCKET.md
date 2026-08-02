@@ -154,8 +154,8 @@ inbound events. Voice memo finalization retains priority over this action.
 
 When no transcript is visibly `Queued:`, the single-tap interaction expands
 progress lookup into a gesture-controlled selector with `Dismiss` selected
-first, a local Memo row, and up to five one-line agent rows. Tapping an agent
-loads its five newest acknowledged exchanges, newest first, and swipe up/down
+first, up to five one-line agent rows, and the local Memo row last. Tapping an
+agent loads its five newest acknowledged exchanges, newest first, and swipe up/down
 pages through their complete bounded content without a network request.
 Request-ID correlation prevents an arbitrary recent response from the same
 agent from replacing a saved result. The complete state machine, data model,

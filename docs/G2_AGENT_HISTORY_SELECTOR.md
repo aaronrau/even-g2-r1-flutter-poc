@@ -25,8 +25,8 @@ acknowledged command as its preview. Opening the row loads up to five complete
 exchanges for only that agent. The target glasses layout contains:
 
 1. `[x]`
-2. `Memo`
-3. up to five configured agent rows
+2. up to five configured agent rows
+3. `Memo`
 
 `[x]` is always the initially selected row. This makes opening the selector
 safe: a second tap closes it unless the user intentionally swipes to private
@@ -47,12 +47,12 @@ tested G2 width. A representative seven-row page is:
 
 ```text
 > [x]
-  Memo · latest saved memo…
   Agent One · latest sent command…
   Agent Two · No sent message
   Agent Three · latest sent command…
   Agent Four · latest sent command…
   Agent Five · latest sent command…
+  Memo · latest saved memo…
 ```
 
 The marker is the only selection indicator, so the layout remains grayscale
@@ -83,10 +83,11 @@ Agent: <correlated response or No response yet>
 ```
 
 Commands and responses may wrap because this is a detail view, not a selector
-row. Memo and conversation details use seven body lines per page with a
-bounded `[ current/total · Tap to dismiss ]` footer. Swipe down advances one
-page and swipe up returns one page; pages stop at either boundary instead of
-wrapping. A final tap clears the private text and restores the audio
+row. Memo and conversation details use eight body lines per page with a
+bounded `[ current/total · Tap to dismiss ]` footer. This fills the complete
+ten-line viewport without sacrificing the title or action row. Swipe down
+advances one page and swipe up returns one page; pages stop at either boundary
+instead of wrapping. A final tap clears the private text and restores the audio
 visualizer. Loading is bounded to five direct ledger paths and never scans the
 complete message archive.
 
@@ -106,10 +107,10 @@ the right edge. Its final 4 pixels form one continuous solid rectangle; the
 other 16 are black, so there are no segmented glyphs or visible background
 track. The thumb shrinks and moves from top to bottom in proportion to the
 current host page. A one-page detail does not need an indicator and therefore
-does not create the otherwise over-height image. Keeping the multi-page image
-separate from the 544-pixel-wide body preserves bounded host pagination and
-does not depend on overflowing the firmware's native text viewport. Selector
-pages do not create the image container.
+does not create the otherwise over-height image. The image overlays the edge
+of the full 576-pixel text surface; conservative 45-rune host wrapping keeps
+the last words readable instead of narrowing and clipping the detail body to
+make room for the thumb. Selector pages do not create the image container.
 
 ### Empty Memo or agent row
 
@@ -357,10 +358,10 @@ gesture-controlled ownership.
    remains open, VAD speech start snapshots that configured agent for direct
    routing without a spoken wake word or name. Agent details show an active
    dot and the latest targeted transcript lifecycle in their body.
-5. Persistent selector pages use the full 576×288 G2 text container.
-   Multi-page details use a 544×288 body and one variable-height right-edge
-   bitmap with a visible 4-pixel thumb inside a valid 20-pixel container. Both
-   use high-priority bounded writes.
+5. Persistent selector and detail pages use the full 576×288 G2 text
+   container. Multi-page details overlay one variable-height right-edge bitmap
+   with a visible 4-pixel thumb inside a valid 20-pixel container. Both use
+   high-priority bounded writes.
 6. The latest saved Memo is read locally without routing it through WebSocket
    or the agent exchange store.
 7. Selector rendering reads app-private atomic records and does not wait on a
@@ -371,7 +372,7 @@ gesture-controlled ownership.
 ### Pure state tests
 
 - opening always selects `[x]`;
-- swipe up/down wraps across `[x]`, Memo, and five agent rows;
+- swipe up/down wraps across `[x]`, five agent rows, and the final Memo row;
 - every selector row is one line and the page remains under 512 characters;
 - empty Memo and agent rows never send;
 - tapping an agent loads its newest five exchanges and enters detail;
@@ -430,7 +431,7 @@ representative phone:
 1. send one acknowledged command to each of five synthetic agents;
 2. connect the physical G2/R1 pair;
 3. tap and verify `[x]` is selected first;
-4. swipe through Memo and every agent, checking one-line truncation;
+4. swipe through every agent and the final Memo row, checking one-line truncation;
 5. select an agent with five exchanges, verify newest-first order and that the
    right-edge indicator moves through every detail page, then tap to dismiss;
 6. select an agent without a response and verify `No response yet` without any
@@ -476,7 +477,7 @@ harness cannot mechanically actuate the wearable.
 - Agent detail titles show an active dot beside the agent name; the
   body shows `Listening…`, then the transcript as `Sending:`, and finally
   acknowledged `Sent:` or fallback `Saved:`.
-- `[x]`, Memo, and up to five agent rows render as one line each.
+- `[x]`, up to five agent rows, and the final Memo row render as one line each.
 - Swipes select deterministically and wrap.
 - Only acknowledged commands appear as sent.
 - Selecting an agent shows its five newest acknowledged exchanges, newest

@@ -5,7 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   final sentAt = DateTime.utc(2026, 1, 1);
 
-  test('opens with [x] first and renders Memo plus five agents', () {
+  test('opens with [x] first, five agents, and Memo last', () {
     final state = G2AgentHistoryState();
     state.open(
       agents: const <String>[
@@ -31,10 +31,13 @@ void main() {
     expect(state.mode, G2AgentHistoryMode.selector);
     expect(state.entries, hasLength(7));
     expect(state.selected?.kind, G2AgentHistoryEntryKind.dismiss);
-    expect(state.entries[1].kind, G2AgentHistoryEntryKind.memo);
-    expect(state.entries.last.label, 'Agent Five');
-    expect(state.render(), startsWith('> [x]\n  Memo · Remember'));
-    expect(state.render().split('\n'), hasLength(7));
+    expect(state.entries[1].label, 'Pike');
+    expect(state.entries.last.kind, G2AgentHistoryEntryKind.memo);
+    expect(state.render(), startsWith('> [x]\n  Pike · validate'));
+    final rows = state.render().split('\n');
+    expect(rows.last, startsWith('  Memo · Remember'));
+    expect(rows.last, endsWith('…'));
+    expect(rows, hasLength(7));
     expect(
       state.render().runes.length,
       lessThanOrEqualTo(G2AgentHistoryState.maximumPageCharacters),
@@ -49,11 +52,14 @@ void main() {
       );
 
     state.selectPrevious();
-    expect(state.selected?.label, 'Pike');
-    expect(state.selectedSpeechAgent, 'Pike');
+    expect(state.selected?.label, 'Memo');
+    expect(state.selectedSpeechAgent, isNull);
     state.selectNext();
     expect(state.selected?.label, '[x]');
     expect(state.selectedSpeechAgent, isNull);
+    state.selectNext();
+    expect(state.selected?.label, 'Pike');
+    expect(state.selectedSpeechAgent, 'Pike');
     state.selectNext();
     expect(state.selected?.label, 'Memo');
     expect(state.selectedSpeechAgent, isNull);
@@ -79,7 +85,6 @@ void main() {
         agents: const <String>['Pike'],
         exchanges: <AgentExchangeView>[exchange],
       )
-      ..selectNext()
       ..selectNext();
 
     state.showWaiting(exchange);
@@ -107,7 +112,6 @@ void main() {
           agents: const <String>['Pike'],
           exchanges: const <AgentExchangeView>[],
         )
-        ..selectNext()
         ..selectNext()
         ..showSelectedDetail();
 
@@ -145,7 +149,6 @@ void main() {
         exchanges: const <AgentExchangeView>[],
       )
       ..selectNext()
-      ..selectNext()
       ..showSelectedDetail()
       ..beginTargetedSpeech('segment-1')
       ..beginTargetedSpeech('segment-2');
@@ -181,10 +184,10 @@ void main() {
     final rows = state.render().split('\n');
     expect(rows, hasLength(3));
     expect(
-      rows.last.runes.length,
+      rows[1].runes.length,
       lessThanOrEqualTo(G2AgentHistoryState.maximumRowRunes),
     );
-    expect(rows.last, isNot(contains('second line\n')));
+    expect(rows[1], isNot(contains('second line\n')));
   });
 
   test('long Memo detail pages forward and backward without wrapping', () {
@@ -198,6 +201,7 @@ void main() {
         exchanges: const <AgentExchangeView>[],
         memo: memo,
       )
+      ..selectNext()
       ..selectNext()
       ..showSelectedDetail();
 
@@ -235,7 +239,6 @@ void main() {
         ],
       )
       ..selectNext()
-      ..selectNext()
       ..showSelectedDetail();
 
     expect(state.detailPageCount, greaterThan(1));
@@ -262,7 +265,6 @@ void main() {
       ];
       final state = G2AgentHistoryState()
         ..open(agents: const <String>['Pike'], exchanges: exchanges)
-        ..selectNext()
         ..selectNext()
         ..showAgentConversations(exchanges);
 
@@ -296,7 +298,6 @@ void main() {
         ],
       )
       ..selectNext()
-      ..selectNext()
       ..showSelectedDetail();
 
     expect(
@@ -309,4 +310,37 @@ void main() {
       ),
     );
   });
+
+  test(
+    'long targeted transcript uses every page without truncating its tail',
+    () {
+      final transcript = List<String>.generate(
+        120,
+        (index) => 'spoken${index.toString().padLeft(3, '0')}',
+      ).join(' ');
+      final state = G2AgentHistoryState()
+        ..open(
+          agents: const <String>['Pike'],
+          exchanges: const <AgentExchangeView>[],
+        )
+        ..selectNext()
+        ..showSelectedDetail()
+        ..beginTargetedSpeech('segment-long');
+
+      expect(
+        state.showTargetedSpeechTranscript(
+          segmentId: 'segment-long',
+          transcript: transcript,
+        ),
+        isTrue,
+      );
+      expect(state.detailPageCount, greaterThan(1));
+      expect(state.render().split('\n'), hasLength(10));
+
+      while (state.selectNextDetailPage()) {}
+
+      expect(state.render(), contains('spoken119'));
+      expect(state.render().split('\n'), hasLength(10));
+    },
+  );
 }

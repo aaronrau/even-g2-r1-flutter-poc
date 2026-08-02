@@ -562,10 +562,11 @@ final class G2Protocol {
   static const int fullPageTextY = 0;
   static const int fullPageTextWidth = 576;
   static const int fullPageTextHeight = 288;
-  static const int fullPageDetailTextWidth = 544;
   // G2 image containers accept width 20–288 and height 20–144. Keep the
-  // visible thumb at 4 px by placing it at the right of a valid 20 px image
-  // whose remaining pixels are black/invisible on the display.
+  // visible thumb at the final 4 px of a valid right-edge 20 px image. Detail
+  // text keeps the complete 576 px firmware viewport; host wrapping leaves a
+  // readable right margin while the black portion of this overlay stays
+  // invisible on the display.
   static const int fullPageIndicatorX = 556;
   static const int fullPageIndicatorWidth = 20;
   static const int fullPageIndicatorBarWidth = 4;
@@ -871,10 +872,7 @@ final class G2Protocol {
     final text = ProtoWriter()
       ..writeInt32(1, fullPageTextX)
       ..writeInt32(2, fullPageTextY)
-      ..writeInt32(
-        3,
-        renderPageIndicator ? fullPageDetailTextWidth : fullPageTextWidth,
-      )
+      ..writeInt32(3, fullPageTextWidth)
       ..writeInt32(4, fullPageTextHeight)
       ..writeInt32(5, 0)
       ..writeInt32(6, 0)

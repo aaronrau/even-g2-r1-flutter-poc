@@ -41,21 +41,22 @@ The agent history selector uses the Hub rebuild command to replace that compact
 `520x64` gesture slot with a dedicated `576x288` full-page text container. A
 startup/create command is not reused because firmware accepts it only at page
 startup and otherwise retains the existing visualizer geometry. This gives
-`[x]`, Memo, and five agent rows the full vertical viewport. Pulse writes pause
-while history owns the page. Dismissal rebuilds the compact visualizer without
-stopping continuous LC3 capture.
+`[x]`, five agent rows, and the final Memo row the full vertical viewport.
+Pulse writes pause while history owns the page. Dismissal rebuilds the compact
+visualizer without stopping continuous LC3 capture.
 
 Memo and five-exchange agent details are host-paginated rather than relying on
-firmware text scrolling. Each page reserves one title row, seven wrapped body
-rows, one spacer, and one action/page row. Swipe down advances, swipe up goes
-back, and neither boundary wraps. A separate firmware-valid 20-pixel-wide
-image container at the right edge renders one continuous 4-pixel solid
-foreground rectangle beside the `544x288` detail body. Its other 16 pixels are
-black, so no background track is visible. One-page details omit the unnecessary
+firmware text scrolling. Each page uses one title row, eight wrapped body rows,
+and one action/page row so long transcripts occupy the complete vertical
+viewport. Swipe down advances, swipe up goes back, and neither boundary wraps.
+A separate firmware-valid 20-pixel-wide image container overlays the right
+edge and renders one continuous 4-pixel solid foreground rectangle; its other
+16 pixels are black, so no background track is visible. The detail text keeps
+the full `576x288` firmware viewport and the conservative 45-rune host wrap
+keeps text readable beside the thumb. One-page details omit the unnecessary
 indicator because a 288-pixel image would exceed the G2's 144-pixel
 image-container height limit. On multi-page details the rectangle shrinks and
-moves proportionally. Selector pages retain the full `576x288` body and do not
-create the image.
+moves proportionally. Selector pages do not create the image.
 History rendering is serialized and coalesced by page signature before it
 reaches BLE, including while a prior render is in flight. Firmware
 notifications therefore cannot recursively resend the same page. The thumb

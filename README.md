@@ -156,17 +156,18 @@ expose for a true locked Hub mode.
   `summary.result` follows the same durable `Received:` path. During a voice
   memo, double tap retains its higher-priority finish action.
 - Implements the fallback single-tap agent history selector with `Dismiss`
-  selected first, a local Memo row, up to five one-line agent rows,
+  selected first, up to five one-line agent rows, and the local Memo row last,
   and tap-to-dismiss detail pages containing that selected agent's five newest
   request-ID-correlated exchanges. Swipe up/down pages through the full recent
-  content without sending a new request. While an agent row or its detail page
-  is selected, speech that starts is bound to that configured agent, enters Gemma
-  correction without requiring a spoken `Hey` or agent name, and routes only
-  the live corrected result. Agent detail pages show an active dot beside the
-  name and replace their body with the latest `Listening…`, `Sending:`, and
-  `Sent:`/`Saved:` transcript state. Tapping an active detail finishes speech
-  or prioritizes its correction instead of dismissing it. Dismiss and Memo
-  never enable this override. See
+  content without sending a new request. Long detail transcripts use the full
+  576×288 text viewport with a proportional right-edge scroll thumb. While an
+  agent row or its detail page is selected, speech that starts is bound to that
+  configured agent, enters Gemma correction without requiring a spoken `Hey`
+  or agent name, and routes only the live corrected result. Agent detail pages
+  show an active dot beside the name and replace their body with the latest
+  `Listening…`, `Sending:`, and `Sent:`/`Saved:` transcript state. Tapping an
+  active detail finishes speech or prioritizes its correction instead of
+  dismissing it. Dismiss and Memo never enable this override. See
   [`docs/G2_AGENT_HISTORY_SELECTOR.md`](docs/G2_AGENT_HISTORY_SELECTOR.md).
 - Draws a dim-to-bright pulsing dot in the upper-left using LC3 global gain and
   an adaptive silence floor.

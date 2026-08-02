@@ -29,7 +29,7 @@ final class G2AgentHistoryState {
   static const int maximumPageCharacters = 512;
   static const int maximumDetailRunes = 16384;
   static const int detailLineRunes = 45;
-  static const int detailBodyLinesPerPage = 7;
+  static const int detailBodyLinesPerPage = 8;
 
   G2AgentHistoryMode mode = G2AgentHistoryMode.closed;
   List<G2AgentHistoryEntry> entries = const <G2AgentHistoryEntry>[];
@@ -101,14 +101,6 @@ final class G2AgentHistoryState {
         label: '[x]',
         preview: '',
       ),
-      G2AgentHistoryEntry(
-        kind: G2AgentHistoryEntryKind.memo,
-        label: 'Memo',
-        preview: _oneLine(memo ?? '').isEmpty
-            ? 'No saved memo'
-            : _oneLine(memo!),
-        detail: _oneLine(memo ?? '').isEmpty ? null : memo!.trim(),
-      ),
     ];
     for (final agent in configuredAgents.where(chosenAgents.contains)) {
       final exchange = byAgent[agent.toLowerCase()];
@@ -123,6 +115,16 @@ final class G2AgentHistoryState {
         ),
       );
     }
+    rows.add(
+      G2AgentHistoryEntry(
+        kind: G2AgentHistoryEntryKind.memo,
+        label: 'Memo',
+        preview: _oneLine(memo ?? '').isEmpty
+            ? 'No saved memo'
+            : _oneLine(memo!),
+        detail: _oneLine(memo ?? '').isEmpty ? null : memo!.trim(),
+      ),
+    );
     entries = List<G2AgentHistoryEntry>.unmodifiable(rows);
     selectedIndex = 0;
     waitingExchangeId = null;
@@ -348,7 +350,6 @@ final class G2AgentHistoryState {
     while (lines.length < detailBodyLinesPerPage + 1) {
       lines.add('');
     }
-    lines.add('');
     final action = cancel ? 'cancel' : 'dismiss';
     lines.add(
       pages.length == 1
