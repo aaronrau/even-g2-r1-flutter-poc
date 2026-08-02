@@ -14,29 +14,31 @@ final class QueuedGlassesTranscript {
   final String transcript;
 }
 
-/// A latest-wins status channel for the small G2 display.
+/// A latest-wins status channel for the full-height G2 text page.
 ///
 /// Durable transcripts and messages are stored before they reach this class.
 /// The glasses are only a live projection, so retaining a FIFO of stale text
-/// wastes memory and can let an old clear overwrite newer content.
+/// wastes memory and can let an old clear overwrite newer content. The display
+/// callbacks must create and exit the full-height page; they must never route
+/// transcript or received-message text through the compact visualizer slot.
 final class GlassesStatusQueue {
   GlassesStatusQueue({
     required bool Function() isConnected,
-    required Future<void> Function(String message) showText,
-    required Future<void> Function() clearText,
+    required Future<void> Function(String message) showPage,
+    required Future<void> Function() exitPage,
     required GlassesStatusLog log,
     Duration terminalDisplayDuration = const Duration(seconds: 2),
   }) : _isConnected = isConnected,
-       _showText = showText,
-       _clearText = clearText,
+       _showPage = showPage,
+       _exitPage = exitPage,
        _log = log,
        _terminalDisplayDuration = terminalDisplayDuration;
 
   static const int maximumMessageCharacters = 512;
 
   final bool Function() _isConnected;
-  final Future<void> Function(String message) _showText;
-  final Future<void> Function() _clearText;
+  final Future<void> Function(String message) _showPage;
+  final Future<void> Function() _exitPage;
   final GlassesStatusLog _log;
   final Duration _terminalDisplayDuration;
 
@@ -367,7 +369,7 @@ final class GlassesStatusQueue {
 
   Future<bool> _tryShow(String message) async {
     try {
-      await _showText(message);
+      await _showPage(message);
       return true;
     } on Object catch (error) {
       _log(
@@ -381,7 +383,7 @@ final class GlassesStatusQueue {
 
   Future<bool> _tryClear() async {
     try {
-      await _clearText();
+      await _exitPage();
       return true;
     } on Object catch (error) {
       _log(

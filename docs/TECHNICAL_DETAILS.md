@@ -45,6 +45,12 @@ startup and otherwise retains the existing visualizer geometry. This gives
 Pulse writes pause while history owns the page. Dismissal rebuilds the compact
 visualizer without stopping continuous LC3 capture.
 
+The ordinary latest-wins display queue uses the same full-height replacement
+for `Queued:`, `Sending:`, `Sent:`, `Saved:`, and inbound `Received:` text. It
+never sends those messages through the compact visualizer text update. A
+terminal or received status exits the full-page owner after its two-second
+hold, rebuilds the pulse page, and leaves continuous audio capture running.
+
 Memo and five-exchange agent details are host-paginated rather than relying on
 firmware text scrolling. Each page uses one title row, eight wrapped body rows,
 and one action/page row so long transcripts occupy the complete vertical

@@ -221,7 +221,11 @@ corrected transcript is preserved as the outgoing message.
 The atomic raw transcript creates one G2 FIFO item as `Queued:` without
 waiting for Gemma or the network. The segment ID follows that same item through
 correction and routing, so the corrected result does not create a duplicate
-display entry. The live turn reaches STT only after the nominal 1.75-second
+display entry. Every `Queued:`, `Sending:`, `Sent:`, `Saved:`, and `Received:`
+render rebuilds the full-height 576×288 text page instead of updating the
+compact two-row visualizer slot. Long ordinary statuses therefore use the
+complete vertical viewport and the firmware's full-page scrolling behavior.
+The live turn reaches STT only after the nominal 1.75-second
 total-silence VAD boundary; speech resuming before that boundary remains in the
 same turn. A single tap while this item is still `Queued:` is consumed before
 the history selector. If the raw transcript starts with the complete word
@@ -246,8 +250,8 @@ correction permits the live raw transcript to route as a documented fallback.
 
 The item resolves to `Sent:` only after a positive modern acknowledgement.
 Every other outcome resolves to `Saved:`. The terminal state remains visible
-for two seconds, is cleared with redundant EvenHub writes, and then yields to
-the latest deferred inbound item. If an inbound event arrives before the
+for two seconds, exits the full-height page back to the visualizer, and then
+yields to the latest deferred inbound item. If an inbound event arrives before the
 acknowledgement, the latest transcript's `Sent:` or `Saved:` state restores the
 terminal display instead of being discarded as superseded. If an inbound event
 arrives during the terminal hold, only the newest inbound item waits. The
@@ -268,7 +272,8 @@ under `result`, generic `message`, `text`, or `content` fields, nested `data`,
 and non-JSON text frames. Connection and acknowledgement frames are not echoed
 to the glasses. A top-level inbound agent name is shown before the message.
 Inbound `Received:` items share the display FIFO and clear after two seconds,
-so they cannot overwrite an active transcript status.
+so they cannot overwrite an active transcript status. They use the same
+full-height page and restore the compact visualizer after clearing.
 
 Every acknowledged outgoing command and readable inbound message is written
 through a `.part` file and atomic rename in app-private support storage. The

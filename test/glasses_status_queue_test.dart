@@ -412,7 +412,7 @@ GlassesStatusQueue _queue({
   List<String>? logs,
 }) => GlassesStatusQueue(
   isConnected: isConnected ?? () => true,
-  showText: (message) async => display.add(message),
-  clearText: () async => display.add('<clear>'),
+  showPage: (message) async => display.add(message),
+  exitPage: () async => display.add('<clear>'),
   log: (message, {bool isError = false}) => logs?.add(message),
 );

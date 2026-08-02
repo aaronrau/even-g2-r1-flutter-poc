@@ -142,9 +142,11 @@ expose for a true locked Hub mode.
   and sent after `connection.ready`. Each G2 status follows one FIFO lifecycle:
   `Queued:` while awaiting input, `Sending:` after a leading-`Hey` queued item
   is tapped, then `Saved:` or acknowledged `Sent:` for two seconds before
-  clearing. Inbound server messages appear as
-  serialized `Received:` items, are saved to the selected Files folder, and
-  clear from the glasses after two seconds.
+  clearing. Transcript statuses and inbound server messages replace the
+  compact two-row visualizer slot with the full-height G2 text page, allowing
+  long text to use the complete viewport and firmware scrolling. Inbound
+  messages appear as serialized `Received:` items, are saved to the selected
+  Files folder, and clear from the glasses after two seconds.
 - Gives a visible `Queued:` transcript priority over the single-tap history
   selector. Tap immediately resolves a transcript without leading `Hey` to
   `Saved:`; a leading-`Hey` tap immediately changes the item to `Sending:` and

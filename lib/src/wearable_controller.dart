@@ -220,8 +220,10 @@ final class WearableController extends ChangeNotifier
     );
     _glassesStatusQueue = GlassesStatusQueue(
       isConnected: () => g2.isConnected,
-      showText: g2.sendText,
-      clearText: g2.clearText,
+      // Transcript and inbound-message text own the full-height page. Using
+      // sendText here would keep it inside the two-row visualizer container.
+      showPage: g2.showFullPageText,
+      exitPage: g2.exitFullPageText,
       log: (message, {bool isError = false}) =>
           addLog('Glasses status', message, isError: isError),
     );

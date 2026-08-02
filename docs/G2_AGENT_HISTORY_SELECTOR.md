@@ -316,6 +316,11 @@ The display owner priority is:
 3. normal transcript and inbound-message status queue;
 4. visual audio pulse.
 
+The normal status owner also uses the full-height text page for `Queued:`,
+`Sending:`, `Sent:`, `Saved:`, and `Received:` content. It restores the compact
+visualizer only when the current FIFO item clears; the two-row visualizer text
+slot is reserved for short gesture labels.
+
 While the selector owns the display:
 
 - normal statuses continue their durable work but cannot overwrite the page;
