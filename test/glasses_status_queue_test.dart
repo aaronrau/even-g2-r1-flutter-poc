@@ -2,37 +2,43 @@ import 'package:even_g2_r1_poc/src/ble/glasses_status_queue.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('shows Queued then Sent and clears after exactly two seconds', (
-    tester,
-  ) async {
-    final display = <String>[];
-    final queue = _queue(display: display);
+  testWidgets(
+    'shows Queued then Sending then Sent and clears after exactly two seconds',
+    (tester) async {
+      final display = <String>[];
+      final queue = _queue(display: display);
 
-    await queue.queueTranscript(
-      segmentId: 'segment-1',
-      transcript: 'Hey Flux, pull the latest changes.',
-    );
-    await tester.pump();
-    expect(display, <String>['Queued: Hey Flux, pull the latest changes.']);
+      await queue.queueTranscript(
+        segmentId: 'segment-1',
+        transcript: 'Hey Flux, pull the latest changes.',
+      );
+      await tester.pump();
+      expect(display, <String>['Queued: Hey Flux, pull the latest changes.']);
 
-    await queue.completeTranscript(
-      segmentId: 'segment-1',
-      transcript: 'Flux, pull the latest changes.',
-      outcome: GlassesTranscriptOutcome.sent,
-    );
-    await tester.pump();
-    expect(display.last, 'Sent: Flux, pull the latest changes.');
+      expect(await queue.markTranscriptSending(segmentId: 'segment-1'), isTrue);
+      await tester.pump();
+      expect(display.last, 'Sending: Hey Flux, pull the latest changes.');
+      expect(queue.queuedTranscript, isNull);
 
-    await tester.pump(const Duration(milliseconds: 1999));
-    expect(display, isNot(contains('<clear>')));
+      await queue.completeTranscript(
+        segmentId: 'segment-1',
+        transcript: 'Flux, pull the latest changes.',
+        outcome: GlassesTranscriptOutcome.sent,
+      );
+      await tester.pump();
+      expect(display.last, 'Sent: Flux, pull the latest changes.');
 
-    await tester.pump(const Duration(milliseconds: 1));
-    await tester.pump();
-    expect(display.last, '<clear>');
-    expect(queue.pendingCount, 0);
+      await tester.pump(const Duration(milliseconds: 1999));
+      expect(display, isNot(contains('<clear>')));
 
-    queue.dispose();
-  });
+      await tester.pump(const Duration(milliseconds: 1));
+      await tester.pump();
+      expect(display.last, '<clear>');
+      expect(queue.pendingCount, 0);
+
+      queue.dispose();
+    },
+  );
 
   testWidgets('shows Saved when a transcript is not acknowledged as sent', (
     tester,
@@ -55,6 +61,48 @@ void main() {
       'Queued: A local note.',
       'Saved: A corrected local note.',
     ]);
+
+    queue.dispose();
+  });
+
+  testWidgets('exposes only a transcript that is still Queued', (tester) async {
+    final display = <String>[];
+    final queue = _queue(display: display);
+
+    await queue.queueTranscript(
+      segmentId: 'segment-1',
+      transcript: 'Save this locally.',
+    );
+    expect(queue.queuedTranscript?.segmentId, 'segment-1');
+    expect(queue.queuedTranscript?.transcript, 'Save this locally.');
+
+    await queue.completeTranscript(
+      segmentId: 'segment-1',
+      transcript: 'Save this locally.',
+      outcome: GlassesTranscriptOutcome.saved,
+    );
+    expect(queue.queuedTranscript, isNull);
+
+    queue.dispose();
+  });
+
+  testWidgets('does not mark a superseded transcript as Sending', (
+    tester,
+  ) async {
+    final display = <String>[];
+    final queue = _queue(display: display);
+
+    await queue.queueTranscript(
+      segmentId: 'segment-1',
+      transcript: 'Hey Flux, first command.',
+    );
+    await queue.queueTranscript(
+      segmentId: 'segment-2',
+      transcript: 'Hey Flux, second command.',
+    );
+
+    expect(await queue.markTranscriptSending(segmentId: 'segment-1'), isFalse);
+    expect(queue.queuedTranscript?.segmentId, 'segment-2');
 
     queue.dispose();
   });

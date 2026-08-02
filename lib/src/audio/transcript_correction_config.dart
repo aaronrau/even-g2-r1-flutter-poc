@@ -36,6 +36,10 @@ const _currentAgentRoutingPolicy =
     'as "Wolf". Never promote a bare alias into an agent invocation. Do not '
     'rewrite an ordinary reference to a fox. ';
 
+const _latestChangesCorrectionPolicy =
+    'In a repository update command, rewrite "ladies changes" as "latest '
+    'changes" when the sentence clearly means the most recent changes. ';
+
 const defaultTranscriptCorrectionInstructions =
     'You clean short ASR transcript chunks from smart glasses. Fix obvious '
     'speech recognition errors, capitalization, punctuation, and light grammar '
@@ -70,8 +74,10 @@ const defaultTranscriptCorrectionInstructions =
     'pull request, issue, ticket, repository, worktree, terminal, shell, '
     'dependency, endpoint, API, prompt, trace, and logs, and technical names '
     'such as Codex, tmux, Git, GitHub, Langfuse, npm, pnpm, pytest, Docker, GPT, '
-    'Linear, Datadog, and EVALS. Preserve the requested order, scope, '
-    'constraints, existing filenames, paths, flags, explicitly dictated exact '
+    'Linear, Datadog, and EVALS. '
+    '$_latestChangesCorrectionPolicy'
+    'Preserve the requested order, scope, constraints, existing filenames, '
+    'paths, flags, explicitly dictated exact '
     'identifiers, versions, and polite command phrasing such as "can you", '
     '"please", and "make sure". When the speaker asks the agent to create or '
     'rename something, correct supported ASR mistakes inside the requested new '
@@ -436,4 +442,9 @@ bool _isLegacyTranscriptCorrectionInstructions(String value) =>
         defaultTranscriptCorrectionInstructions.replaceFirst(
           _currentAgentRoutingPolicy,
           _previousAgentRoutingPolicy,
+        ) ||
+    value ==
+        defaultTranscriptCorrectionInstructions.replaceFirst(
+          _latestChangesCorrectionPolicy,
+          '',
         );

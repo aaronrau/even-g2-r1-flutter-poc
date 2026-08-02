@@ -182,38 +182,49 @@ final class SharedAudioExportStore extends ChangeNotifier {
     return exported ?? 0;
   }
 
-  Future<void> indexConversation(ConversationRecord record) async {
-    if (record.utterances.isEmpty) {
+  Future<void> indexConversation(ConversationRecord record) =>
+      indexConversations(<ConversationRecord>[record]);
+
+  Future<void> indexConversations(Iterable<ConversationRecord> records) async {
+    final retained = records
+        .where((record) => record.utterances.isNotEmpty)
+        .toList(growable: false);
+    if (retained.isEmpty) {
       return;
     }
     if (!_isAndroid) {
+      final conversationIds = retained.map((record) => record.id).toSet();
       final updated = <SharedConversationTurn>[
-        ...conversations.where((turn) => turn.conversationId != record.id),
-        ...record.utterances.map(_conversationFromUtterance),
+        ...conversations.where(
+          (turn) => !conversationIds.contains(turn.conversationId),
+        ),
+        for (final record in retained)
+          ...record.utterances.map(_conversationFromUtterance),
       ]..sort(_compareConversationTurns);
       conversations = _latestConversationTurns(updated);
       notifyListeners();
       return;
     }
-    await _channel.invokeMethod<void>('indexConversation', <String, Object>{
-      'turns': record.utterances
-          .map(
-            (utterance) => <String, Object>{
-              'id': utterance.id,
-              'conversationId': utterance.conversationId,
-              'speakerId': utterance.speakerId,
-              'speakerLabel': utterance.speakerLabel,
-              'text': utterance.text,
-              'startMs': utterance.startMs,
-              'endMs': utterance.endMs,
-              'confidence': utterance.confidence,
-              'updatedAtMillis': utterance.updatedAt.millisecondsSinceEpoch,
-              'isPrimary': utterance.isPrimary,
-              'isOverlap': utterance.isOverlap,
-            },
-          )
-          .toList(growable: false),
-    });
+    const maximumBatchTurns = 200;
+    var batch = <Map<String, Object>>[];
+    Future<void> flush() async {
+      if (batch.isEmpty) {
+        return;
+      }
+      await _channel.invokeMethod<void>('indexConversation', <String, Object>{
+        'turns': batch,
+      });
+      batch = <Map<String, Object>>[];
+    }
+
+    for (final record in retained) {
+      final turns = record.utterances.map(_conversationIndexEntry).toList();
+      if (batch.isNotEmpty && batch.length + turns.length > maximumBatchTurns) {
+        await flush();
+      }
+      batch.addAll(turns);
+    }
+    await flush();
     await refreshConversations();
   }
 
@@ -488,6 +499,22 @@ final class SharedAudioExportStore extends ChangeNotifier {
     isPrimary: utterance.isPrimary,
     isOverlap: utterance.isOverlap,
   );
+
+  Map<String, Object> _conversationIndexEntry(
+    ConversationUtterance utterance,
+  ) => <String, Object>{
+    'id': utterance.id,
+    'conversationId': utterance.conversationId,
+    'speakerId': utterance.speakerId,
+    'speakerLabel': utterance.speakerLabel,
+    'text': utterance.text,
+    'startMs': utterance.startMs,
+    'endMs': utterance.endMs,
+    'confidence': utterance.confidence,
+    'updatedAtMillis': utterance.updatedAt.millisecondsSinceEpoch,
+    'isPrimary': utterance.isPrimary,
+    'isOverlap': utterance.isOverlap,
+  };
 
   Future<void> _handlePlatformCall(MethodCall call) async {
     if (call.method != 'playbackCompleted') {

@@ -27,6 +27,7 @@ internal class GemmaCorrectionBridge(private val context: Context) :
     private val waitingForService = mutableListOf<PendingRequest>()
     private var service: Messenger? = null
     private var binding = false
+    private var bound = false
     private val replies =
         Messenger(
             Handler(Looper.getMainLooper()) { message ->
@@ -211,7 +212,7 @@ internal class GemmaCorrectionBridge(private val context: Context) :
     }
 
     private fun bind() {
-        if (binding || service != null) {
+        if (binding || bound || service != null) {
             return
         }
         binding = true
@@ -219,16 +220,19 @@ internal class GemmaCorrectionBridge(private val context: Context) :
             context.bindService(
                 Intent(context, GemmaCorrectionService::class.java),
                 this,
-                Context.BIND_AUTO_CREATE,
+                Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT,
             )
         if (!accepted) {
             binding = false
             failAll("service_unavailable", "The Gemma service could not start.")
+        } else {
+            bound = true
         }
     }
 
     override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
         binding = false
+        bound = true
         service = Messenger(binder)
         val queued = waitingForService.toList()
         waitingForService.clear()
@@ -252,7 +256,11 @@ internal class GemmaCorrectionBridge(private val context: Context) :
     }
 
     override fun onBindingDied(name: ComponentName?) {
-        onServiceDisconnected(name)
+        resetDeadBinding()
+        failAll(
+            "service_disconnected",
+            "The Gemma process stopped. The transcript remains safely queued.",
+        )
     }
 
     private fun send(target: Messenger, requestId: Long, message: Message) {
@@ -264,8 +272,19 @@ internal class GemmaCorrectionBridge(private val context: Context) :
                 "The Gemma process could not receive the request.",
                 null,
             )
-            service = null
+            resetDeadBinding()
         }
+    }
+
+    private fun resetDeadBinding() {
+        service = null
+        binding = false
+        if (bound) {
+            context.runCatching {
+                unbindService(this@GemmaCorrectionBridge)
+            }
+        }
+        bound = false
     }
 
     private fun failAll(code: String, message: String) {
@@ -278,13 +297,14 @@ internal class GemmaCorrectionBridge(private val context: Context) :
     }
 
     fun dispose() {
-        if (service != null || binding) {
+        if (bound) {
             context.runCatching {
                 unbindService(this@GemmaCorrectionBridge)
             }
         }
         service = null
         binding = false
+        bound = false
         failAll("activity_closed", "The app closed before correction completed.")
     }
 }

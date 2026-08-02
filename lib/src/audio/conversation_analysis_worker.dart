@@ -91,6 +91,7 @@ final class ConversationAnalysisSupervisor {
     required String wavPath,
     required Iterable<SpeakerProfile> profiles,
     required bool enrollment,
+    double? signatureMatchThreshold,
   }) {
     if (_disposed || !isReady) {
       return;
@@ -103,6 +104,8 @@ final class ConversationAnalysisSupervisor {
           .map((profile) => profile.toJson())
           .toList(growable: false),
       'enrollment': enrollment,
+      'signatureMatchThreshold':
+          signatureMatchThreshold ?? this.signatureMatchThreshold,
     };
     _pending[segmentId] = job;
     _commands!.send(job);
@@ -350,7 +353,7 @@ void _conversationWorker(Map<String, Object> bootstrap) {
   sherpa.OfflineRecognizer? recognizer;
 
   try {
-    if (!isValidSpeakerSignatureThreshold(signatureMatchThreshold)) {
+    if (!isAdjustableSpeakerSignatureThreshold(signatureMatchThreshold)) {
       throw StateError('The speaker signature threshold is invalid.');
     }
     sherpa.initBindings();
@@ -413,8 +416,15 @@ void _conversationWorker(Map<String, Object> bootstrap) {
         final id = message['id']! as String;
         final path = message['path']! as String;
         final enrollment = message['enrollment'] == true;
+        final jobSignatureMatchThreshold =
+            (message['signatureMatchThreshold']! as num).toDouble();
         events.send(<String, Object>{'type': 'processing', 'id': id});
         try {
+          if (!isAdjustableSpeakerSignatureThreshold(
+            jobSignatureMatchThreshold,
+          )) {
+            throw StateError('The speaker signature threshold is invalid.');
+          }
           final timer = Stopwatch()..start();
           final profiles = (message['profiles']! as List<Object?>)
               .whereType<Map<Object?, Object?>>()
@@ -432,7 +442,7 @@ void _conversationWorker(Map<String, Object> bootstrap) {
             embeddingExtractor: embeddingExtractor!,
             recognizer: recognizer!,
             profiles: profiles,
-            signatureMatchThreshold: signatureMatchThreshold,
+            signatureMatchThreshold: jobSignatureMatchThreshold,
           );
           timer.stop();
           events.send(<String, Object>{
@@ -479,10 +489,15 @@ final class _WorkerAnalysisResult {
 }
 
 final class _SpeakerAssignment {
-  const _SpeakerAssignment({required this.profile, required this.confidence});
+  const _SpeakerAssignment({
+    required this.profile,
+    required this.confidence,
+    required this.signature,
+  });
 
   final SpeakerProfile profile;
   final double confidence;
+  final List<double> signature;
 }
 
 _WorkerAnalysisResult _analyzeConversation({
@@ -566,6 +581,7 @@ _WorkerAnalysisResult _analyzeConversation({
           primary: primaryIndex < 0 ? null : profiles[primaryIndex],
           candidate: embedding,
           now: now,
+          signatureMatchThreshold: signatureMatchThreshold,
         );
         if (primaryIndex < 0) {
           profiles.add(primary);
@@ -575,6 +591,7 @@ _WorkerAnalysisResult _analyzeConversation({
         assignments[entry.key] = _SpeakerAssignment(
           profile: primary,
           confidence: 1,
+          signature: embedding,
         );
         continue;
       }
@@ -619,6 +636,7 @@ _WorkerAnalysisResult _analyzeConversation({
       assignments[entry.key] = _SpeakerAssignment(
         profile: best,
         confidence: bestScore.clamp(0, 1),
+        signature: embedding,
       );
     }
 
@@ -675,6 +693,7 @@ _WorkerAnalysisResult _analyzeConversation({
           updatedAt: now,
           isPrimary: !overlapsPrevious && assignment.profile.isPrimary,
           isOverlap: overlapsPrevious,
+          speakerSignature: assignment.signature,
         ),
       );
     }
@@ -705,14 +724,7 @@ _WorkerAnalysisResult _analyzeConversation({
     updatedAt: now,
   );
   if (!enrollment) {
-    _atomicWriteText(
-      textPath,
-      '${utterances.map((utterance) {
-        final start = (utterance.startMs / 1000).toStringAsFixed(2);
-        final end = (utterance.endMs / 1000).toStringAsFixed(2);
-        return '${utterance.speakerLabel} [$start–$end]\n${utterance.text}';
-      }).join('\n\n')}\n',
-    );
+    _atomicWriteText(textPath, encodeConversationText(utterances));
     _atomicWriteText(metadataPath, '${record.encode()}\n');
   }
   return _WorkerAnalysisResult(

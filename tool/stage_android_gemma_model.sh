@@ -150,9 +150,30 @@ REMOTE_DIR=files/workbench/models/$MODEL_ID
 REMOTE_MODEL=$REMOTE_DIR/$MODEL_FILE
 REMOTE_PART=$REMOTE_MODEL.part
 adb_target shell run-as "$PACKAGE" mkdir -p "$REMOTE_DIR"
-adb_target shell run-as "$PACKAGE" rm -f "$REMOTE_PART"
 
 if [ "$SOURCE_MODE" = "parts" ]; then
+  partial_bytes=$(
+    adb_target shell run-as "$PACKAGE" stat -c %s "$REMOTE_PART" 2>/dev/null |
+      tr -d '\r' || true
+  )
+  partial_bytes=${partial_bytes:-0}
+  boundary_bytes=0
+  valid_boundary=false
+  if [ "$partial_bytes" -eq 0 ]; then
+    valid_boundary=true
+  else
+    for part in "$@"; do
+      boundary_bytes=$((boundary_bytes + $(wc -c <"$part")))
+      if [ "$partial_bytes" -eq "$boundary_bytes" ]; then
+        valid_boundary=true
+        break
+      fi
+    done
+  fi
+  if [ "$valid_boundary" != true ]; then
+    adb_target shell run-as "$PACKAGE" rm -f "$REMOTE_PART"
+    partial_bytes=0
+  fi
   adb_target shell run-as "$PACKAGE" touch "$REMOTE_PART"
   REMOTE_CHUNK=
   cleanup_chunk() {
@@ -164,19 +185,27 @@ if [ "$SOURCE_MODE" = "parts" ]; then
   copied_bytes=0
   chunk_index=0
   for part in "$@"; do
+    part_size=$(wc -c <"$part")
+    next_bytes=$((copied_bytes + part_size))
+    if [ "$next_bytes" -le "$partial_bytes" ]; then
+      copied_bytes=$next_bytes
+      echo "Gemma copy: $copied_bytes of $MODEL_BYTES bytes (resumed)."
+      chunk_index=$((chunk_index + 1))
+      continue
+    fi
     REMOTE_CHUNK=/data/local/tmp/workbench-gemma-"$chunk_index".part
     adb_target push "$part" "$REMOTE_CHUNK" >/dev/null 2>&1
     adb_target shell \
       "run-as $PACKAGE sh -c \"cat '$REMOTE_CHUNK' >> '$REMOTE_PART'\""
     adb_target shell rm -f "$REMOTE_CHUNK"
     REMOTE_CHUNK=
-    part_size=$(wc -c <"$part")
     copied_bytes=$((copied_bytes + part_size))
     echo "Gemma copy: $copied_bytes of $MODEL_BYTES bytes."
     chunk_index=$((chunk_index + 1))
   done
   trap - EXIT HUP INT TERM
 else
+  adb_target shell run-as "$PACKAGE" rm -f "$REMOTE_PART"
   stream_source "$@" |
     adb_target shell \
       "run-as $PACKAGE sh -c \"cat > '$REMOTE_PART'\""

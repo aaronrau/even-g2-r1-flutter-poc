@@ -64,9 +64,11 @@ Future<void> main(List<String> arguments) async {
   if (minimumSpeakers < 2) {
     throw const FormatException('--minimum-speakers must be at least 2.');
   }
-  if (!isValidSpeakerSignatureThreshold(signatureMatchThreshold)) {
-    throw const FormatException(
-      '--signature-threshold must be greater than 0 and at most 1.',
+  if (!isAdjustableSpeakerSignatureThreshold(signatureMatchThreshold)) {
+    throw FormatException(
+      '--signature-threshold must be between '
+      '$minimumAdjustableSpeakerSignatureMatchThreshold and '
+      '$maximumAdjustableSpeakerSignatureMatchThreshold.',
     );
   }
   final models = ConversationModelPaths(

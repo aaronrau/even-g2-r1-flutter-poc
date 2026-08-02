@@ -41,6 +41,7 @@ final class ConversationAnalysisService {
        _clock = clock;
 
   static const int _maximumPendingJobs = 32;
+  static const Duration _idleWorkerReleaseDelay = Duration(seconds: 30);
 
   final ConversationServiceLog log;
   final VoidCallback onChanged;
@@ -57,11 +58,15 @@ final class ConversationAnalysisService {
   bool _initialized = false;
   bool _disposed = false;
   bool _starting = false;
+  Completer<void>? _startSettled;
   bool _jobActive = false;
   bool _activeJobEnrollment = false;
   bool _enrollmentRequested = false;
   int? _minimumEnrollmentSegmentMicros;
   Future<void>? _memoryPressureRelease;
+  Timer? _idleWorkerReleaseTimer;
+  bool _pausedForCorrection = false;
+  double _speakerMatchThreshold = defaultSpeakerSignatureMatchThreshold;
 
   bool enabled = false;
   String state = 'disabled';
@@ -89,6 +94,7 @@ final class ConversationAnalysisService {
   int get acceptedEnrollmentSamples =>
       _primaryProfile?.acceptedEnrollmentSamples ?? 0;
   int get requiredEnrollmentSamples => minimumPrimarySpeakerEnrollmentSamples;
+  double get speakerMatchThreshold => _speakerMatchThreshold;
   int get knownSpeakerCount =>
       _profiles.where((profile) => profile.calibrationComplete).length;
   int get pendingCount => _jobs.length + (_jobActive && _jobs.isEmpty ? 1 : 0);
@@ -100,6 +106,7 @@ final class ConversationAnalysisService {
     _initialized = true;
     try {
       await _recordStore.initialize();
+      _speakerMatchThreshold = await _preferences.loadSpeakerMatchThreshold();
       final storedProfiles = await _recordStore.loadProfiles();
       _profiles = retainBoundedSpeakerProfiles(storedProfiles);
       if (storedProfiles.length != _profiles.length) {
@@ -111,6 +118,8 @@ final class ConversationAnalysisService {
               'maximum_other=$maximumNonPrimarySpeakerProfiles',
         );
       }
+      await _applySpeakerMatchThresholdToPrimary();
+      await _reconcilePrimarySpeakerHistoryIfNeeded();
       _jobs.addAll(await _recordStore.loadPendingJobs());
       enabled = await _preferences.loadEnabled();
       if (!enabled) {
@@ -122,7 +131,17 @@ final class ConversationAnalysisService {
         _enrollmentRequested = true;
         _minimumEnrollmentSegmentMicros = _nowMicros();
       }
-      await _start();
+      if (_jobs.isNotEmpty) {
+        await _start();
+      } else {
+        state = _idleState;
+        log(
+          'Conversation',
+          '[WorkBench][Conversation] state=$state worker=on_demand '
+              'capture=unaffected transcription=unaffected',
+        );
+        onChanged();
+      }
     } catch (caught) {
       _fail(caught, stateName: 'unavailable');
     }
@@ -136,6 +155,9 @@ final class ConversationAnalysisService {
     error = null;
     await _preferences.saveEnabled(value);
     if (!value) {
+      _idleWorkerReleaseTimer?.cancel();
+      _idleWorkerReleaseTimer = null;
+      _pausedForCorrection = false;
       state = 'disabled';
       _enrollmentRequested = false;
       _minimumEnrollmentSegmentMicros = null;
@@ -158,58 +180,55 @@ final class ConversationAnalysisService {
       _enrollmentRequested = true;
       _minimumEnrollmentSegmentMicros = _nowMicros();
     }
-    await _start();
-  }
-
-  void requestEnrollment() {
-    if (!enabled || _disposed) {
-      return;
+    if (_jobs.isNotEmpty) {
+      await _start();
+    } else {
+      state = _idleState;
+      onChanged();
     }
-    _enrollmentRequested = true;
-    _minimumEnrollmentSegmentMicros = _nowMicros();
-    state = 'waiting_for_enrollment_speech';
-    error = null;
-    log(
-      'Conversation',
-      '[WorkBench][Conversation] state=enrollment_waiting '
-          'accepted=$acceptedEnrollmentSamples '
-          'required=$requiredEnrollmentSamples',
-    );
-    onChanged();
   }
 
-  Future<void> clearSpeakerProfiles() async {
+  Future<void> setSpeakerMatchThreshold(double value) async {
     if (_disposed) {
       return;
     }
     if (_jobActive || _jobs.isNotEmpty) {
       throw StateError(
-        'Wait for pending conversation analysis before clearing speakers.',
+        'Wait for pending conversation analysis before changing the speaker match threshold.',
       );
     }
-    _profiles = const <SpeakerProfile>[];
-    _enrollmentRequested = enabled;
-    _minimumEnrollmentSegmentMicros = enabled ? _nowMicros() : null;
-    await _recordStore.clearProfiles();
-    state = enabled ? 'waiting_for_enrollment_speech' : 'disabled';
-    error = null;
+    if (!isAdjustableSpeakerSignatureThreshold(value)) {
+      throw ArgumentError.value(
+        value,
+        'value',
+        'The speaker match threshold is outside the adjustable range.',
+      );
+    }
+    final normalized = normalizeAdjustableSpeakerSignatureThreshold(value);
+    await _preferences.saveSpeakerMatchThreshold(normalized);
+    _speakerMatchThreshold = normalized;
+    await _applySpeakerMatchThresholdToPrimary();
     log(
       'Conversation',
-      '[WorkBench][Conversation] state=profiles_cleared '
-          'conversations_retained=true',
+      '[WorkBench][Conversation] state=threshold_saved '
+          'signature_match_threshold=${normalized.toStringAsFixed(2)}',
     );
     onChanged();
   }
 
-  Future<void> resetPrimarySpeakerProfile() async {
+  Future<void> resetSpeakerIdentification() async {
     if (_disposed) {
       return;
     }
     if (_jobActive || _jobs.isNotEmpty) {
       throw StateError(
-        'Wait for pending conversation analysis before resetting You.',
+        'Wait for pending conversation analysis before resetting speaker identification.',
       );
     }
+    await _preferences.saveSpeakerMatchThreshold(
+      defaultSpeakerSignatureMatchThreshold,
+    );
+    _speakerMatchThreshold = defaultSpeakerSignatureMatchThreshold;
     _profiles = retainBoundedSpeakerProfiles(
       retainNonPrimarySpeakerProfiles(_profiles),
     );
@@ -222,8 +241,10 @@ final class ConversationAnalysisService {
       await _recordStore.saveProfiles(_profiles);
       log(
         'Conversation',
-        '[WorkBench][Conversation] state=primary_profile_reset '
+        '[WorkBench][Conversation] state=speaker_identification_reset '
             'other_speakers_retained=${_profiles.length} '
+            'signature_match_threshold='
+            '${_speakerMatchThreshold.toStringAsFixed(2)} '
             'conversations_retained=true',
       );
     } catch (caught) {
@@ -242,6 +263,8 @@ final class ConversationAnalysisService {
     if (!enabled || _disposed || segmentId.isEmpty || wavPath.isEmpty) {
       return;
     }
+    _idleWorkerReleaseTimer?.cancel();
+    _idleWorkerReleaseTimer = null;
     final enrollment = _enrollmentRequested || needsEnrollment;
     final minimumEnrollmentMicros = _minimumEnrollmentSegmentMicros;
     final segmentStartMicros = _segmentStartMicros(segmentId);
@@ -293,15 +316,40 @@ final class ConversationAnalysisService {
     );
     state = enrollment ? 'enrolling' : 'queued';
     unawaited(_persistJobs());
-    _dispatch();
+    if (!_pausedForCorrection && _supervisor == null) {
+      unawaited(_start());
+    } else {
+      _dispatch();
+    }
     onChanged();
   }
 
   Future<void> _start() async {
-    if (_starting || _disposed || !enabled || isReady) {
+    if (_starting) {
+      final settled = _startSettled;
+      if (settled != null) {
+        await settled.future;
+      }
+      if (!_disposed &&
+          enabled &&
+          !isReady &&
+          !_pausedForCorrection &&
+          _jobs.isNotEmpty) {
+        await _start();
+      }
       return;
     }
+    if (_disposed ||
+        !enabled ||
+        isReady ||
+        _pausedForCorrection ||
+        _jobs.isEmpty) {
+      return;
+    }
+    _idleWorkerReleaseTimer?.cancel();
+    _idleWorkerReleaseTimer = null;
     _starting = true;
+    _startSettled = Completer<void>();
     state = 'starting';
     error = null;
     onChanged();
@@ -312,7 +360,7 @@ final class ConversationAnalysisService {
         definition: parakeet110mModel,
         onStatus: (message) => _status(message),
       );
-      if (_disposed || !enabled) {
+      if (_disposed || !enabled || _pausedForCorrection || _jobs.isEmpty) {
         return;
       }
       final supervisor = ConversationAnalysisSupervisor(
@@ -322,9 +370,17 @@ final class ConversationAnalysisService {
         onFailure: _onFailure,
         onStatus: (message, {bool isError = false}) =>
             log('Conversation', message, isError: isError),
+        signatureMatchThreshold: _speakerMatchThreshold,
       );
       _supervisor = supervisor;
       await supervisor.start();
+      if (_disposed || !enabled || _pausedForCorrection || _jobs.isEmpty) {
+        if (identical(_supervisor, supervisor)) {
+          _supervisor = null;
+        }
+        await supervisor.dispose();
+        return;
+      }
       state = needsEnrollment ? 'waiting_for_enrollment_speech' : 'ready';
       if (needsEnrollment) {
         _enrollmentRequested = true;
@@ -342,6 +398,11 @@ final class ConversationAnalysisService {
       _fail(caught, stateName: 'unavailable');
     } finally {
       _starting = false;
+      final settled = _startSettled;
+      _startSettled = null;
+      if (settled != null && !settled.isCompleted) {
+        settled.complete();
+      }
       onChanged();
     }
   }
@@ -352,6 +413,7 @@ final class ConversationAnalysisService {
         _jobs.isEmpty ||
         supervisor == null ||
         !supervisor.isReady ||
+        _pausedForCorrection ||
         _disposed) {
       return;
     }
@@ -360,6 +422,7 @@ final class ConversationAnalysisService {
       _jobs.removeFirst();
       unawaited(_persistJobs());
       _dispatch();
+      _scheduleIdleWorkerRelease();
       return;
     }
     _jobActive = true;
@@ -370,6 +433,7 @@ final class ConversationAnalysisService {
       wavPath: job.wavPath,
       profiles: _profiles,
       enrollment: job.enrollment,
+      signatureMatchThreshold: _speakerMatchThreshold,
     );
     onChanged();
   }
@@ -383,7 +447,13 @@ final class ConversationAnalysisService {
     await _persistJobs();
     try {
       _profiles = retainBoundedSpeakerProfiles(result.profiles);
+      final completedEnrollment = result.enrollment && !needsEnrollment;
+      if (completedEnrollment) {
+        _enrollmentRequested = false;
+        _minimumEnrollmentSegmentMicros = null;
+      }
       await _recordStore.saveProfiles(_profiles);
+      await _reconcilePrimarySpeakerHistoryIfNeeded();
       if (!result.enrollment) {
         final retained = await _recordStore.retainRecord(result.record);
         await _sharedAudioExportStore.indexConversation(retained);
@@ -424,6 +494,7 @@ final class ConversationAnalysisService {
       _jobActive = false;
       _activeJobEnrollment = false;
       _dispatch();
+      _scheduleIdleWorkerRelease();
       onChanged();
     }
   }
@@ -443,7 +514,79 @@ final class ConversationAnalysisService {
     }
     unawaited(_persistJobs());
     _dispatch();
+    _scheduleIdleWorkerRelease();
     onChanged();
+  }
+
+  Future<void> _reconcilePrimarySpeakerHistoryIfNeeded() async {
+    final primary = _primaryProfile;
+    if (primary == null ||
+        !primary.calibrationComplete ||
+        !primary.historyReconciliationPending) {
+      return;
+    }
+    final equivalentScores = <String, double>{};
+    final equivalentProfiles = <SpeakerProfile>[];
+    for (final profile in _profiles) {
+      if (profile.isPrimary || !profile.calibrationComplete) {
+        continue;
+      }
+      final score = speakerProfilesSimilarity(primary, profile);
+      if (!speakerSignatureMatches(
+        score,
+        threshold: primary.signatureMatchThreshold,
+      )) {
+        continue;
+      }
+      equivalentProfiles.add(profile);
+      equivalentScores[profile.id] = score;
+    }
+
+    final reconciliation = await _recordStore.reconcilePrimarySpeaker(
+      primary: primary,
+      equivalentSpeakerScores: equivalentScores,
+    );
+    await _sharedAudioExportStore.indexConversations(
+      reconciliation.recordsToIndex,
+    );
+    await _sharedAudioExportStore.exportFiles(reconciliation.updatedTextPaths);
+
+    final equivalentIds = equivalentProfiles
+        .map((profile) => profile.id)
+        .toSet();
+    final consolidated = consolidatePrimarySpeakerProfiles(
+      primary,
+      equivalentProfiles,
+    );
+    _profiles = retainBoundedSpeakerProfiles(<SpeakerProfile>[
+      consolidated,
+      ..._profiles.where(
+        (profile) => !profile.isPrimary && !equivalentIds.contains(profile.id),
+      ),
+    ]);
+    await _recordStore.saveProfiles(_profiles);
+    log(
+      'Conversation',
+      '[WorkBench][Conversation] state=history_reconciled '
+          'profiles=${equivalentProfiles.length} '
+          'records=${reconciliation.updatedRecordCount} '
+          'turns=${reconciliation.updatedTurnCount}',
+    );
+  }
+
+  Future<void> _applySpeakerMatchThresholdToPrimary() async {
+    final primaryIndex = _profiles.indexWhere((profile) => profile.isPrimary);
+    if (primaryIndex < 0 ||
+        _profiles[primaryIndex].signatureMatchThreshold ==
+            _speakerMatchThreshold) {
+      return;
+    }
+    final updated = _profiles.toList(growable: true);
+    updated[primaryIndex] = updated[primaryIndex].copyWith(
+      signatureMatchThreshold: _speakerMatchThreshold,
+    );
+    _profiles = retainBoundedSpeakerProfiles(updated);
+    await _recordStore.saveProfiles(_profiles);
   }
 
   void _removeJob(String segmentId) {
@@ -490,36 +633,53 @@ final class ConversationAnalysisService {
     await _supervisor?.restartForTest();
   }
 
+  Future<void> pauseForCorrection() async {
+    if (!enabled || _disposed) {
+      return;
+    }
+    _pausedForCorrection = true;
+    _idleWorkerReleaseTimer?.cancel();
+    _idleWorkerReleaseTimer = null;
+    await _releaseWorker(reason: 'correction_priority');
+    if (_disposed) {
+      return;
+    }
+    state = 'paused_for_correction';
+    log(
+      'Conversation',
+      '[WorkBench][Conversation] state=$state '
+          'capture=unaffected transcription=unaffected',
+    );
+    onChanged();
+  }
+
+  Future<void> resumeAfterCorrection() async {
+    _pausedForCorrection = false;
+    await _memoryPressureRelease;
+    if (!enabled || _disposed) {
+      return;
+    }
+    if (_jobs.isNotEmpty) {
+      await _start();
+      return;
+    }
+    state = _idleState;
+    onChanged();
+  }
+
   Future<void> handleMemoryPressure() async {
     if (!enabled || _disposed) {
       return;
     }
-    final existing = _memoryPressureRelease;
-    if (existing != null) {
-      await existing;
-      return;
-    }
-    final release = _releaseWorkerForMemoryPressure();
-    _memoryPressureRelease = release;
-    try {
-      await release;
-    } finally {
-      if (identical(_memoryPressureRelease, release)) {
-        _memoryPressureRelease = null;
-      }
-    }
-  }
-
-  Future<void> _releaseWorkerForMemoryPressure() async {
-    final supervisor = _supervisor;
-    _supervisor = null;
-    _jobActive = false;
-    _activeJobEnrollment = false;
-    await supervisor?.dispose();
+    _idleWorkerReleaseTimer?.cancel();
+    _idleWorkerReleaseTimer = null;
+    await _releaseWorker(reason: 'memory_pressure');
     if (_disposed) {
       return;
     }
-    state = enabled ? 'paused_for_memory' : 'disabled';
+    state = _pausedForCorrection
+        ? 'paused_for_correction'
+        : 'paused_for_memory';
     log(
       'Conversation',
       '[WorkBench][Conversation] state=$state '
@@ -530,13 +690,84 @@ final class ConversationAnalysisService {
 
   Future<void> resumeAfterMemoryPressure() async {
     await _memoryPressureRelease;
-    if (enabled && _supervisor == null) {
+    if (!enabled || _disposed || _pausedForCorrection) {
+      return;
+    }
+    if (_jobs.isNotEmpty && _supervisor == null) {
       await _start();
+      return;
+    }
+    state = _idleState;
+    onChanged();
+  }
+
+  String get _idleState =>
+      needsEnrollment ? 'waiting_for_enrollment_speech' : 'ready';
+
+  void _scheduleIdleWorkerRelease() {
+    _idleWorkerReleaseTimer?.cancel();
+    _idleWorkerReleaseTimer = null;
+    if (_disposed ||
+        _pausedForCorrection ||
+        _jobActive ||
+        _jobs.isNotEmpty ||
+        _supervisor == null) {
+      return;
+    }
+    _idleWorkerReleaseTimer = Timer(_idleWorkerReleaseDelay, () {
+      _idleWorkerReleaseTimer = null;
+      unawaited(_releaseIdleWorker());
+    });
+  }
+
+  Future<void> _releaseIdleWorker() async {
+    if (_disposed || _pausedForCorrection || _jobActive || _jobs.isNotEmpty) {
+      return;
+    }
+    await _releaseWorker(reason: 'idle');
+    if (_disposed || _pausedForCorrection || _jobs.isNotEmpty) {
+      return;
+    }
+    state = _idleState;
+    onChanged();
+  }
+
+  Future<void> _releaseWorker({required String reason}) async {
+    final existing = _memoryPressureRelease;
+    if (existing != null) {
+      await existing;
+      return;
+    }
+    final release = _disposeWorker(reason: reason);
+    _memoryPressureRelease = release;
+    try {
+      await release;
+    } finally {
+      if (identical(_memoryPressureRelease, release)) {
+        _memoryPressureRelease = null;
+      }
+    }
+  }
+
+  Future<void> _disposeWorker({required String reason}) async {
+    final supervisor = _supervisor;
+    _supervisor = null;
+    _jobActive = false;
+    _activeJobEnrollment = false;
+    await supervisor?.dispose();
+    if (supervisor != null && !_disposed) {
+      log(
+        'Conversation',
+        '[WorkBench][Conversation] state=worker_released reason=$reason '
+            'capture=unaffected transcription=unaffected',
+      );
     }
   }
 
   Future<void> dispose() async {
     _disposed = true;
+    _idleWorkerReleaseTimer?.cancel();
+    _idleWorkerReleaseTimer = null;
     await _memoryPressureRelease;
     await _persistJobs();
     await _supervisor?.dispose();

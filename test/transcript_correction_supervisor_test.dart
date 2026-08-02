@@ -79,6 +79,31 @@ void main() {
     expect(client.preparedModelPaths, isEmpty);
   });
 
+  test('explicit agent selection makes a non-Hey transcript correctable', () {
+    expect(
+      isLiveTranscriptCorrectionEligible(
+        'pull the ladies changes',
+        explicitlyTargeted: true,
+      ),
+      isTrue,
+    );
+    expect(
+      isLiveTranscriptCorrectionEligible(
+        'pull the ladies changes',
+        explicitlyTargeted: false,
+      ),
+      isFalse,
+      reason: 'Unselected ambient speech remains wake-gated.',
+    );
+    expect(
+      isLiveTranscriptCorrectionEligible(
+        'Hey Flux, pull the ladies changes',
+        explicitlyTargeted: false,
+      ),
+      isTrue,
+    );
+  });
+
   test(
     'persists corrected text separately with complete timing metadata',
     () async {
@@ -280,6 +305,54 @@ void main() {
     },
   );
 
+  test(
+    'corrects ladies to latest before routing selected-agent speech',
+    () async {
+      final completed = Completer<CorrectedTranscriptResult>();
+      final supervisor = TranscriptCorrectionSupervisor(
+        speechPath: speech.path,
+        configStore: configStore,
+        modelStore: modelStore,
+        client: client,
+        onCorrected: completed.complete,
+        onUncorrected: (_, _, _) {
+          fail('Selected-agent speech should use the corrected result.');
+        },
+        onStatus: (_, {isError = false}) {},
+      );
+      addTearDown(supervisor.dispose);
+      await supervisor.start();
+      final raw = File('${speech.path}/selected-agent.raw.txt')
+        ..writeAsStringSync('pull the ladies changes\n');
+
+      await supervisor.queue(
+        TranscriptCorrectionJob(
+          segmentId: 'selected-agent',
+          rawPath: raw.path,
+          sttModel: 'parakeet-0.6b',
+          sttProvider: 'nnapi',
+          audioMs: 3000,
+          sttDecodeMs: 400,
+          sttTotalMs: 450,
+          queuedAt: DateTime.now().toUtc(),
+          correctionTerms: const <String>['Flux'],
+          routeWhenCorrected: true,
+          liveTranscript: 'pull the ladies changes',
+        ),
+      );
+      final result = await completed.future.timeout(const Duration(seconds: 5));
+
+      expect(client.transcripts.single, 'pull the ladies changes');
+      expect(result.originalText, 'pull the ladies changes');
+      expect(result.correctedText, 'Pull the latest changes.');
+      expect(result.routeWhenCorrected, isTrue);
+      expect(
+        client.instructions.single,
+        contains('rewrite "ladies changes" as "latest changes"'),
+      );
+    },
+  );
+
   test('a restored correction job can never route an old command', () {
     final original = TranscriptCorrectionJob(
       segmentId: 'pending',
@@ -346,65 +419,66 @@ void main() {
     },
   );
 
-  test(
-    'oversize correction input is terminal without routing invalid raw text',
-    () async {
-      final statuses = <String>[];
-      final supervisor = TranscriptCorrectionSupervisor(
-        speechPath: speech.path,
-        configStore: configStore,
-        modelStore: modelStore,
-        client: client,
-        onCorrected: (_) {},
-        onUncorrected: (_, _, _) {
-          fail('Enabled correction must not route uncorrected text.');
-        },
-        onStatus: (message, {isError = false}) {
-          statuses.add(message);
-        },
-      );
-      addTearDown(supervisor.dispose);
-      await supervisor.start();
-      final text =
-          'a' *
-          (TranscriptCorrectionSupervisor.maximumTranscriptCharacters + 1);
-      final raw = File('${speech.path}/oversize.raw.txt')
-        ..writeAsStringSync('$text\n');
+  test('oversize correction input reports a terminal raw fallback', () async {
+    final statuses = <String>[];
+    final fallback = Completer<(String, String)>();
+    final supervisor = TranscriptCorrectionSupervisor(
+      speechPath: speech.path,
+      configStore: configStore,
+      modelStore: modelStore,
+      client: client,
+      onCorrected: (_) {},
+      onUncorrected: (_, transcript, reason) {
+        fallback.complete((transcript, reason));
+      },
+      onStatus: (message, {isError = false}) {
+        statuses.add(message);
+      },
+    );
+    addTearDown(supervisor.dispose);
+    await supervisor.start();
+    final text =
+        'a' * (TranscriptCorrectionSupervisor.maximumTranscriptCharacters + 1);
+    final raw = File('${speech.path}/oversize.raw.txt')
+      ..writeAsStringSync('$text\n');
 
-      await supervisor.queue(
-        TranscriptCorrectionJob(
-          segmentId: 'oversize',
-          rawPath: raw.path,
-          sttModel: 'parakeet-0.6b',
-          sttProvider: 'nnapi',
-          audioMs: 5000,
-          sttDecodeMs: 500,
-          sttTotalMs: 550,
-          queuedAt: DateTime.now().toUtc(),
-          routeWhenCorrected: true,
-        ),
-      );
-      await _waitFor(() => supervisor.pendingCount == 0);
+    await supervisor.queue(
+      TranscriptCorrectionJob(
+        segmentId: 'oversize',
+        rawPath: raw.path,
+        sttModel: 'parakeet-0.6b',
+        sttProvider: 'nnapi',
+        audioMs: 5000,
+        sttDecodeMs: 500,
+        sttTotalMs: 550,
+        queuedAt: DateTime.now().toUtc(),
+        routeWhenCorrected: true,
+      ),
+    );
+    await _waitFor(() => supervisor.pendingCount == 0);
+    final fallbackResult = await fallback.future;
 
-      expect(client.instructions, isEmpty);
-      expect(supervisor.pendingCount, 0);
-      expect(statuses, contains(contains('state=skipped_oversize')));
-      expect(
-        File(
-          '${speech.path}/oversize.correction-skipped.json',
-        ).readAsStringSync(),
-        contains('"reason":"input_too_long"'),
-      );
-      expect(
-        File('${speech.path}/pending-corrections.json').readAsStringSync(),
-        '{}',
-      );
-    },
-  );
+    expect(client.instructions, isEmpty);
+    expect(fallbackResult.$1, text);
+    expect(fallbackResult.$2, 'input_too_long');
+    expect(supervisor.pendingCount, 0);
+    expect(statuses, contains(contains('state=skipped_oversize')));
+    expect(
+      File(
+        '${speech.path}/oversize.correction-skipped.json',
+      ).readAsStringSync(),
+      contains('"reason":"input_too_long"'),
+    );
+    expect(
+      File('${speech.path}/pending-corrections.json').readAsStringSync(),
+      '{}',
+    );
+  });
 
   test('abandons invalid model output after the retry ceiling', () async {
     final statuses = <String>[];
     final invalidClient = _InvalidGemmaClient();
+    final fallback = Completer<(String, String)>();
     final supervisor = TranscriptCorrectionSupervisor(
       speechPath: speech.path,
       configStore: configStore,
@@ -413,8 +487,8 @@ void main() {
       onCorrected: (_) {
         fail('Invalid correction output must not complete.');
       },
-      onUncorrected: (_, _, _) {
-        fail('Enabled correction must not route uncorrected text.');
+      onUncorrected: (_, transcript, reason) {
+        fallback.complete((transcript, reason));
       },
       onStatus: (message, {isError = false}) {
         statuses.add(message);
@@ -440,8 +514,11 @@ void main() {
       ),
     );
     await _waitFor(() => supervisor.pendingCount == 0);
+    final fallbackResult = await fallback.future;
 
     expect(invalidClient.calls, 1);
+    expect(fallbackResult.$1, 'Keep protected value 15.');
+    expect(fallbackResult.$2, 'retry_exhausted');
     expect(statuses, contains(contains('state=abandoned')));
     expect(statuses, contains(contains('error_code=invalid_output')));
     expect(
@@ -451,6 +528,63 @@ void main() {
     expect(
       File('${speech.path}/pending-corrections.json').readAsStringSync(),
       '{}',
+    );
+  });
+
+  test('keeps a live request queued across Gemma process restarts', () async {
+    final statuses = <String>[];
+    final completed = Completer<CorrectedTranscriptResult>();
+    final restartingClient = _RestartingGemmaClient(
+      disconnectsBeforeSuccess: 4,
+    );
+    final supervisor = TranscriptCorrectionSupervisor(
+      speechPath: speech.path,
+      configStore: configStore,
+      modelStore: modelStore,
+      client: restartingClient,
+      transientRetryDelayOverride: Duration.zero,
+      onCorrected: completed.complete,
+      onUncorrected: (_, _, _) {
+        fail('A transient service restart must keep the request queued.');
+      },
+      onStatus: (message, {isError = false}) {
+        statuses.add(message);
+      },
+    );
+    addTearDown(supervisor.dispose);
+    await supervisor.start();
+    final raw = File('${speech.path}/service-restart.raw.txt')
+      ..writeAsStringSync('Flux, pull the latest changes.\n');
+
+    await supervisor.queue(
+      TranscriptCorrectionJob(
+        segmentId: 'service-restart',
+        rawPath: raw.path,
+        sttModel: 'parakeet-0.6b',
+        sttProvider: 'nnapi',
+        audioMs: 5000,
+        sttDecodeMs: 500,
+        sttTotalMs: 550,
+        queuedAt: DateTime.now().toUtc(),
+        routeWhenCorrected: true,
+        attempts: TranscriptCorrectionSupervisor.maximumCorrectionAttempts - 1,
+      ),
+    );
+    final result = await completed.future.timeout(const Duration(seconds: 5));
+
+    expect(result.correctedText, 'Flux, pull the latest changes.');
+    expect(restartingClient.calls, 5);
+    expect(
+      statuses.where((status) => status.contains('state=deferred')),
+      hasLength(4),
+    );
+    expect(statuses, isNot(contains(contains('state=abandoned'))));
+    expect(supervisor.pendingCount, 0);
+    expect(
+      File(
+        '${speech.path}/service-restart.correction-skipped.json',
+      ).existsSync(),
+      isFalse,
     );
   });
 
@@ -503,6 +637,41 @@ void main() {
       '{}',
     );
   });
+
+  test(
+    'prioritizes a tapped correction behind only active inference',
+    () async {
+      final blockingClient = _BlockingGemmaClient();
+      final statuses = <String>[];
+      final supervisor = TranscriptCorrectionSupervisor(
+        speechPath: speech.path,
+        configStore: configStore,
+        modelStore: modelStore,
+        client: blockingClient,
+        onCorrected: (_) {},
+        onUncorrected: (_, _, _) {},
+        onStatus: (message, {isError = false}) => statuses.add(message),
+      );
+      addTearDown(supervisor.dispose);
+      await supervisor.start();
+
+      await _queue(supervisor, speech, 'first', 'Hey Flux, first task');
+      await blockingClient.firstStarted.future;
+      await _queue(supervisor, speech, 'second', 'Hey Flux, second task');
+      await _queue(supervisor, speech, 'third', 'Hey Flux, tapped task');
+
+      expect(await supervisor.prioritize('third'), isTrue);
+      blockingClient.releaseFirst.complete();
+      await _waitFor(() => supervisor.pendingCount == 0);
+
+      expect(blockingClient.transcripts, <String>[
+        'Hey Flux, first task',
+        'Hey Flux, tapped task',
+        'Hey Flux, second task',
+      ]);
+      expect(statuses, contains(contains('state=prioritized segment=third')));
+    },
+  );
 
   test('does not restore a transcript with a durable skip marker', () async {
     File(
@@ -623,6 +792,11 @@ final class _FakeGemmaClient implements GemmaCorrectionClient {
       'Hey flex, pull the latest changes.'
           when request.instructions.contains('"Flux"') =>
         'Flux, pull the latest changes.',
+      'pull the ladies changes'
+          when request.instructions.contains(
+            'rewrite "ladies changes" as "latest changes"',
+          ) =>
+        'Pull the latest changes.',
       _ => '${source[0].toUpperCase()}${source.substring(1)}.',
     };
     return GemmaCorrectionResult(
@@ -632,6 +806,40 @@ final class _FakeGemmaClient implements GemmaCorrectionClient {
       inferenceMs: 40,
       totalMs: 550,
       timeToFirstTokenMs: 20,
+      prefillTokensPerSecond: 100,
+      decodeTokensPerSecond: 20,
+    );
+  }
+
+  @override
+  Future<void> releaseEngine() async {}
+}
+
+final class _BlockingGemmaClient implements GemmaCorrectionClient {
+  final Completer<void> firstStarted = Completer<void>();
+  final Completer<void> releaseFirst = Completer<void>();
+  final List<String> transcripts = <String>[];
+
+  @override
+  Future<void> prepareEngine({
+    required String modelPath,
+    required String modelId,
+  }) async {}
+
+  @override
+  Future<GemmaCorrectionResult> correct(GemmaCorrectionRequest request) async {
+    transcripts.add(request.transcript);
+    if (transcripts.length == 1) {
+      firstStarted.complete();
+      await releaseFirst.future;
+    }
+    return GemmaCorrectionResult(
+      correctedText: '${request.transcript}.',
+      provider: 'gpu',
+      engineLoadMs: 0,
+      inferenceMs: 1,
+      totalMs: 1,
+      timeToFirstTokenMs: 1,
       prefillTokensPerSecond: 100,
       decodeTokensPerSecond: 20,
     );
@@ -655,6 +863,40 @@ final class _InvalidGemmaClient implements GemmaCorrectionClient {
     calls++;
     return const GemmaCorrectionResult(
       correctedText: 'Protected value was removed.',
+      provider: 'gpu',
+      engineLoadMs: 500,
+      inferenceMs: 40,
+      totalMs: 550,
+      timeToFirstTokenMs: 20,
+      prefillTokensPerSecond: 100,
+      decodeTokensPerSecond: 20,
+    );
+  }
+
+  @override
+  Future<void> releaseEngine() async {}
+}
+
+final class _RestartingGemmaClient implements GemmaCorrectionClient {
+  _RestartingGemmaClient({required this.disconnectsBeforeSuccess});
+
+  final int disconnectsBeforeSuccess;
+  int calls = 0;
+
+  @override
+  Future<void> prepareEngine({
+    required String modelPath,
+    required String modelId,
+  }) async {}
+
+  @override
+  Future<GemmaCorrectionResult> correct(GemmaCorrectionRequest request) async {
+    calls++;
+    if (calls <= disconnectsBeforeSuccess) {
+      throw const GemmaCorrectionClientException('service_disconnected');
+    }
+    return GemmaCorrectionResult(
+      correctedText: request.transcript,
       provider: 'gpu',
       engineLoadMs: 500,
       inferenceMs: 40,

@@ -38,7 +38,6 @@ final class HomeHistoryPanel extends StatefulWidget {
     this.onRefreshConversations,
     this.onLoadMessages,
     this.onLoadConversations,
-    this.onResetPrimarySpeaker,
     this.onTabChanged,
     this.onToggleTranscriptAudio,
     this.isPlayingTranscript,
@@ -71,7 +70,6 @@ final class HomeHistoryPanel extends StatefulWidget {
   final VoidCallback? onRefreshConversations;
   final Future<void> Function()? onLoadMessages;
   final Future<void> Function()? onLoadConversations;
-  final VoidCallback? onResetPrimarySpeaker;
   final ValueChanged<HomeHistoryTab>? onTabChanged;
   final ValueChanged<SharedTranscript>? onToggleTranscriptAudio;
   final bool Function(SharedTranscript transcript)? isPlayingTranscript;
@@ -608,12 +606,6 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodyMedium,
               ),
-              if (widget.analysisEnabled &&
-                  !enrollmentNeeded &&
-                  widget.onResetPrimarySpeaker != null) ...<Widget>[
-                const SizedBox(height: 12),
-                _buildResetPrimarySpeakerButton(),
-              ],
             ],
           ),
         ),
@@ -646,12 +638,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         const SizedBox(height: 8),
         if (widget.analysisEnabled) ...<Widget>[
           if (enrollmentNeeded)
-            Text(enrollmentPrompt, style: theme.textTheme.bodyMedium)
-          else if (widget.onResetPrimarySpeaker != null)
-            Align(
-              alignment: Alignment.centerRight,
-              child: _buildResetPrimarySpeakerButton(),
-            ),
+            Text(enrollmentPrompt, style: theme.textTheme.bodyMedium),
           const SizedBox(height: 8),
         ],
         Expanded(
@@ -675,20 +662,6 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildResetPrimarySpeakerButton() {
-    final blocked =
-        widget.isStorageBusy ||
-        _isLoadingConversationsForTab ||
-        widget.isLoadingConversations ||
-        widget.pendingConversationCount > 0;
-    return OutlinedButton.icon(
-      key: const ValueKey<String>('reset-primary-speaker'),
-      onPressed: blocked ? null : widget.onResetPrimarySpeaker,
-      icon: const Icon(Icons.person_remove_outlined),
-      label: const Text('Reset You signature'),
     );
   }
 

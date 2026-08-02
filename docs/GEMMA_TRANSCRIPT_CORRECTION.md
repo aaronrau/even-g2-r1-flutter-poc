@@ -21,6 +21,20 @@ initialization or inference failure returns to the durable retry queue; CPU
 fallback is not configured. Killing or exhausting the correction process must
 not interrupt BLE, capture, VAD, STT, or the original transcript.
 
+The Flutter bridge binds one `:gemma` service with Android's important-service
+flag. That service owns one single-thread worker and one engine; it never starts
+parallel engines to catch up. If Android kills the service for memory pressure,
+`service_disconnected`, `service_send_failed`, `service_unavailable`, and
+`memory_pressure` outcomes keep the live job in the same durable queue. Retry
+delays are capped at 30 seconds and do not consume the three-attempt ceiling.
+The replacement service processes queued jobs serially after rebinding.
+Non-transient invalid output or inference failures still stop after three
+attempts; the raw transcript remains durable and an active G2 detail changes
+from `Sending:` to `Saved:` instead of remaining indefinitely in progress.
+The optional conversation-analysis worker yields its independent native model
+allocations while a live correction is pending, then resumes its durable WAV
+queue afterward.
+
 When correction is enabled and the verified model is installed, startup
 prepares the engine asynchronously before the first transcript arrives. The
 engine remains warm after each short-lived conversation instead of being
@@ -52,16 +66,26 @@ files plus `workbench-correction-prompt.txt` are stored there through Android's
 document provider. The prompt file is excluded from the Messages list.
 Legacy `<segment>.txt` files remain readable as original-only transcripts.
 
-Correction is wake-gated before it enters the durable Gemma queue. A live raw
-chunk is eligible only when it contains the complete word `hey`, matched
-case-insensitively. A chunk without that word is saved normally and receives a
-durable `no_wake_word` skip record; startup recovery therefore cannot turn
-ambient speech into a later correction job. During uninterrupted speech, STT
+Correction is attention-gated before it enters the durable Gemma queue. A live
+raw chunk is eligible when it begins with the complete word `hey`, matched
+case-insensitively, or when VAD speech start snapshotted an explicitly selected
+agent row/detail in the live process. An unselected chunk without the leading
+word is saved normally and receives a durable `no_wake_word` skip record;
+startup recovery therefore cannot turn ambient speech or a mid-sentence mention
+into a later correction job. During uninterrupted speech, STT
 prefers the next short inter-word audio gap or VAD pause after 15 seconds and
 uses a 17-second safety cap with one second of leading overlap in the
 continuation WAV. The continuous file and
 live correction/route input remove only an exact repeated boundary-word
 sequence; every original per-chunk raw file remains independently durable.
+
+An agent row selected in the open G2 history selector, including its open
+five-exchange detail page, is explicit routing intent, not acoustic wake evidence.
+Speech that begins while that target is active enters the live Gemma queue even
+without leading `Hey` and routes the corrected transcript to that
+still-configured agent. The raw transcript remains independently durable.
+Restored jobs never route, and correction failure preserves the raw fallback.
+Memo and Dismiss never provide this override.
 
 ## Configuration
 

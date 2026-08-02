@@ -78,7 +78,7 @@ adb_target shell mkdir -p "$REMOTE_TMP"
 adb_target shell run-as "$PACKAGE" \
   mkdir -p files/workbench/models/diarization
 for file in $MODEL_FILES; do
-  adb_target push "$SOURCE_DIR/$file" "$REMOTE_TMP/$file" >/dev/null
+  adb_target push "$SOURCE_DIR/$file" "$REMOTE_TMP/$file" >/dev/null 2>&1
   adb_target shell run-as "$PACKAGE" \
     cp "$REMOTE_TMP/$file" "files/workbench/models/diarization/$file"
   adb_target shell rm -f "$REMOTE_TMP/$file"

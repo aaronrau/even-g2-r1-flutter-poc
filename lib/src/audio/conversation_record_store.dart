@@ -5,6 +5,20 @@ import 'package:path_provider/path_provider.dart';
 
 import 'conversation_models.dart';
 
+final class ConversationReconciliationResult {
+  const ConversationReconciliationResult({
+    required this.recordsToIndex,
+    required this.updatedTextPaths,
+    required this.updatedRecordCount,
+    required this.updatedTurnCount,
+  });
+
+  final List<ConversationRecord> recordsToIndex;
+  final List<String> updatedTextPaths;
+  final int updatedRecordCount;
+  final int updatedTurnCount;
+}
+
 final class ConversationRecordStore {
   ConversationRecordStore({
     Future<Directory> Function() supportDirectory =
@@ -126,8 +140,87 @@ final class ConversationRecordStore {
     return retained;
   }
 
-  Future<void> clearProfiles() async {
-    await saveProfiles(const <SpeakerProfile>[]);
+  Future<ConversationReconciliationResult> reconcilePrimarySpeaker({
+    required SpeakerProfile primary,
+    required Map<String, double> equivalentSpeakerScores,
+  }) async {
+    final recordsToIndex = <ConversationRecord>[];
+    final updatedTextPaths = <String>[];
+    var updatedRecordCount = 0;
+    var updatedTurnCount = 0;
+    for (final record in await loadRecords()) {
+      var changed = false;
+      var shouldReindex = record.utterances.any(
+        (utterance) =>
+            utterance.isPrimary ||
+            utterance.speakerId == primary.id ||
+            equivalentSpeakerScores.containsKey(utterance.speakerId),
+      );
+      final utterances = <ConversationUtterance>[];
+      for (final utterance in record.utterances) {
+        if (utterance.isOverlap || utterance.isPrimary) {
+          utterances.add(utterance);
+          continue;
+        }
+        final signature = utterance.speakerSignature;
+        final signatureScore = signature == null
+            ? null
+            : speakerProfileSimilarity(primary, signature);
+        final legacyScore = equivalentSpeakerScores[utterance.speakerId];
+        final score = signatureScore ?? legacyScore;
+        if (score == null ||
+            !speakerSignatureMatches(
+              score,
+              threshold: primary.signatureMatchThreshold,
+            )) {
+          utterances.add(utterance);
+          continue;
+        }
+        changed = true;
+        shouldReindex = true;
+        updatedTurnCount++;
+        utterances.add(
+          ConversationUtterance(
+            id: utterance.id,
+            conversationId: utterance.conversationId,
+            speakerId: primary.id,
+            speakerLabel: primary.label,
+            text: utterance.text,
+            startMs: utterance.startMs,
+            endMs: utterance.endMs,
+            confidence: score.clamp(0, 1),
+            updatedAt: utterance.updatedAt,
+            isPrimary: true,
+            speakerSignature: utterance.speakerSignature,
+          ),
+        );
+      }
+      if (!changed) {
+        if (shouldReindex) {
+          recordsToIndex.add(record);
+        }
+        continue;
+      }
+      final updated = ConversationRecord(
+        id: record.id,
+        audioPath: record.audioPath,
+        textPath: record.textPath,
+        metadataPath: record.metadataPath,
+        utterances: utterances,
+        updatedAt: record.updatedAt,
+      );
+      final retained = await retainRecord(updated);
+      await _rewriteSourceFiles(retained);
+      updatedRecordCount++;
+      updatedTextPaths.add(retained.textPath);
+      recordsToIndex.add(retained);
+    }
+    return ConversationReconciliationResult(
+      recordsToIndex: recordsToIndex,
+      updatedTextPaths: updatedTextPaths,
+      updatedRecordCount: updatedRecordCount,
+      updatedTurnCount: updatedTurnCount,
+    );
   }
 
   Directory _requireRoot() {
@@ -148,5 +241,32 @@ final class ConversationRecordStore {
       await target.delete();
     }
     await partial.rename(target.path);
+  }
+
+  Future<void> _rewriteSourceFiles(ConversationRecord record) async {
+    final text = File(record.textPath);
+    if (await text.exists()) {
+      await _atomicWrite(text, encodeConversationText(record.utterances));
+    }
+    final wavSuffix = RegExp(r'\.(?:recovered\.)?wav$');
+    if (!wavSuffix.hasMatch(record.audioPath)) {
+      return;
+    }
+    final sourceMetadata = File(
+      record.audioPath.replaceFirst(wavSuffix, '.conversation.json'),
+    );
+    if (sourceMetadata.path == record.metadataPath ||
+        !await sourceMetadata.exists()) {
+      return;
+    }
+    final sourceRecord = ConversationRecord(
+      id: record.id,
+      audioPath: record.audioPath,
+      textPath: record.textPath,
+      metadataPath: sourceMetadata.path,
+      utterances: record.utterances,
+      updatedAt: record.updatedAt,
+    );
+    await _atomicWrite(sourceMetadata, '${sourceRecord.encode()}\n');
   }
 }

@@ -16,6 +16,12 @@ void main() {
       expect(await preferences.loadEnabled(), isFalse);
       await preferences.saveEnabled(true);
       expect(await preferences.loadEnabled(), isTrue);
+      expect(
+        await preferences.loadSpeakerMatchThreshold(),
+        defaultSpeakerSignatureMatchThreshold,
+      );
+      await preferences.saveSpeakerMatchThreshold(0.72);
+      expect(await preferences.loadSpeakerMatchThreshold(), 0.72);
     },
   );
 
@@ -92,6 +98,7 @@ void main() {
       primary: null,
       candidate: const <double>[1, 0],
       now: now,
+      signatureMatchThreshold: 0.70,
     );
 
     expect(first.calibrationComplete, isFalse);
@@ -102,6 +109,7 @@ void main() {
       primary: first,
       candidate: const <double>[0.8, 0.6],
       now: now.add(const Duration(seconds: 1)),
+      signatureMatchThreshold: 0.70,
     );
     expect(second.calibrationComplete, isFalse);
     expect(second.acceptedEnrollmentSamples, 2);
@@ -110,19 +118,21 @@ void main() {
       primary: second,
       candidate: const <double>[0.75, 0.6614378278],
       now: now.add(const Duration(seconds: 2)),
+      signatureMatchThreshold: 0.70,
     );
     expect(complete.calibrationComplete, isTrue);
     expect(complete.enrollmentInProgress, isFalse);
     expect(complete.acceptedEnrollmentSamples, 0);
     expect(complete.sampleCount, minimumPrimarySpeakerEnrollmentSamples);
     expect(complete.signatures, hasLength(3));
-    expect(complete.signatureMatchThreshold, closeTo(0.71, 0.001));
+    expect(complete.signatureMatchThreshold, 0.70);
+    expect(complete.historyReconciliationPending, isTrue);
     expect(
       speakerSignatureMatches(
         0.70,
         threshold: complete.signatureMatchThreshold,
       ),
-      isFalse,
+      isTrue,
     );
 
     final restored = SpeakerProfile.fromJson(complete.toJson());
@@ -149,6 +159,30 @@ void main() {
     expect(first.acceptedEnrollmentSamples, 1);
     expect(first.calibrationComplete, isFalse);
   });
+
+  test(
+    'selected threshold validates consistency across enrollment samples',
+    () {
+      final now = DateTime.utc(2026, 1, 1);
+      final first = acceptPrimarySpeakerEnrollmentSample(
+        primary: null,
+        candidate: const <double>[1, 0],
+        now: now,
+        signatureMatchThreshold: 0.85,
+      );
+
+      expect(first.signatureMatchThreshold, 0.85);
+      expect(
+        () => acceptPrimarySpeakerEnrollmentSample(
+          primary: first,
+          candidate: const <double>[0.8, 0.6],
+          now: now.add(const Duration(seconds: 1)),
+          signatureMatchThreshold: 0.85,
+        ),
+        throwsStateError,
+      );
+    },
+  );
 
   test('voice update keeps the saved profile atomic until sample three', () {
     final now = DateTime.utc(2026, 1, 1);
@@ -191,8 +225,9 @@ void main() {
     expect(complete.embedding, isNot(saved.embedding));
     expect(
       complete.signatureMatchThreshold,
-      maximumCalibratedSpeakerSignatureMatchThreshold,
+      defaultSpeakerSignatureMatchThreshold,
     );
+    expect(complete.historyReconciliationPending, isTrue);
   });
 
   test('legacy primary profile remains calibrated after JSON migration', () {
@@ -217,6 +252,7 @@ void main() {
       restored.signatureMatchThreshold,
       defaultSpeakerSignatureMatchThreshold,
     );
+    expect(restored.historyReconciliationPending, isFalse);
   });
 
   test('resetting You retains every non-primary speaker profile', () {
@@ -312,6 +348,7 @@ void main() {
           confidence: 0.9,
           updatedAt: now,
           isPrimary: true,
+          speakerSignature: const <double>[1, 0],
         ),
         ConversationUtterance(
           id: 'synthetic-segment-2',
@@ -332,8 +369,47 @@ void main() {
 
     expect(restored.utterances, hasLength(2));
     expect(restored.utterances.first.isPrimary, isTrue);
+    expect(restored.utterances.first.speakerSignature, const <double>[1, 0]);
     expect(restored.utterances.last.isOverlap, isTrue);
     expect(restored.encode(), contains('"speakerLabel": "You"'));
+  });
+
+  test('matching profiles consolidate without dropping enrollment samples', () {
+    final now = DateTime.utc(2026, 1, 1);
+    final primary = SpeakerProfile(
+      id: 'primary-user',
+      label: 'You',
+      embedding: const <double>[1, 0],
+      signatures: const <List<double>>[
+        <double>[1, 0],
+        <double>[0.9, 0.4358899],
+        <double>[0.8, 0.6],
+      ],
+      sampleCount: 3,
+      createdAt: now,
+      updatedAt: now,
+      isPrimary: true,
+      historyReconciliationPending: true,
+    );
+    final duplicate = SpeakerProfile(
+      id: 'speaker-2',
+      label: 'Speaker 2',
+      embedding: const <double>[0.7, 0.7141428],
+      sampleCount: 2,
+      createdAt: now.subtract(const Duration(minutes: 1)),
+      updatedAt: now.subtract(const Duration(minutes: 1)),
+    );
+
+    expect(speakerProfilesSimilarity(primary, duplicate), greaterThan(0.64));
+    final consolidated = consolidatePrimarySpeakerProfiles(
+      primary,
+      <SpeakerProfile>[duplicate],
+    );
+
+    expect(consolidated.historyReconciliationPending, isFalse);
+    expect(consolidated.sampleCount, 5);
+    expect(consolidated.signatures, hasLength(4));
+    expect(consolidated.signatures, containsAll(primary.signatures));
   });
 
   test(

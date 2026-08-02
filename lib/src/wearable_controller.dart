@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:flutter/widgets.dart';
@@ -12,6 +13,7 @@ import 'audio/shared_audio_export_store.dart';
 import 'audio/speech_model.dart';
 import 'audio/speech_model_preferences.dart';
 import 'audio/transcript_correction_config.dart';
+import 'audio/transcript_correction_supervisor.dart';
 import 'audio/vad_worker.dart';
 import 'audio/voice_memo_models.dart';
 import 'audio/voice_memo_service.dart';
@@ -33,6 +35,17 @@ import 'websocket/websocket_message_store.dart';
 enum WearableGestureAction { ignore, finishMemo, requestAgentSummary }
 
 enum AgentHistorySelectionMove { none, previous, next }
+
+enum QueuedTranscriptTapAction { none, save, correctAndRoute }
+
+enum AgentDetailTranscriptTapAction { none, finishSpeech, prioritizeCorrection }
+
+final class _SelectedAgentSpeechRoute {
+  const _SelectedAgentSpeechRoute({required this.agent, required this.source});
+
+  final String agent;
+  final String source;
+}
 
 /// Serializes display work and suppresses a duplicate key while it is queued,
 /// in flight, or already rendered.
@@ -96,6 +109,35 @@ AgentHistorySelectionMove resolveAgentHistorySelectionMove(int gestureType) {
   };
 }
 
+QueuedTranscriptTapAction resolveQueuedTranscriptTapAction({
+  required int gestureType,
+  required bool memoActive,
+  required String? queuedTranscript,
+}) {
+  if (gestureType != 0 || memoActive || queuedTranscript == null) {
+    return QueuedTranscriptTapAction.none;
+  }
+  return transcriptBeginsWithWakeWord(queuedTranscript)
+      ? QueuedTranscriptTapAction.correctAndRoute
+      : QueuedTranscriptTapAction.save;
+}
+
+AgentDetailTranscriptTapAction resolveAgentDetailTranscriptTapAction({
+  required int gestureType,
+  required G2AgentDetailSpeechState? speechState,
+}) {
+  if (gestureType != 0) {
+    return AgentDetailTranscriptTapAction.none;
+  }
+  return switch (speechState) {
+    G2AgentDetailSpeechState.listening =>
+      AgentDetailTranscriptTapAction.finishSpeech,
+    G2AgentDetailSpeechState.sending =>
+      AgentDetailTranscriptTapAction.prioritizeCorrection,
+    _ => AgentDetailTranscriptTapAction.none,
+  };
+}
+
 @visibleForTesting
 Future<void> completeAgentRouteConsumers({
   required Future<void> Function() updateDisplay,
@@ -108,8 +150,14 @@ Future<void> completeAgentRouteConsumers({
   await Future.wait(operations);
 }
 
+@visibleForTesting
+bool finalTranscriptCanRoute(FinalTranscriptDelivery delivery) =>
+    delivery.isCorrected;
+
 final class WearableController extends ChangeNotifier
     with WidgetsBindingObserver {
+  static const int _maximumSelectedAgentSpeechRoutes = 32;
+
   WearableController({
     FlutterReactiveBle? ble,
     SpeechModelPreferences speechModelPreferences =
@@ -144,12 +192,14 @@ final class WearableController extends ChangeNotifier
       onCaptureUnsafe: _handleUnsafeCapture,
       onQueuedTranscript: _handleQueuedTranscript,
       onFinalTranscript: _handleFinalTranscript,
-      onFinalizedSpeechSegment: _conversationAnalysis.acceptFinalizedSegment,
+      onFinalizedSpeechSegment: _handleFinalizedSpeechSegment,
       onVadSpeechEvent: _handleVadSpeechEvent,
       correctionTermsProvider: () => <String>[
         VoiceMemoService.wakePhrase,
         ..._voiceWebSocket.config.agentNames,
       ],
+      explicitCorrectionEligibilityProvider: (segmentId) =>
+          _selectedAgentSpeechRoutes.containsKey(segmentId),
       sharedAudioExportStore: _sharedAudioExportStore,
     );
     g2 = G2Connection(
@@ -193,6 +243,11 @@ final class WearableController extends ChangeNotifier
   Future<void> _memoDisplayTail = Future<void>.value();
   final CoalescedDisplayQueue _historyDisplayQueue = CoalescedDisplayQueue();
   final G2AgentHistoryState _agentHistory = G2AgentHistoryState();
+  final LinkedHashMap<String, _SelectedAgentSpeechRoute>
+  _selectedAgentSpeechRoutes =
+      LinkedHashMap<String, _SelectedAgentSpeechRoute>();
+  final Set<String> _conversationAnalysisCorrectionPauses = <String>{};
+  Future<void>? _conversationAnalysisCorrectionPause;
   Timer? _agentHistoryWaitTimer;
   bool _agentExchangeStoreReady = false;
   bool _agentHistoryOpening = false;
@@ -277,6 +332,8 @@ final class WearableController extends ChangeNotifier
       _conversationAnalysis.acceptedEnrollmentSamples;
   int get requiredConversationEnrollmentSamples =>
       _conversationAnalysis.requiredEnrollmentSamples;
+  double get conversationSpeakerMatchThreshold =>
+      _conversationAnalysis.speakerMatchThreshold;
   String get conversationAnalysisState => _conversationAnalysis.state;
   String? get conversationAnalysisError => _conversationAnalysis.error;
   int get knownSpeakerCount => _conversationAnalysis.knownSpeakerCount;
@@ -615,18 +672,13 @@ final class WearableController extends ChangeNotifier
     _safeNotify();
   }
 
-  void requestConversationEnrollment() {
-    _conversationAnalysis.requestEnrollment();
+  Future<void> resetConversationSpeakerIdentification() async {
+    await _conversationAnalysis.resetSpeakerIdentification();
     _safeNotify();
   }
 
-  Future<void> clearConversationSpeakerProfiles() async {
-    await _conversationAnalysis.clearSpeakerProfiles();
-    _safeNotify();
-  }
-
-  Future<void> resetConversationPrimarySpeaker() async {
-    await _conversationAnalysis.resetPrimarySpeakerProfile();
+  Future<void> setConversationSpeakerMatchThreshold(double value) async {
+    await _conversationAnalysis.setSpeakerMatchThreshold(value);
     _safeNotify();
   }
 
@@ -992,10 +1044,40 @@ final class WearableController extends ChangeNotifier
   void _handleVadSpeechEvent(VadSpeechEvent event) {
     switch (event.type) {
       case VadSpeechEventType.started:
+        final selectedAgent = _agentHistory.selectedSpeechAgent;
+        if (selectedAgent != null) {
+          final detailTarget = _agentHistory.beginTargetedSpeech(
+            event.segmentId,
+          );
+          final source = detailTarget ? 'agent_detail' : 'agent_selector';
+          _selectedAgentSpeechRoutes[event.segmentId] =
+              _SelectedAgentSpeechRoute(agent: selectedAgent, source: source);
+          while (_selectedAgentSpeechRoutes.length >
+              _maximumSelectedAgentSpeechRoutes) {
+            _selectedAgentSpeechRoutes.remove(
+              _selectedAgentSpeechRoutes.keys.first,
+            );
+          }
+          addLog(
+            'WebSocket',
+            '[WorkBench][VoiceRoute] state=speech_targeted '
+                'source=$source',
+          );
+          if (detailTarget) {
+            _queueAgentHistoryDisplay();
+          }
+        }
         _voiceMemo.speechStarted(event.segmentId);
       case VadSpeechEventType.ended:
         _voiceMemo.speechEnded(event.segmentId);
     }
+  }
+
+  void _handleFinalizedSpeechSegment(String segmentId, String wavPath) {
+    if (_selectedAgentSpeechRoutes.containsKey(segmentId)) {
+      unawaited(_pauseConversationAnalysisForCorrection(segmentId));
+    }
+    _conversationAnalysis.acceptFinalizedSegment(segmentId, wavPath);
   }
 
   bool _handleG2Gesture(G2GestureEvent event) {
@@ -1004,6 +1086,14 @@ final class WearableController extends ChangeNotifier
     }
     if (_agentHistory.isOpen) {
       if (event.type == 0) {
+        final detailTapAction = resolveAgentDetailTranscriptTapAction(
+          gestureType: event.type,
+          speechState: _agentHistory.detailSpeechState,
+        );
+        if (detailTapAction != AgentDetailTranscriptTapAction.none) {
+          unawaited(_sendActiveAgentDetailSpeech(detailTapAction));
+          return true;
+        }
         unawaited(_activateAgentHistorySelection());
       } else if (_agentHistory.mode == G2AgentHistoryMode.selector) {
         switch (resolveAgentHistorySelectionMove(event.type)) {
@@ -1049,6 +1139,22 @@ final class WearableController extends ChangeNotifier
       if (_voiceMemo.isActive) {
         return true;
       }
+      final queuedTranscript = _glassesStatusQueue.queuedTranscript;
+      final queuedAction = resolveQueuedTranscriptTapAction(
+        gestureType: event.type,
+        memoActive: _voiceMemo.isActive,
+        queuedTranscript: queuedTranscript?.transcript,
+      );
+      switch (queuedAction) {
+        case QueuedTranscriptTapAction.none:
+          break;
+        case QueuedTranscriptTapAction.save:
+        case QueuedTranscriptTapAction.correctAndRoute:
+          unawaited(
+            _commitQueuedTranscriptFromTap(queuedTranscript!, queuedAction),
+          );
+          return true;
+      }
       unawaited(_openAgentHistory());
       return true;
     }
@@ -1066,6 +1172,76 @@ final class WearableController extends ChangeNotifier
         unawaited(_requestLastAgentSummary());
         return true;
     }
+  }
+
+  Future<void> _sendActiveAgentDetailSpeech(
+    AgentDetailTranscriptTapAction action,
+  ) async {
+    final segmentId = _agentHistory.activeDetailSpeechSegmentId;
+    if (segmentId == null) {
+      return;
+    }
+    switch (action) {
+      case AgentDetailTranscriptTapAction.none:
+        return;
+      case AgentDetailTranscriptTapAction.finishSpeech:
+        _audioPipeline.flushCurrentSpeech();
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceRoute] state=detail_tap '
+              'action=finish_for_send',
+        );
+      case AgentDetailTranscriptTapAction.prioritizeCorrection:
+        final prioritized = await _audioPipeline.prioritizeQueuedCorrection(
+          segmentId,
+        );
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceRoute] state=detail_tap '
+              'action=${prioritized ? 'correction_prioritized' : 'correction_pending_or_in_flight'}',
+        );
+    }
+  }
+
+  Future<void> _commitQueuedTranscriptFromTap(
+    QueuedGlassesTranscript queued,
+    QueuedTranscriptTapAction action,
+  ) async {
+    if (action == QueuedTranscriptTapAction.correctAndRoute) {
+      final markedSending = await _glassesStatusQueue.markTranscriptSending(
+        segmentId: queued.segmentId,
+      );
+      if (!markedSending) {
+        addLog(
+          'WebSocket',
+          '[WorkBench][VoiceRoute] state=queued_tap '
+              'action=superseded',
+        );
+        return;
+      }
+      final prioritized = await _audioPipeline.prioritizeQueuedCorrection(
+        queued.segmentId,
+      );
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceRoute] state=queued_tap '
+            'action=${prioritized ? 'correction_prioritized' : 'correction_in_flight'}',
+      );
+      return;
+    }
+    if (action != QueuedTranscriptTapAction.save) {
+      return;
+    }
+    await _glassesStatusQueue.completeTranscript(
+      segmentId: queued.segmentId,
+      transcript: queued.transcript,
+      outcome: GlassesTranscriptOutcome.saved,
+    );
+    addLog(
+      'WebSocket',
+      '[WorkBench][VoiceRoute] state=queued_tap action=saved '
+          'reason=no_leading_hey',
+    );
   }
 
   Future<void> _openAgentHistory() async {
@@ -1130,56 +1306,40 @@ final class WearableController extends ChangeNotifier
       await _closeAgentHistory(clearDisplay: true);
       return;
     }
-    if (selected.kind == G2AgentHistoryEntryKind.memo ||
-        selected.exchange == null) {
+    if (selected.kind == G2AgentHistoryEntryKind.memo) {
       _agentHistory.showSelectedDetail();
       await _showAgentHistory();
       return;
     }
-    final exchange = selected.exchange!;
-    if (exchange.response?.trim().isNotEmpty == true) {
-      _agentHistory.showSelectedDetail();
-      await _showAgentHistory();
-      return;
-    }
-
-    _agentHistory.showWaiting(exchange);
-    await _showAgentHistory();
-    final result = await _voiceWebSocket.requestAgentSummary(exchange.agent);
-    if (!_agentHistory.isOpen ||
-        _agentHistory.waitingExchangeId != exchange.id) {
-      return;
-    }
-    if (result.outcome != VoiceWebSocketSummaryRequestOutcome.sent) {
-      _agentHistory.showError(exchange.agent, 'Connection unavailable');
-      await _showAgentHistory();
-      return;
-    }
+    var exchanges = selected.exchange == null
+        ? const <AgentExchangeView>[]
+        : <AgentExchangeView>[selected.exchange!];
     if (_agentExchangeStoreReady) {
       try {
-        await _agentExchangeStore.associateSummary(
-          exchangeId: exchange.id,
-          requestId: result.requestId,
+        exchanges = await _agentExchangeStore.recentForAgent(
+          selected.label,
+          maximumExchanges: G2AgentHistoryState.maximumAgentConversations,
         );
-        final updated = await _agentExchangeStore.viewById(exchange.id);
-        if (updated?.response?.trim().isNotEmpty == true &&
-            _agentHistory.acceptResponse(exchange.id, updated!.response!)) {
-          await _showAgentHistory();
-          return;
-        }
       } on Object {
-        _agentHistory.showError(exchange.agent, 'History unavailable');
-        await _showAgentHistory();
-        return;
+        addLog(
+          'WebSocket',
+          '[WorkBench][AgentHistory] state=conversation_load_failed '
+              'fallback=latest',
+          isError: true,
+        );
       }
     }
-    _agentHistoryWaitTimer?.cancel();
-    _agentHistoryWaitTimer = Timer(const Duration(seconds: 15), () {
-      if (_agentHistory.waitingExchangeId == exchange.id) {
-        _agentHistory.markWaitingTimedOut();
-        _queueAgentHistoryDisplay();
-      }
-    });
+    if (_agentHistory.mode != G2AgentHistoryMode.selector ||
+        _agentHistory.selected?.label != selected.label) {
+      return;
+    }
+    _agentHistory.showAgentConversations(exchanges);
+    await _showAgentHistory();
+    addLog(
+      'WebSocket',
+      '[WorkBench][AgentHistory] state=conversation_opened '
+          'exchanges=${exchanges.length}',
+    );
   }
 
   void _queueAgentHistoryDisplay() {
@@ -1304,9 +1464,21 @@ final class WearableController extends ChangeNotifier
   }
 
   Future<void> _handleFinalTranscript(FinalTranscriptDelivery delivery) async {
+    try {
+      await _handleFinalTranscriptDelivery(delivery);
+    } finally {
+      await _resumeConversationAnalysisAfterCorrection(delivery.segmentId);
+    }
+  }
+
+  Future<void> _handleFinalTranscriptDelivery(
+    FinalTranscriptDelivery delivery,
+  ) async {
     final segmentId = delivery.segmentId;
     final transcript = delivery.transcript;
-    if (await _voiceMemo.acceptFinalTranscript(segmentId, transcript)) {
+    final selectedRoute = _selectedAgentSpeechRoutes.remove(segmentId);
+    if (selectedRoute == null &&
+        await _voiceMemo.acceptFinalTranscript(segmentId, transcript)) {
       addLog(
         'Memo',
         '[WorkBench][Memo] state=transcript_consumed stage=final '
@@ -1314,21 +1486,52 @@ final class WearableController extends ChangeNotifier
       );
       return;
     }
-    final correctedRoute = _voiceWebSocket.routeForTranscript(transcript);
-    final route = _voiceWebSocket.routeForTranscript(
-      transcript,
-      evidenceTranscript: delivery.rawTranscript,
-    );
-    if (route == null) {
-      await _glassesStatusQueue.completeTranscript(
+    if (selectedRoute?.source == 'agent_detail' &&
+        _agentHistory.showTargetedSpeechTranscript(
+          segmentId: segmentId,
+          transcript: transcript,
+        )) {
+      _queueAgentHistoryDisplay();
+    }
+    if (!finalTranscriptCanRoute(delivery)) {
+      await _completeTranscriptProjection(
         segmentId: segmentId,
         transcript: transcript,
-        outcome: GlassesTranscriptOutcome.saved,
+        sent: false,
       );
       addLog(
         'WebSocket',
         '[WorkBench][VoiceWebSocket] state=saved routed=false '
-            'reason=${correctedRoute == null ? 'no_match' : 'missing_leading_hey_evidence'}',
+            'reason=correction_not_completed',
+      );
+      return;
+    }
+    final correctedRoute = selectedRoute == null
+        ? _voiceWebSocket.routeForTranscript(transcript)
+        : null;
+    final route = selectedRoute == null
+        ? _voiceWebSocket.routeForTranscript(
+            transcript,
+            evidenceTranscript: delivery.rawTranscript,
+          )
+        : _voiceWebSocket.routeTranscriptToSelectedAgent(
+            selectedAgent: selectedRoute.agent,
+            transcript: transcript,
+          );
+    if (route == null) {
+      await _completeTranscriptProjection(
+        segmentId: segmentId,
+        transcript: transcript,
+        sent: false,
+      );
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=saved routed=false '
+            'reason=${selectedRoute != null
+                ? 'selected_agent_unavailable'
+                : correctedRoute == null
+                ? 'no_match'
+                : 'missing_leading_hey_evidence'}',
       );
       return;
     }
@@ -1338,12 +1541,10 @@ final class WearableController extends ChangeNotifier
     );
     final sent = sendResult.sent;
     await completeAgentRouteConsumers(
-      updateDisplay: () => _glassesStatusQueue.completeTranscript(
+      updateDisplay: () => _completeTranscriptProjection(
         segmentId: segmentId,
         transcript: transcript,
-        outcome: sent
-            ? GlassesTranscriptOutcome.sent
-            : GlassesTranscriptOutcome.saved,
+        sent: sent,
       ),
       persistAcknowledgedMessage: sent
           ? () async {
@@ -1375,7 +1576,30 @@ final class WearableController extends ChangeNotifier
     addLog(
       'WebSocket',
       '[WorkBench][VoiceWebSocket] '
-          'state=${sent ? 'sent' : 'saved'} routed=true',
+          'state=${sent ? 'sent' : 'saved'} routed=true '
+          'source=${selectedRoute?.source ?? 'spoken_invocation'}',
+    );
+  }
+
+  Future<void> _completeTranscriptProjection({
+    required String segmentId,
+    required String transcript,
+    required bool sent,
+  }) async {
+    if (_agentHistory.completeTargetedSpeech(
+      segmentId: segmentId,
+      transcript: transcript,
+      sent: sent,
+    )) {
+      _queueAgentHistoryDisplay();
+      return;
+    }
+    await _glassesStatusQueue.completeTranscript(
+      segmentId: segmentId,
+      transcript: transcript,
+      outcome: sent
+          ? GlassesTranscriptOutcome.sent
+          : GlassesTranscriptOutcome.saved,
     );
   }
 
@@ -1383,7 +1607,9 @@ final class WearableController extends ChangeNotifier
     String segmentId,
     String transcript,
   ) async {
-    if (_voiceMemo.acceptRawTranscript(segmentId, transcript)) {
+    final selectedRoute = _selectedAgentSpeechRoutes[segmentId];
+    if (selectedRoute == null &&
+        _voiceMemo.acceptRawTranscript(segmentId, transcript)) {
       addLog(
         'Memo',
         '[WorkBench][Memo] state=transcript_consumed stage=raw '
@@ -1391,10 +1617,84 @@ final class WearableController extends ChangeNotifier
       );
       return;
     }
+    final correctionEligible = isLiveTranscriptCorrectionEligible(
+      transcript,
+      explicitlyTargeted: selectedRoute != null,
+    );
+    if (correctionEligible) {
+      await _pauseConversationAnalysisForCorrection(segmentId);
+    }
+    if (selectedRoute != null) {
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceRoute] state=queued '
+            'source=${selectedRoute.source} correction=required',
+      );
+      if (_agentHistory.showTargetedSpeechTranscript(
+        segmentId: segmentId,
+        transcript: transcript,
+      )) {
+        _queueAgentHistoryDisplay();
+        return;
+      }
+    }
     await _glassesStatusQueue.queueTranscript(
       segmentId: segmentId,
       transcript: transcript,
     );
+  }
+
+  Future<void> _pauseConversationAnalysisForCorrection(String segmentId) async {
+    final added = _conversationAnalysisCorrectionPauses.add(segmentId);
+    final activePause = _conversationAnalysisCorrectionPause;
+    if (!added || _conversationAnalysisCorrectionPauses.length > 1) {
+      if (activePause != null) {
+        await activePause;
+      }
+      return;
+    }
+    final operation = _performConversationAnalysisCorrectionPause();
+    _conversationAnalysisCorrectionPause = operation;
+    try {
+      await operation;
+    } finally {
+      if (identical(_conversationAnalysisCorrectionPause, operation)) {
+        _conversationAnalysisCorrectionPause = null;
+      }
+    }
+  }
+
+  Future<void> _performConversationAnalysisCorrectionPause() async {
+    try {
+      await _conversationAnalysis.pauseForCorrection();
+    } on Object {
+      addLog(
+        'Conversation',
+        '[WorkBench][Conversation] state=correction_pause_failed '
+            'capture=unaffected transcription=unaffected',
+        isError: true,
+      );
+    }
+  }
+
+  Future<void> _resumeConversationAnalysisAfterCorrection(
+    String segmentId,
+  ) async {
+    if (!_conversationAnalysisCorrectionPauses.remove(segmentId) ||
+        _conversationAnalysisCorrectionPauses.isNotEmpty) {
+      return;
+    }
+    try {
+      await _conversationAnalysisCorrectionPause;
+      await _conversationAnalysis.resumeAfterCorrection();
+    } on Object {
+      addLog(
+        'Conversation',
+        '[WorkBench][Conversation] state=correction_resume_failed '
+            'capture=unaffected transcription=unaffected',
+        isError: true,
+      );
+    }
   }
 
   Future<void> _handleInboundWebSocketEvent(

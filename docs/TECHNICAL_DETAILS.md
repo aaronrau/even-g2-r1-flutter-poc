@@ -45,7 +45,7 @@ startup and otherwise retains the existing visualizer geometry. This gives
 while history owns the page. Dismissal rebuilds the compact visualizer without
 stopping continuous LC3 capture.
 
-Memo and agent-response details are host-paginated rather than relying on
+Memo and five-exchange agent details are host-paginated rather than relying on
 firmware text scrolling. Each page reserves one title row, seven wrapped body
 rows, one spacer, and one action/page row. Swipe down advances, swipe up goes
 back, and neither boundary wraps. A separate firmware-valid 20-pixel-wide
@@ -54,8 +54,8 @@ foreground rectangle beside the `544x288` detail body. Its other 16 pixels are
 black, so no background track is visible. One-page details omit the unnecessary
 indicator because a 288-pixel image would exceed the G2's 144-pixel
 image-container height limit. On multi-page details the rectangle shrinks and
-moves proportionally. Selector and waiting pages retain the full `576x288`
-body and do not create the image.
+moves proportionally. Selector pages retain the full `576x288` body and do not
+create the image.
 History rendering is serialized and coalesced by page signature before it
 reaches BLE, including while a prior render is in flight. Firmware
 notifications therefore cannot recursively resend the same page. The thumb

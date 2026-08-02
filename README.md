@@ -61,7 +61,7 @@ G2 operating system still owns the global Menu and other system surfaces.
 | --- | --- |
 | Stay in Daily/Hub mode | Yes; `MODE_DAILY` is reasserted after connection |
 | Start and maintain microphone streaming | Yes; starts automatically and restarts after recovery |
-| Keep tap and double-tap from stopping audio | Yes; tap is display-only and double-tap requests the last sent agent's update |
+| Keep tap and double-tap from stopping audio | Yes; tap commits a queued display item or opens history, and double-tap requests the last sent agent's update |
 | Show tap and swipe; use double-tap for an agent update | Yes |
 | Show long press | Inferred from R1 activity and Hub lifecycle evidence |
 | Receive real long-press down/up in Hub | No; available only in Terminal mode |
@@ -117,9 +117,10 @@ expose for a true locked Hub mode.
   optional path cannot delay or route through the ordinary STT, Gemma, glasses,
   or agent WebSocket path.
 - Runs Gemma 4 E4B correction through pinned LiteRT-LM in a dedicated Android
-  process after Parakeet commits the raw transcript. Complete-word,
-  case-insensitive `hey` detection gates the correction queue, so ambient
-  speech is durably saved without invoking the LLM. Continuous speech uses a
+  process after Parakeet commits the raw transcript. A complete,
+  case-insensitive leading `hey` gates the correction queue, so ambient speech
+  and mid-sentence mentions are durably saved without invoking the LLM.
+  Continuous speech uses a
   soft 15-second boundary: the next short inter-word audio gap or VAD pause
   closes the chunk before resumed speech, while uninterrupted speech
   hard-closes at 17 seconds with one second
@@ -137,18 +138,33 @@ expose for a true locked Hub mode.
   and agent names under **Tools → Agent connection**. Gemma uses those names as
   correction vocabulary, and only the corrected live transcript is matched
   and sent after `connection.ready`. Each G2 status follows one FIFO lifecycle:
-  `Queued:` while correction/routing is pending, then `Saved:` or acknowledged
-  `Sent:` for two seconds before clearing. Inbound server messages appear as
+  `Queued:` while awaiting input, `Sending:` after a leading-`Hey` queued item
+  is tapped, then `Saved:` or acknowledged `Sent:` for two seconds before
+  clearing. Inbound server messages appear as
   serialized `Received:` items, are saved to the selected Files folder, and
   clear from the glasses after two seconds.
+- Gives a visible `Queued:` transcript priority over the single-tap history
+  selector. Tap immediately resolves a transcript without leading `Hey` to
+  `Saved:`; a leading-`Hey` tap immediately changes the item to `Sending:` and
+  moves its durable Gemma job ahead of other ready correction work, then the
+  normal configured-agent, acknowledgement, send, and archive rules apply.
+  With no queued transcript, tap opens history.
 - Uses an ordinary G2/R1 double tap to request a read-only progress summary from
   the last agent that successfully received a live command. The returned
   `summary.result` follows the same durable `Received:` path. During a voice
   memo, double tap retains its higher-priority finish action.
-- Implements the single-tap agent history selector with `Dismiss` selected
-  first, a local Memo row, up to five one-line agent rows, request-ID-correlated
-  response lookup, bounded waiting/cancel behavior, and tap-to-dismiss detail
-  pages. See
+- Implements the fallback single-tap agent history selector with `Dismiss`
+  selected first, a local Memo row, up to five one-line agent rows,
+  and tap-to-dismiss detail pages containing that selected agent's five newest
+  request-ID-correlated exchanges. Swipe up/down pages through the full recent
+  content without sending a new request. While an agent row or its detail page
+  is selected, speech that starts is bound to that configured agent, enters Gemma
+  correction without requiring a spoken `Hey` or agent name, and routes only
+  the live corrected result. Agent detail pages show an active dot beside the
+  name and replace their body with the latest `Listening…`, `Sending:`, and
+  `Sent:`/`Saved:` transcript state. Tapping an active detail finishes speech
+  or prioritizes its correction instead of dismissing it. Dismiss and Memo
+  never enable this override. See
   [`docs/G2_AGENT_HISTORY_SELECTOR.md`](docs/G2_AGENT_HISTORY_SELECTOR.md).
 - Draws a dim-to-bright pulsing dot in the upper-left using LC3 global gain and
   an adaptive silence floor.

@@ -17,10 +17,15 @@ typedef UncorrectedTranscriptSink =
       String reason,
     );
 
-bool transcriptContainsWakeWord(String transcript) => RegExp(
-  r'(^|[^A-Za-z0-9_])hey(?=$|[^A-Za-z0-9_])',
+bool transcriptBeginsWithWakeWord(String transcript) => RegExp(
+  r'^\s*hey(?=$|[^A-Za-z0-9_])',
   caseSensitive: false,
 ).hasMatch(transcript);
+
+bool isLiveTranscriptCorrectionEligible(
+  String transcript, {
+  required bool explicitlyTargeted,
+}) => explicitlyTargeted || transcriptBeginsWithWakeWord(transcript);
 
 final class TranscriptCorrectionJob {
   const TranscriptCorrectionJob({
@@ -57,7 +62,10 @@ final class TranscriptCorrectionJob {
   final int attempts;
   final DateTime? nextAttemptAt;
 
-  TranscriptCorrectionJob retryAfter(Duration delay) => TranscriptCorrectionJob(
+  TranscriptCorrectionJob retryAfter(
+    Duration delay, {
+    bool incrementAttempt = true,
+  }) => TranscriptCorrectionJob(
     segmentId: segmentId,
     rawPath: rawPath,
     sttModel: sttModel,
@@ -69,7 +77,7 @@ final class TranscriptCorrectionJob {
     correctionTerms: correctionTerms,
     routeWhenCorrected: routeWhenCorrected,
     liveTranscript: liveTranscript,
-    attempts: attempts + 1,
+    attempts: attempts + (incrementAttempt ? 1 : 0),
     nextAttemptAt: DateTime.now().toUtc().add(delay),
   );
 
@@ -154,6 +162,7 @@ final class TranscriptCorrectionSupervisor {
     required this.onUncorrected,
     required this.onStatus,
     GemmaCorrectionClient? client,
+    this.transientRetryDelayOverride,
   }) : _client = client ?? PlatformGemmaCorrectionClient();
 
   final String speechPath;
@@ -163,8 +172,10 @@ final class TranscriptCorrectionSupervisor {
   final UncorrectedTranscriptSink onUncorrected;
   final CorrectionStatusSink onStatus;
   final GemmaCorrectionClient _client;
+  final Duration? transientRetryDelayOverride;
   final LinkedHashMap<String, TranscriptCorrectionJob> _pending =
       LinkedHashMap<String, TranscriptCorrectionJob>();
+  final Map<String, int> _transientFailureCounts = <String, int>{};
 
   Timer? _pumpTimer;
   Future<void> _ledgerWriteTail = Future<void>.value();
@@ -236,6 +247,35 @@ final class TranscriptCorrectionSupervisor {
     _schedulePump(Duration.zero);
   }
 
+  /// Moves a live queued job ahead of other ready correction work.
+  ///
+  /// An already-processing job cannot be interrupted, but it remains the
+  /// active head and reports success. This only changes in-process ordering;
+  /// the durable ledger remains crash-safe and recovered jobs never route.
+  Future<bool> prioritize(String segmentId) async {
+    if (_disposed) {
+      return false;
+    }
+    final job = _pending.remove(segmentId);
+    if (job == null) {
+      return false;
+    }
+    final reordered = <String, TranscriptCorrectionJob>{
+      segmentId: job,
+      ..._pending,
+    };
+    _pending
+      ..clear()
+      ..addAll(reordered);
+    await _persistPending();
+    onStatus(
+      '[WorkBench][Correction] state=prioritized segment=$segmentId '
+      'pending=${_pending.length}',
+    );
+    _schedulePump(Duration.zero);
+    return true;
+  }
+
   Future<void> skipIneligible(
     TranscriptCorrectionJob job,
     String rawText, {
@@ -246,6 +286,7 @@ final class TranscriptCorrectionSupervisor {
     }
     await persistSkipped(job, reason: reason);
     _pending.remove(job.segmentId);
+    _transientFailureCounts.remove(job.segmentId);
     await _persistPending();
     onStatus(
       '[WorkBench][Correction] state=skipped_ineligible '
@@ -310,18 +351,21 @@ final class TranscriptCorrectionSupervisor {
     final rawFile = File(job.rawPath);
     if (!await rawFile.exists()) {
       _pending.remove(job.segmentId);
+      _transientFailureCounts.remove(job.segmentId);
       await _persistPending();
       onStatus(
         '[WorkBench][Correction] state=dropped_missing_raw '
         'segment=${job.segmentId}',
         isError: true,
       );
+      onUncorrected(job, job.liveTranscript?.trim() ?? '', 'raw_missing');
       return;
     }
     final rawText = (job.liveTranscript ?? await rawFile.readAsString()).trim();
     if (rawText.isEmpty) {
       await _finishWithoutCorrection(
         job,
+        rawText: rawText,
         stateName: 'skipped_empty',
         reason: 'empty_transcript',
       );
@@ -330,6 +374,7 @@ final class TranscriptCorrectionSupervisor {
     if (rawText.length > maximumTranscriptCharacters) {
       await _finishWithoutCorrection(
         job,
+        rawText: rawText,
         stateName: 'skipped_oversize',
         reason: 'input_too_long',
         detail: 'chars=${rawText.length}',
@@ -340,6 +385,7 @@ final class TranscriptCorrectionSupervisor {
     if (job.attempts >= maximumCorrectionAttempts) {
       await _finishWithoutCorrection(
         job,
+        rawText: rawText,
         stateName: 'abandoned',
         reason: 'retry_exhausted',
         detail: 'attempts=${job.attempts}',
@@ -354,16 +400,17 @@ final class TranscriptCorrectionSupervisor {
     if (!config.enabled) {
       await _finishWithoutCorrection(
         job,
+        rawText: rawText,
         stateName: 'disabled',
         reason: 'correction_disabled',
       );
-      onUncorrected(job, rawText, 'correction_disabled');
       return;
     }
     final modelPath = await modelStore.installedModelPath();
     if (modelPath == null) {
       await _finishWithoutCorrection(
         job,
+        rawText: rawText,
         stateName: 'skipped_model_missing',
         reason: 'model_missing',
         isError: true,
@@ -434,6 +481,7 @@ final class TranscriptCorrectionSupervisor {
         'completedAt': DateTime.now().toUtc().toIso8601String(),
       });
       _pending.remove(job.segmentId);
+      _transientFailureCounts.remove(job.segmentId);
       await _persistPending();
       activeProvider = result.provider;
       state = 'ready';
@@ -465,21 +513,50 @@ final class TranscriptCorrectionSupervisor {
         ),
       );
     } on Object catch (error) {
-      await _retry(job, error);
+      await _retry(job, rawText, error);
     }
   }
 
-  Future<void> _retry(TranscriptCorrectionJob job, Object error) async {
+  Future<void> _retry(
+    TranscriptCorrectionJob job,
+    String rawText,
+    Object error,
+  ) async {
     if (_disposed) {
+      return;
+    }
+    final errorCode = _errorCode(error);
+    if (_isTransientServiceFailure(errorCode)) {
+      final failures = (_transientFailureCounts[job.segmentId] ?? 0) + 1;
+      _transientFailureCounts[job.segmentId] = failures;
+      final backoff =
+          transientRetryDelayOverride ??
+          switch (failures) {
+            1 => const Duration(seconds: 1),
+            2 => const Duration(seconds: 5),
+            3 => const Duration(seconds: 15),
+            _ => const Duration(seconds: 30),
+          };
+      final retried = job.retryAfter(backoff, incrementAttempt: false);
+      _pending[job.segmentId] = retried;
+      await _persistPending();
+      state = 'degraded';
+      onStatus(
+        '[WorkBench][Correction] state=deferred segment=${job.segmentId} '
+        'service_failures=$failures retry_ms=${backoff.inMilliseconds} '
+        'error_code=$errorCode raw=preserved pending=${_pending.length}',
+        isError: true,
+      );
       return;
     }
     final attempt = job.attempts + 1;
     if (attempt >= maximumCorrectionAttempts) {
       await _finishWithoutCorrection(
         job,
+        rawText: rawText,
         stateName: 'abandoned',
         reason: 'retry_exhausted',
-        detail: 'attempts=$attempt error_code=${_errorCode(error)}',
+        detail: 'attempts=$attempt error_code=$errorCode',
         attempts: attempt,
         isError: true,
       );
@@ -499,13 +576,14 @@ final class TranscriptCorrectionSupervisor {
     onStatus(
       '[WorkBench][Correction] state=failed segment=${job.segmentId} '
       'attempt=$attempt retry_ms=${backoff.inMilliseconds} '
-      'error_code=${_errorCode(error)} raw=preserved',
+      'error_code=$errorCode raw=preserved',
       isError: true,
     );
   }
 
   Future<void> _finishWithoutCorrection(
     TranscriptCorrectionJob job, {
+    required String rawText,
     required String stateName,
     required String reason,
     String? detail,
@@ -531,6 +609,7 @@ final class TranscriptCorrectionSupervisor {
           );
     await persistSkipped(retained, reason: reason);
     _pending.remove(job.segmentId);
+    _transientFailureCounts.remove(job.segmentId);
     await _persistPending();
     onStatus(
       '[WorkBench][Correction] state=$stateName segment=${job.segmentId} '
@@ -538,6 +617,7 @@ final class TranscriptCorrectionSupervisor {
       'pending=${_pending.length}',
       isError: isError,
     );
+    onUncorrected(retained, rawText, reason);
   }
 
   Future<void> _restorePending() async {
@@ -606,7 +686,7 @@ final class TranscriptCorrectionSupervisor {
     for (final job in _pending.values.toList(growable: false)) {
       try {
         final rawText = await File(job.rawPath).readAsString();
-        if (transcriptContainsWakeWord(rawText)) {
+        if (transcriptBeginsWithWakeWord(rawText)) {
           continue;
         }
         await persistSkipped(job, reason: 'no_wake_word');
@@ -783,12 +863,21 @@ final class TranscriptCorrectionSupervisor {
       rawPath.replaceFirst(RegExp(r'\.raw\.txt$'), '.transcript.json');
 
   static String _errorCode(Object error) => switch (error) {
+    GemmaCorrectionClientException _ => error.code,
     FormatException _ => 'invalid_output',
     TimeoutException _ => 'timeout',
     FileSystemException _ => 'storage',
     StateError _ => 'invalid_state',
     UnsupportedError _ => 'unsupported',
     _ => 'runtime_failure',
+  };
+
+  static bool _isTransientServiceFailure(String code) => switch (code) {
+    'service_disconnected' ||
+    'service_send_failed' ||
+    'service_unavailable' ||
+    'memory_pressure' => true,
+    _ => false,
   };
 
   static String _oneLine(Object? value) =>

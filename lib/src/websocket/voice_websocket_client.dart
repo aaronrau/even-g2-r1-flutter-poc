@@ -347,6 +347,33 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     return AgentTranscriptRoute(agent: selected.agent, message: message);
   }
 
+  /// Routes speech directly to an explicitly selected configured agent.
+  ///
+  /// The G2 selector supplies the user intent, so spoken attention and agent
+  /// matching are deliberately unnecessary. The selection is canonicalized
+  /// against the current configuration so a stale row cannot send a command.
+  AgentTranscriptRoute? routeTranscriptToSelectedAgent({
+    required String selectedAgent,
+    required String transcript,
+  }) {
+    final message = transcript.trim();
+    if (message.isEmpty) {
+      return null;
+    }
+    final selectedKey = selectedAgent.trim().toLowerCase();
+    String? canonicalAgent;
+    for (final agent in config.agentNames) {
+      if (agent.toLowerCase() == selectedKey) {
+        canonicalAgent = agent;
+        break;
+      }
+    }
+    if (canonicalAgent == null) {
+      return null;
+    }
+    return AgentTranscriptRoute(agent: canonicalAgent, message: message);
+  }
+
   static bool _hasLeadingAttentionEvidence(String rawTranscript) => RegExp(
     r'^\s*hey(?=$|[^A-Za-z0-9_])',
     caseSensitive: false,

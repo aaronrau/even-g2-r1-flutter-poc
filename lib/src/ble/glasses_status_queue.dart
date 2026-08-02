@@ -4,6 +4,16 @@ typedef GlassesStatusLog = void Function(String message, {bool isError});
 
 enum GlassesTranscriptOutcome { saved, sent }
 
+final class QueuedGlassesTranscript {
+  const QueuedGlassesTranscript({
+    required this.segmentId,
+    required this.transcript,
+  });
+
+  final String segmentId;
+  final String transcript;
+}
+
 /// A latest-wins status channel for the small G2 display.
 ///
 /// Durable transcripts and messages are stored before they reach this class.
@@ -45,6 +55,19 @@ final class GlassesStatusQueue {
 
   int get pendingCount =>
       (_current == null ? 0 : 1) + (_deferredTransient == null ? 0 : 1);
+  QueuedGlassesTranscript? get queuedTranscript {
+    final current = _current;
+    if (current == null ||
+        current.isTransient ||
+        current.sending ||
+        current.outcome != null) {
+      return null;
+    }
+    return QueuedGlassesTranscript(
+      segmentId: current.id,
+      transcript: current.text,
+    );
+  }
 
   Future<void> queueTranscript({
     required String segmentId,
@@ -66,6 +89,32 @@ final class GlassesStatusQueue {
       _GlassesStatusEntry.transcript(id: segmentId, text: transcript),
     );
     _log('[WorkBench][GlassesStatus] state=queued pending=1');
+  }
+
+  Future<bool> markTranscriptSending({required String segmentId}) async {
+    if (_disposed || _paused) {
+      if (_paused) {
+        _log('[WorkBench][GlassesStatus] state=suppressed owner=$_pauseOwner');
+      }
+      return false;
+    }
+    final current = _current;
+    if (current == null ||
+        current.isTransient ||
+        current.id != segmentId ||
+        current.outcome != null) {
+      _log('[WorkBench][GlassesStatus] state=sending_superseded');
+      return false;
+    }
+    if (current.sending) {
+      return true;
+    }
+    current.sending = true;
+    _revision++;
+    _cancelHold();
+    _log('[WorkBench][GlassesStatus] state=sending pending=1');
+    _startPump();
+    return true;
   }
 
   Future<void> completeTranscript({
@@ -96,6 +145,9 @@ final class GlassesStatusQueue {
         '[WorkBench][GlassesStatus] state=completion_superseded '
         'outcome=${outcome.name}',
       );
+      return;
+    }
+    if (current.outcome == outcome && current.text == transcript) {
       return;
     }
     current
@@ -234,6 +286,17 @@ final class GlassesStatusQueue {
         }
 
         if (!entry.isTransient && !entry.finalShown) {
+          if (entry.sending && !entry.sendingShown) {
+            final sendingRevision = _revision;
+            final shown = await _tryShow(_format('Sending', entry.text));
+            if (!shown || _disposed) {
+              return;
+            }
+            if (!_isCurrent(entry, sendingRevision)) {
+              continue;
+            }
+            entry.sendingShown = true;
+          }
           final outcome = entry.outcome;
           if (outcome == null) {
             return;
@@ -404,6 +467,8 @@ final class _GlassesStatusEntry {
   final bool isTransient;
   String text;
   GlassesTranscriptOutcome? outcome;
+  bool sending = false;
+  bool sendingShown = false;
   bool initialShown = false;
   bool finalShown = false;
   bool readyToClear = false;

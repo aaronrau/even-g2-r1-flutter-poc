@@ -5,9 +5,10 @@ Status: implemented.
 ## Goal
 
 An ordinary G2/R1 tap opens a compact, private history selector on the glasses.
-The selector gives quick access to the latest successfully sent command for
+The selector gives quick access to the five latest acknowledged exchanges for
 each configured agent and to the latest saved Memo. Swipes move the selection,
-tap opens the selected result, and a final tap dismisses the interaction.
+tap opens the selected conversation history, and a final tap dismisses the
+interaction.
 
 This flow extends, rather than replaces, the existing behavior:
 
@@ -19,9 +20,9 @@ This flow extends, rather than replaces, the existing behavior:
 
 ## Product interpretation
 
-The requested "most recent message sent to all the agents" is interpreted as
-one selector row per agent, where each row contains that agent's most recent
-positively acknowledged command. The target glasses layout contains:
+The selector keeps one row per agent, with that agent's most recent positively
+acknowledged command as its preview. Opening the row loads up to five complete
+exchanges for only that agent. The target glasses layout contains:
 
 1. `[x]`
 2. `Memo`
@@ -64,24 +65,30 @@ the firmware retains the visualizer's compact 520x64 gesture slot, clipping
 the lower rows and producing a misleadingly short scroll indicator. Dismissal
 rebuilds the visualizer page and resumes pulse rendering.
 
-### Cached response
+### Recent conversations
 
-Selecting an agent command with a correlated saved response opens:
+Selecting an agent opens its five newest acknowledged exchanges, newest first:
 
 ```text
 [ Agent: Agent One ]
-<bounded most recent correlated response>
+Latest conversation
+You: <most recent command>
+Agent: <correlated response or No response yet>
+
+Earlier conversation 2
+You: <previous command>
+Agent: <correlated response or No response yet>
 
 [ Tap to dismiss ]
 ```
 
-The response body may wrap because this is a detail view, not a selector row.
-The newest correlated `message.completed`, `message.progress`, or requested
-`summary.result` text is shown. Memo and response details use seven body lines
-per page with a bounded `[ current/total · Tap to dismiss ]` footer. Swipe down
-advances one page and swipe up returns one page; pages stop at either boundary
-instead of wrapping. A final tap clears the private text and restores the audio
-visualizer.
+Commands and responses may wrap because this is a detail view, not a selector
+row. Memo and conversation details use seven body lines per page with a
+bounded `[ current/total · Tap to dismiss ]` footer. Swipe down advances one
+page and swipe up returns one page; pages stop at either boundary instead of
+wrapping. A final tap clears the private text and restores the audio
+visualizer. Loading is bounded to five direct ledger paths and never scans the
+complete message archive.
 
 Every detail page begins with `[ Memo ]` or `[ Agent: <name> ]`. Explicit LF,
 CRLF, and CR line breaks in saved Memo or response text remain hard line breaks;
@@ -102,23 +109,7 @@ current host page. A one-page detail does not need an indicator and therefore
 does not create the otherwise over-height image. Keeping the multi-page image
 separate from the 544-pixel-wide body preserves bounded host pagination and
 does not depend on overflowing the firmware's native text viewport. Selector
-and waiting pages do not create the image container.
-
-### Waiting for a response
-
-If the selected command has no correlated response, tap sends a read-only
-summary request for that command's agent and opens:
-
-```text
-Agent One
-Waiting for response…
-
-[ Tap to cancel ]
-```
-
-The matching `summary.result` replaces this page with the cached-response
-layout. An unrelated inbound event is still saved but cannot replace the
-waiting page.
+pages do not create the image container.
 
 ### Empty Memo or agent row
 
@@ -135,7 +126,8 @@ An agent with no positively acknowledged command is also retained:
 ```
 
 Tapping either empty row shows the same one-line state plus
-`[ Tap to dismiss ]`; it never fabricates or sends agent work.
+`[ Tap to dismiss ]`; it never fabricates or sends agent work. An acknowledged
+command without a correlated response remains visible with `No response yet`.
 
 ## Gesture contract
 
@@ -157,22 +149,23 @@ Tapping either empty row shows the same one-line state plus
 | Swipe down | Select the next row, wrapping after the last row |
 | Tap on `[x]` | Clear the selector and restore the audio visualizer |
 | Tap on Memo | Show the most recent saved Memo, or the empty state |
-| Tap on an agent with a command | Show a correlated response or request one |
-| Tap on an agent without a command | Show `No sent message`; do not send |
+| Tap on an agent with a command | Show its five newest conversations |
+| Tap on an agent without a command | Show `No conversation yet`; do not send |
 | Double tap | Consume without a second request so selector state stays deterministic |
 
-### Detail or waiting page
+### Detail page
 
 | Gesture | Result |
 | --- | --- |
-| Tap | Dismiss the entire interaction; if waiting, cancel the local wait |
-| Swipe up in Memo/response detail | Show the previous page |
-| Swipe down in Memo/response detail | Show the next page |
-| Swipe up/down while waiting | Ignore |
+| Tap during `Listening…` | Finalize the current speech for correction/send; keep detail open |
+| Tap during `Sending:` | Prioritize the queued correction; keep detail open |
+| Tap after `Sent:`/`Saved:` or with no active speech | Dismiss the interaction |
+| Swipe up in Memo/conversation detail | Show the previous page |
+| Swipe down in Memo/conversation detail | Show the next page |
 | Double tap | Ignore |
 
-When a response arrives, the interaction stays open until the user taps. There
-is no automatic two-second clear on selector, waiting, or detail pages.
+The interaction stays open until the user taps. There is no automatic
+two-second clear on selector or detail pages.
 
 ## State machine
 
@@ -182,18 +175,15 @@ normal
                ├─ swipe ─► selector(other row selected)
                ├─ tap [x] ─► normal
                ├─ tap Memo/empty ─► detail
-               ├─ tap agent + cached response ─► detail
-               └─ tap agent + no response ─► waiting
-                                                  ├─ matching result ─► detail
-                                                  └─ tap/cancel ─► normal
+               └─ tap agent ─► five-exchange detail
 
 detail
   ├─ swipe up/down ─► previous/next bounded detail page
   └─ tap ─► normal
 ```
 
-Only one selector interaction and one pending summary selection may exist.
-Opening a new interaction is impossible until the current one is dismissed.
+Only one selector interaction may exist. Opening a new interaction is
+impossible until the current one is dismissed.
 
 ## Defining "sent" and "response"
 
@@ -221,12 +211,13 @@ the answer to newer work.
 Legacy messages have no durable correlation contract. While the current app
 process is alive, a readable event may be associated with the latest live
 legacy send for the same agent. After restart, an uncorrelated legacy command
-is treated as having no response, so selecting it requests
-`local`/`progress_summary`.
+remains visible with `No response yet`; opening history does not send a new
+request.
 
 ## Summary request behavior
 
-For a modern selected command without a response, send:
+Agent-history selection is read-only. The separate double-tap progress shortcut
+can still send a modern summary request for the last acknowledged agent:
 
 ```json
 {
@@ -246,25 +237,14 @@ Legacy mode sends:
 }
 ```
 
-The summary request remains a read-only, downstream operation. It does not
+The summary request remains an optional downstream operation. It does not
 enter or reorder the normal command FIFO. Capture, VAD, STT, correction, raw
 files, corrected files, and access to the original transcript remain
 unaffected.
 
-Each connect and send attempt is bounded. The waiting page may remain visible,
-but there is no unbounded network completer:
-
-- wait up to 15 seconds for the correlated result;
-- on timeout, keep the page open as `Still waiting · Tap to cancel`;
-- accept a late matching result while the interaction remains open;
-- do not automatically resend indefinitely;
-- an unexpected disconnect changes waiting to
-  `Connection lost · Tap to dismiss`;
-- configuration change, disconnect, app shutdown, Memo start, or user
-  cancellation clears the pending association and its timer.
-
-The user can reopen the selector and tap the command again to issue a fresh
-request.
+Each connect and send attempt is bounded. Selecting an agent never waits for a
+connection, acknowledgement, or new agent response; it reads only the durable
+exchange ledger and its direct message-file paths.
 
 ## Memo behavior
 
@@ -311,13 +291,13 @@ For durability:
 - never export request IDs or ledger metadata to shared storage;
 - never write agent names, request IDs, or private message text to logs;
 - rebuild the selector from app-private atomic records after restart;
-- retain at most the latest exchange per configured agent in the in-memory
-  selector view model.
+- retain one latest-exchange preview per configured agent in the selector and
+  load at most five exchanges for the selected agent's detail view.
 
 On the first ledger-capable launch, the store performs a one-time import of the
 newest existing `.sent.message.txt` file for each configured agent. Imported
-commands have no historical request ID, so they remain selectable but request
-a fresh summary instead of claiming correlation that the older files cannot
+commands have no historical request ID, so they remain selectable with
+`No response yet` instead of claiming correlation that the older files cannot
 prove. A configuration change clears live selector records and marks that
 migration complete so old-server messages are not reintroduced later.
 
@@ -331,21 +311,22 @@ selector targets for the new server.
 The display owner priority is:
 
 1. active Memo;
-2. agent history selector/detail/waiting interaction;
+2. agent history selector/detail interaction;
 3. normal transcript and inbound-message status queue;
 4. visual audio pulse.
 
 While the selector owns the display:
 
 - normal statuses continue their durable work but cannot overwrite the page;
-- a matching selected response updates the waiting page;
+- `Listening…`, `Sending:`, and terminal detail renders enter the coalesced
+  display queue without blocking Gemma correction, WebSocket delivery, or
+  acknowledged-message persistence;
 - unrelated inbound events are persisted and deferred from the glasses;
 - every BLE write remains high priority and individually time-bounded;
 - dismiss sends the redundant private-text clear before restoring the audio
   visualizer;
 - an unexpected disconnect retains selector or detail state for a bounded
-  rerender after reconnect, while waiting transitions to the explicit
-  connection-lost state;
+  rerender after reconnect;
 - configuration changes and app shutdown clear private selector state.
 
 `GlassesStatusQueue` accepts an explicit display owner instead of treating
@@ -360,12 +341,18 @@ gesture-controlled ownership.
    metadata without logging private values.
 2. The atomic `AgentExchangeStore` sits beside `WebSocketMessageStore`. It owns
    correlation metadata and rebuilds a bounded per-agent view.
-3. The pure `G2AgentHistoryState` model has explicit `closed`, `selector`,
-   `waiting`, and `detail` states. It owns selection wrapping, line rendering,
-   timeout state, and cancellation.
+3. The pure `G2AgentHistoryState` model owns selection wrapping, bounded
+   conversation rendering, page state, and cancellation.
 4. Tap and swipe events route through that state before ordinary gesture
-   display. Active Memo remains the first gate; double tap retains its existing
-   shortcut only while the selector is closed.
+   display. Active Memo remains the first gate. While the selector is closed,
+   a visible `Queued:` transcript consumes single tap before selector open:
+   leading `Hey` changes the item to `Sending:` and prioritizes correction;
+   anything else resolves to `Saved:`.
+   Double tap retains its existing shortcut only while the selector is closed.
+   While the selector highlights an agent row or its agent detail page
+   remains open, VAD speech start snapshots that configured agent for direct
+   routing without a spoken wake word or name. Agent details show an active
+   dot and the latest targeted transcript lifecycle in their body.
 5. Persistent selector pages use the full 576×288 G2 text container.
    Multi-page details use a 544×288 body and one variable-height right-edge
    bitmap with a visible 4-pixel thumb inside a valid 20-pixel container. Both
@@ -383,10 +370,24 @@ gesture-controlled ownership.
 - swipe up/down wraps across `[x]`, Memo, and five agent rows;
 - every selector row is one line and the page remains under 512 characters;
 - empty Memo and agent rows never send;
-- tap on cached response enters detail;
-- tap without a response enters waiting exactly once;
-- tap in waiting/detail dismisses and cancels pending state;
+- tapping an agent loads its newest five exchanges and enters detail;
+- missing responses render `No response yet` without sending a request;
+- tap in detail dismisses and clears private state;
 - active Memo blocks selector open and double tap still finalizes Memo.
+- a queued transcript consumes tap before selector open, with leading-`Hey`
+  correction and immediate non-`Hey` save dispositions tested independently;
+- a selected agent row and its detail page supply the same direct-speech
+  target; Dismiss and Memo modes return no target;
+- agent details render the active dot and `Listening…`/`Sending:`/terminal
+  transcript states without replacing another newer segment;
+- explicit agent selection makes non-`Hey` live speech correction-eligible,
+  while unselected ambient speech remains wake-gated;
+- `ladies changes` is corrected to context-supported `latest changes` before
+  the selected-agent route receives it;
+- tap finalizes listening or prioritizes sending without dismissing the active
+  detail; terminal tap retains ordinary dismissal;
+- changing selection after speech starts cannot change that segment's target;
+- removing the snapshotted agent from configuration prevents the send;
 
 ### Protocol and persistence tests
 
@@ -395,7 +396,8 @@ gesture-controlled ownership.
 - rejection and timeout retain the previous successful command;
 - matching progress/completion attaches to the correct exchange;
 - unrelated and uncorrelated events remain durable but unattached;
-- summary request/result correlation updates only the selected exchange;
+- recent-history loading returns only the selected agent's newest five
+  exchanges;
 - configuration change clears live selection and pending timers;
 - restart rebuilds exchanges from atomic app-private metadata;
 - legacy fallback never claims durable correlation it cannot prove.
@@ -403,10 +405,9 @@ gesture-controlled ownership.
 ### Display concurrency tests
 
 - selector ownership prevents transcript and unrelated inbound overwrite;
-- matching response replaces waiting;
 - Memo preempts selector;
 - multi-page details render a proportional right-edge indicator without
-  changing selector or waiting geometry;
+  changing selector geometry;
 - duplicate notifications and state callbacks coalesce to one page render and
   one thumb upload while that signature is queued, active, or already shown;
 - dismiss clears private text before restoring the pulse;
@@ -422,11 +423,11 @@ representative phone:
 2. connect the physical G2/R1 pair;
 3. tap and verify `[x]` is selected first;
 4. swipe through Memo and every agent, checking one-line truncation;
-5. select an agent with a cached response, verify the right-edge indicator
-   remains visible and moves through every detail page, then tap to dismiss;
-6. select an agent without a response, verify one summary request, wait for its
-   result, then tap to dismiss;
-7. verify unrelated inbound events do not replace the waiting page;
+5. select an agent with five exchanges, verify newest-first order and that the
+   right-edge indicator moves through every detail page, then tap to dismiss;
+6. select an agent without a response and verify `No response yet` without any
+   outbound request;
+7. verify unrelated inbound events do not replace the open history page;
 8. start Memo and confirm tap cannot open the selector while double tap still
    finalizes it;
 9. disconnect/reconnect G2 during selection and verify bounded recovery;
@@ -446,6 +447,9 @@ Pike command persistence, the missing-response waiting page, one correlated
 summary request, matching response replacement, and final dismissal. The
 fixture did not connect to or send work to any configured agent session.
 
+That historical run predates the five-exchange read-only detail behavior and
+is not evidence for the newer paging contract.
+
 This deterministic phone-side run covers the protocol, persistence, and
 gesture state used by the G2 controller. Final optical readability and physical
 tap/swipe actuation on a paired G2/R1 remain manual checks because the test
@@ -453,18 +457,29 @@ harness cannot mechanically actuate the wearable.
 
 ## Acceptance criteria
 
-- Tap opens the selector with `[x]` selected.
+- Tap opens the selector with `[x]` selected when no transcript is `Queued:`.
+- Tap on `Queued:` changes a leading-`Hey` item to `Sending:` and prioritizes
+  its correction job, or immediately saves any other transcript without
+  opening the selector.
+- Speech beginning while an agent row or its detail page is selected
+  sends its Gemma-corrected transcript to that current configured agent without
+  requiring `Hey` or the agent name. Dismiss and Memo retain ordinary wake/name
+  routing.
+- Agent detail titles show an active dot beside the agent name; the
+  body shows `Listening…`, then the transcript as `Sending:`, and finally
+  acknowledged `Sent:` or fallback `Saved:`.
 - `[x]`, Memo, and up to five agent rows render as one line each.
 - Swipes select deterministically and wrap.
 - Only acknowledged commands appear as sent.
-- Selecting a command shows its most recent correlated response.
+- Selecting an agent shows its five newest acknowledged exchanges, newest
+  first, without issuing a network request.
 - Every multi-page Memo or agent detail shows a right-edge page-position
   indicator that remains visible and tracks bounded swipe paging; one-page
   details do not allocate an image container.
-- A missing response issues exactly one read-only summary request and shows a
-  persistent waiting state.
-- A matching result replaces waiting; unrelated results do not.
-- Tap dismisses detail or waiting and restores the normal page.
+- A missing response renders `No response yet`; unrelated events do not become
+  correlated responses.
+- Tap during active detail speech finishes/prioritizes its send and does not
+  dismiss; tap after terminal state dismisses and restores the normal page.
 - Memo and the prior double-tap behavior keep their documented priority.
 - No selector operation blocks or weakens capture, storage, correction, message
   delivery, privacy, or BLE timeout boundaries.

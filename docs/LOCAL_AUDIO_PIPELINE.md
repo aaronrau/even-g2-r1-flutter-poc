@@ -141,10 +141,14 @@ The package README, patch, licenses, and SHA-256 runtime manifest are under
   to one `<conversation>.continuous.txt` file. Natural endpoint pauses close
   the logical conversation. The bounded glasses FIFO presents each unique
   recognized chunk as `Queued` then `Saved` or `Sent`.
-- Gemma correction is eligible only when a recognized chunk contains the
-  complete word `hey`, case-insensitively. Ordinary ambient chunks bypass the
-  LLM, receive a durable `no_wake_word` skip record so they cannot be restored
-  into the correction queue after restart, and remain available as raw text.
+- Gemma correction is eligible only when a recognized chunk begins with the
+  complete word `hey`, case-insensitively. Ordinary ambient chunks and
+  mid-sentence mentions bypass the LLM, receive a durable `no_wake_word` skip
+  record so they cannot be restored into the correction queue after restart,
+  and remain available as raw text. If an agent row was selected on G2 when
+  speech began, that explicit in-memory target makes the live transcript
+  Gemma-eligible without a spoken wake/name; only the corrected result may
+  route. All other speech retains the normal attention gate.
 - A wearable disconnect flushes an active VAD segment before changing link
   state. Raw journals, WAV files, and completed transcripts are never deleted
   by a model restart.

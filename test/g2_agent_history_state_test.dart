@@ -50,11 +50,15 @@ void main() {
 
     state.selectPrevious();
     expect(state.selected?.label, 'Pike');
+    expect(state.selectedSpeechAgent, 'Pike');
     state.selectNext();
     expect(state.selected?.label, '[x]');
+    expect(state.selectedSpeechAgent, isNull);
     state.selectNext();
     expect(state.selected?.label, 'Memo');
+    expect(state.selectedSpeechAgent, isNull);
     state.showSelectedDetail();
+    expect(state.selectedSpeechAgent, isNull);
 
     expect(state.mode, G2AgentHistoryMode.detail);
     expect(state.render(), startsWith('[ Memo ]\n'));
@@ -79,6 +83,8 @@ void main() {
       ..selectNext();
 
     state.showWaiting(exchange);
+    expect(state.selectedSpeechAgent, 'Pike');
+    expect(state.render(), startsWith('[ Agent: Pike • ]\n'));
     expect(state.render(), contains('Waiting for response'));
     expect(state.acceptResponse('different-exchange', 'Wrong response'), false);
     expect(state.mode, G2AgentHistoryMode.waiting);
@@ -91,6 +97,68 @@ void main() {
     );
     expect(state.mode, G2AgentHistoryMode.detail);
     expect(state.render(), contains('Synthetic device response received'));
+  });
+
+  test(
+    'agent detail remains an active target and renders speech lifecycle',
+    () {
+      final state = G2AgentHistoryState()
+        ..open(
+          agents: const <String>['Pike'],
+          exchanges: const <AgentExchangeView>[],
+        )
+        ..selectNext()
+        ..selectNext()
+        ..showSelectedDetail();
+
+      expect(state.selectedSpeechAgent, 'Pike');
+      expect(state.render(), startsWith('[ Agent: Pike • ]\n'));
+
+      expect(state.beginTargetedSpeech('segment-1'), isTrue);
+      expect(state.render(), contains('Listening…'));
+
+      expect(
+        state.showTargetedSpeechTranscript(
+          segmentId: 'segment-1',
+          transcript: 'pull the latest changes',
+        ),
+        isTrue,
+      );
+      expect(state.render(), contains('Sending: pull the latest changes'));
+
+      expect(
+        state.completeTargetedSpeech(
+          segmentId: 'segment-1',
+          transcript: 'pull the latest changes',
+          sent: true,
+        ),
+        isTrue,
+      );
+      expect(state.render(), contains('Sent: pull the latest changes'));
+    },
+  );
+
+  test('a newer detail utterance cannot be overwritten by an older result', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext()
+      ..selectNext()
+      ..showSelectedDetail()
+      ..beginTargetedSpeech('segment-1')
+      ..beginTargetedSpeech('segment-2');
+
+    expect(
+      state.completeTargetedSpeech(
+        segmentId: 'segment-1',
+        transcript: 'older command',
+        sent: true,
+      ),
+      isFalse,
+    );
+    expect(state.render(), contains('Listening…'));
   });
 
   test('selector rows collapse private newlines and remain one line', () {
@@ -171,12 +239,45 @@ void main() {
       ..showSelectedDetail();
 
     expect(state.detailPageCount, greaterThan(1));
-    expect(state.render(), startsWith('[ Agent: Pike ]\n'));
+    expect(state.render(), startsWith('[ Agent: Pike • ]\n'));
     while (state.selectNextDetailPage()) {}
-    expect(state.render(), startsWith('[ Agent: Pike ]\n'));
+    expect(state.render(), startsWith('[ Agent: Pike • ]\n'));
     expect(state.render(), contains('result119'));
     expect(state.render().split('\n'), hasLength(10));
   });
+
+  test(
+    'agent detail shows the five newest conversations and pages both ways',
+    () {
+      final exchanges = <AgentExchangeView>[
+        for (var index = 0; index < 6; index++)
+          AgentExchangeView(
+            id: 'pike-$index',
+            agent: 'Pike',
+            message: 'synthetic request $index with enough detail to wrap',
+            response: 'synthetic response $index with enough detail to wrap',
+            sentAt: sentAt.add(Duration(minutes: index)),
+            legacy: false,
+          ),
+      ];
+      final state = G2AgentHistoryState()
+        ..open(agents: const <String>['Pike'], exchanges: exchanges)
+        ..selectNext()
+        ..selectNext()
+        ..showAgentConversations(exchanges);
+
+      expect(state.detailPageCount, greaterThan(1));
+      final pages = <String>[state.render()];
+      while (state.selectNextDetailPage()) {
+        pages.add(state.render());
+      }
+      final rendered = pages.join('\n');
+      expect(rendered, contains('synthetic request 5'));
+      expect(rendered, contains('synthetic response 1'));
+      expect(rendered, isNot(contains('synthetic request 0')));
+      expect(state.selectPreviousDetailPage(), isTrue);
+    },
+  );
 
   test('detail pages preserve carriage returns and paragraph breaks', () {
     final state = G2AgentHistoryState()
@@ -201,7 +302,9 @@ void main() {
     expect(
       state.render(),
       contains(
-        '[ Agent: Pike ]\nFirst result\nSecond result\nThird result\n\n'
+        '[ Agent: Pike • ]\nLatest conversation\n'
+        'You: report synthetic progress\nAgent: First result\n'
+        'Second result\nThird result\n\n'
         'Final paragraph.',
       ),
     );

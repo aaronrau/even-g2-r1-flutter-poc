@@ -27,6 +27,7 @@ typedef TranscriptHandler =
 typedef FinalTranscriptHandler =
     Future<void> Function(FinalTranscriptDelivery delivery);
 typedef CorrectionTermsProvider = Iterable<String> Function();
+typedef ExplicitCorrectionEligibilityProvider = bool Function(String segmentId);
 typedef FinalizedSpeechSegmentHandler =
     void Function(String segmentId, String wavPath);
 
@@ -35,11 +36,13 @@ final class FinalTranscriptDelivery {
     required this.segmentId,
     required this.rawTranscript,
     required this.transcript,
+    required this.isCorrected,
   });
 
   final String segmentId;
   final String rawTranscript;
   final String transcript;
+  final bool isCorrected;
 }
 
 final class AudioPipelineCoordinator {
@@ -53,6 +56,7 @@ final class AudioPipelineCoordinator {
     this.onFinalizedSpeechSegment,
     this.onVadSpeechEvent,
     this.correctionTermsProvider,
+    this.explicitCorrectionEligibilityProvider,
     ModelAssetStore? modelStore,
     GemmaModelStore? gemmaModelStore,
     TranscriptCorrectionConfigStore? correctionConfigStore,
@@ -85,6 +89,8 @@ final class AudioPipelineCoordinator {
   final FinalizedSpeechSegmentHandler? onFinalizedSpeechSegment;
   final VadSpeechEventSink? onVadSpeechEvent;
   final CorrectionTermsProvider? correctionTermsProvider;
+  final ExplicitCorrectionEligibilityProvider?
+  explicitCorrectionEligibilityProvider;
   final ModelAssetStore _modelStore;
   final GemmaModelStore _gemmaModelStore;
   final TranscriptCorrectionConfigStore _correctionConfigStore;
@@ -560,12 +566,18 @@ final class AudioPipelineCoordinator {
     if (queuedTranscriptHandler != null) {
       await _publishTranscript(queuedTranscriptHandler, id, routableText);
     }
-    final hasWakeWord = transcriptContainsWakeWord(routableText);
+    final explicitlyTargeted =
+        explicitCorrectionEligibilityProvider?.call(id) ?? false;
+    final correctionEligible = isLiveTranscriptCorrectionEligible(
+      routableText,
+      explicitlyTargeted: explicitlyTargeted,
+    );
     if (correction != null) {
-      if (hasWakeWord) {
+      if (correctionEligible) {
         log(
           'Pipeline',
           '[WorkBench][VoiceRoute] state=awaiting_correction segment=$id '
+              'source=${explicitlyTargeted ? 'selected_agent' : 'wake_word'} '
               'terms=${correctionTerms.length}',
         );
         await correction.queue(correctionJob);
@@ -584,14 +596,14 @@ final class AudioPipelineCoordinator {
     } else {
       await TranscriptCorrectionSupervisor.persistSkipped(
         correctionJob,
-        reason: hasWakeWord ? 'correction_unavailable' : 'no_wake_word',
+        reason: correctionEligible ? 'correction_unavailable' : 'no_wake_word',
       );
       final finalTranscriptHandler = onFinalTranscript;
       if (finalTranscriptHandler != null) {
         log(
           'Pipeline',
           '[WorkBench][VoiceRoute] state=raw_fallback segment=$id '
-              'reason=${hasWakeWord ? 'correction_unavailable' : 'no_wake_word'}',
+              'reason=${correctionEligible ? 'correction_unavailable' : 'no_wake_word'}',
         );
         await _publishFinalTranscript(
           finalTranscriptHandler,
@@ -599,6 +611,7 @@ final class AudioPipelineCoordinator {
             segmentId: id,
             rawTranscript: routableText,
             transcript: routableText,
+            isCorrected: false,
           ),
         );
       }
@@ -671,6 +684,7 @@ final class AudioPipelineCoordinator {
               segmentId: result.segmentId,
               rawTranscript: result.originalText,
               transcript: result.correctedText,
+              isCorrected: true,
             ),
           ),
         );
@@ -714,6 +728,7 @@ final class AudioPipelineCoordinator {
           segmentId: job.segmentId,
           rawTranscript: transcript,
           transcript: transcript,
+          isCorrected: false,
         ),
       ),
     );
@@ -980,6 +995,14 @@ final class AudioPipelineCoordinator {
 
   void flushCurrentSpeech() {
     _vad?.flush();
+  }
+
+  Future<bool> prioritizeQueuedCorrection(String segmentId) async {
+    final correction = _correction;
+    if (_disposed || correction == null) {
+      return false;
+    }
+    return correction.prioritize(segmentId);
   }
 
   Future<void> selectTranscriptionModel(

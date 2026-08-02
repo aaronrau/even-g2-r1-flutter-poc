@@ -4,6 +4,8 @@ enum G2AgentHistoryMode { closed, selector, waiting, detail }
 
 enum G2AgentHistoryEntryKind { dismiss, memo, agent }
 
+enum G2AgentDetailSpeechState { listening, sending, sent, saved }
+
 final class G2AgentHistoryEntry {
   const G2AgentHistoryEntry({
     required this.kind,
@@ -22,9 +24,10 @@ final class G2AgentHistoryEntry {
 
 final class G2AgentHistoryState {
   static const int maximumAgents = 5;
+  static const int maximumAgentConversations = 5;
   static const int maximumRowRunes = 48;
   static const int maximumPageCharacters = 512;
-  static const int maximumDetailRunes = 4096;
+  static const int maximumDetailRunes = 16384;
   static const int detailLineRunes = 45;
   static const int detailBodyLinesPerPage = 7;
 
@@ -37,10 +40,36 @@ final class G2AgentHistoryState {
   bool detailTitleIsAgent = false;
   int detailPageIndex = 0;
   bool waitingTimedOut = false;
+  String? detailSpeechSegmentId;
+  String? detailSpeechTranscript;
+  G2AgentDetailSpeechState? detailSpeechState;
 
   bool get isOpen => mode != G2AgentHistoryMode.closed;
   G2AgentHistoryEntry? get selected =>
       entries.isEmpty ? null : entries[selectedIndex];
+  bool get isAgentDetailSpeechTarget =>
+      detailTitleIsAgent &&
+      (mode == G2AgentHistoryMode.detail || mode == G2AgentHistoryMode.waiting);
+  String? get selectedSpeechAgent {
+    final entry = selected;
+    if (mode == G2AgentHistoryMode.selector &&
+        entry != null &&
+        entry.kind == G2AgentHistoryEntryKind.agent) {
+      return entry.label;
+    }
+    if (isAgentDetailSpeechTarget) {
+      final title = detailTitle?.trim();
+      return title == null || title.isEmpty ? null : title;
+    }
+    return null;
+  }
+
+  String? get activeDetailSpeechSegmentId => switch (detailSpeechState) {
+    G2AgentDetailSpeechState.listening ||
+    G2AgentDetailSpeechState.sending => detailSpeechSegmentId,
+    _ => null,
+  };
+
   int get detailPageCount => _detailPages().length;
 
   void open({
@@ -102,6 +131,7 @@ final class G2AgentHistoryState {
     detailTitleIsAgent = false;
     detailPageIndex = 0;
     waitingTimedOut = false;
+    _clearDetailSpeech();
     mode = G2AgentHistoryMode.selector;
   }
 
@@ -132,10 +162,40 @@ final class G2AgentHistoryState {
         entry.detail?.trim().isNotEmpty == true
             ? entry.detail
             : 'No saved memo',
-      G2AgentHistoryEntryKind.agent =>
-        entry.exchange == null ? 'No sent message' : entry.exchange!.response,
+      G2AgentHistoryEntryKind.agent => _renderAgentConversations(
+        entry.exchange == null
+            ? const <AgentExchangeView>[]
+            : <AgentExchangeView>[entry.exchange!],
+      ),
     };
     detailPageIndex = 0;
+    _clearDetailSpeech();
+    mode = G2AgentHistoryMode.detail;
+  }
+
+  void showAgentConversations(List<AgentExchangeView> exchanges) {
+    final entry = selected;
+    if (entry == null || entry.kind != G2AgentHistoryEntryKind.agent) {
+      return;
+    }
+    final recent =
+        exchanges
+            .where(
+              (exchange) =>
+                  exchange.agent.trim().toLowerCase() ==
+                  entry.label.trim().toLowerCase(),
+            )
+            .toList(growable: false)
+          ..sort((a, b) => b.sentAt.compareTo(a.sentAt));
+    detailTitle = entry.label;
+    detailTitleIsAgent = true;
+    detailText = _renderAgentConversations(
+      recent.take(maximumAgentConversations).toList(growable: false),
+    );
+    detailPageIndex = 0;
+    waitingExchangeId = null;
+    waitingTimedOut = false;
+    _clearDetailSpeech();
     mode = G2AgentHistoryMode.detail;
   }
 
@@ -146,6 +206,7 @@ final class G2AgentHistoryState {
     detailText = 'Waiting for response…';
     detailPageIndex = 0;
     waitingTimedOut = false;
+    _clearDetailSpeech();
     mode = G2AgentHistoryMode.waiting;
   }
 
@@ -178,7 +239,48 @@ final class G2AgentHistoryState {
     detailText = message;
     detailPageIndex = 0;
     waitingTimedOut = false;
+    _clearDetailSpeech();
     mode = G2AgentHistoryMode.detail;
+  }
+
+  bool beginTargetedSpeech(String segmentId) {
+    if (!isAgentDetailSpeechTarget) {
+      return false;
+    }
+    detailSpeechSegmentId = segmentId;
+    detailSpeechTranscript = null;
+    detailSpeechState = G2AgentDetailSpeechState.listening;
+    detailPageIndex = 0;
+    return true;
+  }
+
+  bool showTargetedSpeechTranscript({
+    required String segmentId,
+    required String transcript,
+  }) {
+    if (!isAgentDetailSpeechTarget || detailSpeechSegmentId != segmentId) {
+      return false;
+    }
+    detailSpeechTranscript = transcript.trim();
+    detailSpeechState = G2AgentDetailSpeechState.sending;
+    detailPageIndex = 0;
+    return true;
+  }
+
+  bool completeTargetedSpeech({
+    required String segmentId,
+    required String transcript,
+    required bool sent,
+  }) {
+    if (!isAgentDetailSpeechTarget || detailSpeechSegmentId != segmentId) {
+      return false;
+    }
+    detailSpeechTranscript = transcript.trim();
+    detailSpeechState = sent
+        ? G2AgentDetailSpeechState.sent
+        : G2AgentDetailSpeechState.saved;
+    detailPageIndex = 0;
+    return true;
   }
 
   void close() {
@@ -191,6 +293,7 @@ final class G2AgentHistoryState {
     detailTitleIsAgent = false;
     detailPageIndex = 0;
     waitingTimedOut = false;
+    _clearDetailSpeech();
   }
 
   bool selectPreviousDetailPage() {
@@ -236,6 +339,7 @@ final class G2AgentHistoryState {
   String _renderDetail({required bool cancel}) {
     final titleLabel = detailTitleIsAgent
         ? 'Agent: ${_oneLine(detailTitle ?? 'Unknown')}'
+              '${isAgentDetailSpeechTarget ? ' •' : ''}'
         : _oneLine(detailTitle ?? 'History');
     final title = '[ ${_truncate(titleLabel, detailLineRunes - 4)} ]';
     final pages = _detailPages();
@@ -255,7 +359,7 @@ final class G2AgentHistoryState {
   }
 
   List<List<String>> _detailPages() {
-    final body = _truncate((detailText ?? '').trim(), maximumDetailRunes);
+    final body = _truncate(_renderDetailBody(), maximumDetailRunes);
     final wrapped = _wrapDetailLines(body);
     final pages = <List<String>>[];
     for (
@@ -271,6 +375,47 @@ final class G2AgentHistoryState {
             <String>[''],
           ]
         : pages;
+  }
+
+  String _renderDetailBody() {
+    final speechState = detailSpeechState;
+    if (speechState == null) {
+      return (detailText ?? '').trim();
+    }
+    final transcript = (detailSpeechTranscript ?? '').trim();
+    return switch (speechState) {
+      G2AgentDetailSpeechState.listening => 'Listening…',
+      G2AgentDetailSpeechState.sending =>
+        transcript.isEmpty ? 'Sending…' : 'Sending: $transcript',
+      G2AgentDetailSpeechState.sent =>
+        transcript.isEmpty ? 'Sent' : 'Sent: $transcript',
+      G2AgentDetailSpeechState.saved =>
+        transcript.isEmpty ? 'Saved' : 'Saved: $transcript',
+    };
+  }
+
+  static String _renderAgentConversations(List<AgentExchangeView> exchanges) {
+    if (exchanges.isEmpty) {
+      return 'No conversation yet';
+    }
+    final sections = <String>[];
+    for (var index = 0; index < exchanges.length; index++) {
+      final exchange = exchanges[index];
+      final message = exchange.message.trim();
+      final response = exchange.response?.trim();
+      sections.add(
+        '${index == 0 ? 'Latest conversation' : 'Earlier conversation ${index + 1}'}\n'
+        'You: ${message.isEmpty ? 'No saved message' : message}\n'
+        'Agent: ${response == null || response.isEmpty ? 'No response yet' : response}',
+      );
+    }
+    return sections.join('\n\n');
+  }
+
+  void _clearDetailSpeech() {
+    detailSpeechSegmentId = null;
+    detailSpeechTranscript = null;
+    detailSpeechState = null;
   }
 
   static List<String> _wrapDetailLines(String value) {

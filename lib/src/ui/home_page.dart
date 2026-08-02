@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 
+import '../audio/conversation_models.dart';
 import '../audio/speech_model.dart';
 import '../ble/ble_models.dart';
 import '../startup/startup_state.dart';
 import '../util/hex.dart';
 import '../wearable_controller.dart';
 import 'app_version_label.dart';
+import 'conversation_analysis_settings.dart';
 import 'home_history_panel.dart';
 import 'transcript_correction_settings.dart';
 import 'voice_websocket_settings.dart';
@@ -447,8 +449,6 @@ final class _HomePageState extends State<HomePage> {
         onRefreshConversations: () => _run(controller.refreshConversations),
         onLoadMessages: controller.refreshSharedMessages,
         onLoadConversations: controller.refreshConversations,
-        onResetPrimarySpeaker: () =>
-            _run(controller.resetConversationPrimarySpeaker),
         onTabChanged: (tab) {
           final messagesSelected = tab == HomeHistoryTab.messages;
           controller.setSharedMessageViewActive(messagesSelected);
@@ -484,98 +484,29 @@ final class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildConversationAnalysisCard() {
-    final theme = Theme.of(context);
     final enabled = controller.conversationAnalysisEnabled;
-    final error = controller.conversationAnalysisError;
-    final state = controller.conversationAnalysisState.replaceAll('_', ' ');
     final enrollmentPending =
         controller.conversationNeedsEnrollment ||
         controller.conversationEnrollmentPending;
-    final accepted = controller.acceptedConversationEnrollmentSamples;
-    final required = controller.requiredConversationEnrollmentSamples;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Text('Conversation analysis', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 4),
-            Text(
-              'Optional speaker diarization runs in a supervised worker with '
-              'its own speech recognizer. It reuses each finalized WAV; the '
-              'live transcription, correction, and agent connection never '
-              'wait for it.',
-              style: theme.textTheme.bodyMedium,
-            ),
-            const SizedBox(height: 8),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Enable speaker-labeled conversations'),
-              subtitle: Text(
-                enabled
-                    ? 'State: $state · ${controller.knownSpeakerCount} saved '
-                          'speakers · ${controller.pendingConversationCount} '
-                          'pending'
-                    : 'Disabled by default',
-                style: theme.textTheme.bodySmall,
-              ),
-              value: enabled,
-              onChanged: _busy
-                  ? null
-                  : (value) => _run(
-                      () => controller.setConversationAnalysisEnabled(value),
-                    ),
-            ),
-            if (enabled) ...<Widget>[
-              const SizedBox(height: 8),
-              Text(
-                enrollmentPending
-                    ? 'Voice sample ${accepted + 1} of $required: speak one '
-                          'clear sentence, then pause while it is checked. '
-                          'Only you should speak for all three samples.'
-                    : 'New voices are assigned a saved speaker label and '
-                          'matched again in future conversations.',
-                style: theme.textTheme.bodyMedium,
-              ),
-              if (error != null) ...<Widget>[
-                const SizedBox(height: 8),
-                Text(error, style: theme.textTheme.bodySmall),
-              ],
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: <Widget>[
-                  if (enrollmentPending)
-                    FilledButton.icon(
-                      onPressed: _busy
-                          ? null
-                          : controller.requestConversationEnrollment,
-                      icon: const Icon(Icons.mic_none_outlined),
-                      label: const Text('Listen for my voice'),
-                    )
-                  else
-                    OutlinedButton.icon(
-                      onPressed: _busy
-                          ? null
-                          : controller.requestConversationEnrollment,
-                      icon: const Icon(Icons.mic_none_outlined),
-                      label: const Text('Update my voice'),
-                    ),
-                  OutlinedButton(
-                    onPressed: _busy || controller.knownSpeakerCount == 0
-                        ? null
-                        : () =>
-                              _run(controller.clearConversationSpeakerProfiles),
-                    child: const Text('Reset speaker signatures'),
-                  ),
-                ],
-              ),
-            ],
-          ],
-        ),
-      ),
+    return ConversationAnalysisSettings(
+      enabled: enabled,
+      state: controller.conversationAnalysisState,
+      knownSpeakerCount: controller.knownSpeakerCount,
+      pendingConversationCount: controller.pendingConversationCount,
+      enrollmentPending: enrollmentPending,
+      acceptedEnrollmentSamples:
+          controller.acceptedConversationEnrollmentSamples,
+      requiredEnrollmentSamples:
+          controller.requiredConversationEnrollmentSamples,
+      speakerMatchThreshold: controller.conversationSpeakerMatchThreshold,
+      busy: _busy,
+      error: controller.conversationAnalysisError,
+      onEnabledChanged: (value) =>
+          _run(() => controller.setConversationAnalysisEnabled(value)),
+      onSpeakerMatchThresholdChanged: (value) =>
+          _run(() => controller.setConversationSpeakerMatchThreshold(value)),
+      onResetSpeakerIdentification: () =>
+          _run(controller.resetConversationSpeakerIdentification),
     );
   }
 
@@ -1036,6 +967,22 @@ final class _HomePageState extends State<HomePage> {
               ),
             ),
             const SizedBox(height: 16),
+            Text('Adjustable threshold', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 8),
+            const IgnorePointer(
+              child: Slider(
+                value: defaultSpeakerSignatureMatchThreshold,
+                min: minimumAdjustableSpeakerSignatureMatchThreshold,
+                max: maximumAdjustableSpeakerSignatureMatchThreshold,
+                divisions: 40,
+                onChanged: null,
+              ),
+            ),
+            Text(
+              'Show the exact value and explain the low/high tradeoff.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 16),
             Text('Editable instructions', style: theme.textTheme.titleSmall),
             const SizedBox(height: 8),
             const IgnorePointer(
@@ -1097,6 +1044,7 @@ final class _HomePageState extends State<HomePage> {
               'Text tabs with an underline switch between peer views\n'
               'Speaker turns use aligned labels with grayscale color markers\n'
               'Labeled dropdowns select one persisted setting\n'
+              'Discrete sliders expose bounded numeric thresholds\n'
               'Multiline settings use a labeled field and explicit Save action\n'
               'Secrets are masked, app-private, and excluded from logs\n'
               'Connected devices replace “Connected” with a battery icon '

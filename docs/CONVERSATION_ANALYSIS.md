@@ -33,6 +33,15 @@ analysis, speaker-model, export, and SQLite failures log metadata-only status
 and leave capture, VAD, ordinary STT, Gemma, BLE, and WebSocket behavior
 unchanged.
 
+The native conversation worker is loaded on demand when a durable WAV is
+queued, remains warm for up to 30 seconds between nearby turns, and releases
+its independent Parakeet and diarization allocations after the queue drains.
+Before a live Gemma-routed command starts correction, conversation analysis
+releases its worker and leaves its current WAV job in the durable queue. It
+resumes serial analysis after correction completes. This avoids holding both
+large native model stacks during the latency-sensitive send while preserving
+the original WAV, speaker enrollment, and conversation history work.
+
 ## Enrollment and matching
 
 Enable **Tools → Conversation analysis → Enable speaker-labeled
@@ -48,11 +57,13 @@ Each local diarization cluster produces a normalized TitaNet embedding:
 
 - short-turn clustering uses a `0.01` cosine-distance cut, with profile
   matching responsible for reuniting repeated turns;
-- non-primary profiles continue to use the independent `0.64` signature
-  threshold;
-- the primary profile uses a persisted calibrated threshold derived from the
-  weakest pairwise similarity among its three enrollment samples, minus a
-  `0.04` variation margin and clamped to `0.64`–`0.90`;
+- primary and non-primary profiles use the persisted Tools setting for the
+  signature threshold. It defaults to the validated `0.64` boundary and is
+  adjustable from `0.50` to `0.90` in `0.01` steps. Lower values accept more
+  voice variation and raise false-match risk; higher values require a closer
+  match and raise false-negative risk. Every pair among the three enrollment
+  samples must meet the selected value, and the completed `You` profile keeps
+  that same value for future speech;
 - a strong match at or above `0.78` updates its bounded centroid;
 - a weaker match creates `Speaker 2`, `Speaker 3`, and so on;
 - overlapping diarization spans are labeled `Overlapping speakers` instead of
@@ -67,11 +78,10 @@ profiles are app-private and persist across restarts. The bank keeps one
 primary profile and the 16 most recently updated non-primary profiles. When a
 new unknown speaker arrives at that limit, the oldest inactive non-primary
 profile is evicted; startup also compacts profile banks created by older
-unbounded builds. **Update my voice** requires three new mutually consistent
-samples. Its previously calibrated centroid remains unchanged until all three
-updates pass; the first update sample must also match the saved primary
-threshold. **Reset speaker signatures** removes profiles but retains prior
-conversation turns.
+unbounded builds. Each new app-private conversation turn also retains its
+normalized voice signature so later `You` enrollment can reconcile the turn
+even after its temporary non-primary profile leaves the active bank. Voice
+signatures are never placed in the shared-folder text export or SQLite index.
 
 ## Output and history
 
@@ -90,13 +100,27 @@ and other speakers on the left as aligned text with grayscale speaker markers.
 The text file is also exported to the selected shared folder when one is
 available.
 
-**Reset You signature** removes only the primary voice profile, retains other
-saved speakers and conversation history, and starts a fresh three-sample
-calibration. The reset remains busy until the current result and profile
-persistence are complete, preventing a late worker result from restoring the
-removed signature. A speech segment that began before the reset is not accepted
-as a replacement enrollment sample. Only one enrollment sample is analyzed at
-a time, and the action is disabled while analysis is pending.
+Tools exposes one **Reset speaker identification** action; there is no reset
+control in the Conversation tab. The action removes only the primary voice
+profile, retains other saved speakers and conversation history, and
+automatically starts a fresh three-sample calibration. The reset remains busy
+until the current result and profile persistence are complete, preventing a
+late worker result from restoring the removed signature. A speech segment that
+began before the reset is not accepted as a replacement enrollment sample.
+Only one enrollment sample is analyzed at a time, and the action is disabled
+while analysis is pending. Reset also restores the threshold setting to
+`0.64`; it can be adjusted before or between enrollment samples, but not while
+a sample is being analyzed.
+
+After the third accepted sample, Work Bench compares the new `You` signature
+bank with every retained per-turn signature and with legacy turns through
+their still-retained speaker profiles. Matching non-overlap turns are rewritten
+atomically as `You` in the app-private JSON and readable conversation text,
+then reindexed for the Conversation tab and re-exported when a shared folder is
+selected. Matching duplicate profiles are folded into `You`, so the same
+calibration is used for future speech. A persisted reconciliation-pending flag
+makes this pass idempotent after an app or process restart. Overlap labels and
+unrelated speaker profiles remain unchanged.
 
 Atomic WAV, text, and JSON files remain the durable records. SQLite is the
 fast UI index and may be rebuilt independently.
@@ -125,8 +149,11 @@ step with the other pinned models.
 
 Automated acceptance includes:
 
-- three-sample consistency, per-profile threshold calibration and migration,
-  speaker signature normalization, centroid updates, and JSON validation;
+- three-sample consistency at adjustable persisted thresholds, default-value
+  reset, signature-bank calibration and migration, per-turn signature
+  normalization, centroid updates, and JSON validation;
+- crash-resumable historical `You` relabeling, duplicate-profile folding,
+  readable-text rewrites, and SQLite refresh;
 - bounded legacy-profile compaction and reset cutover to the next newly started
   speech segment;
 - atomic profile, pending-job, and conversation-record recovery;

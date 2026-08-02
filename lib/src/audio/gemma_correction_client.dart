@@ -51,6 +51,16 @@ final class GemmaCorrectionResult {
   final double decodeTokensPerSecond;
 }
 
+/// A privacy-safe native correction failure whose code can drive retry policy.
+final class GemmaCorrectionClientException implements Exception {
+  const GemmaCorrectionClientException(this.code);
+
+  final String code;
+
+  @override
+  String toString() => 'GemmaCorrectionClientException($code)';
+}
+
 abstract interface class GemmaCorrectionClient {
   Future<void> prepareEngine({
     required String modelPath,
@@ -82,12 +92,16 @@ final class PlatformGemmaCorrectionClient implements GemmaCorrectionClient {
         'On-device Gemma correction is currently available on Android.',
       );
     }
-    await _channel
-        .invokeMethod<void>('prepareEngine', <String, Object>{
-          'modelPath': modelPath,
-          'modelId': modelId,
-        })
-        .timeout(const Duration(seconds: 30));
+    try {
+      await _channel
+          .invokeMethod<void>('prepareEngine', <String, Object>{
+            'modelPath': modelPath,
+            'modelId': modelId,
+          })
+          .timeout(const Duration(seconds: 30));
+    } on PlatformException catch (error) {
+      throw GemmaCorrectionClientException(error.code);
+    }
   }
 
   @override
@@ -97,16 +111,21 @@ final class PlatformGemmaCorrectionClient implements GemmaCorrectionClient {
         'On-device Gemma correction is currently available on Android.',
       );
     }
-    final response = await _channel
-        .invokeMapMethod<String, Object?>('correct', <String, Object>{
-          'modelPath': request.modelPath,
-          'modelId': request.modelId,
-          'instructions': request.instructions,
-          'transcript': request.transcript,
-          'timeoutMs': request.timeoutMs,
-          'task': request.task.wireName,
-        })
-        .timeout(Duration(milliseconds: request.timeoutMs + 10000));
+    Map<String, Object?>? response;
+    try {
+      response = await _channel
+          .invokeMapMethod<String, Object?>('correct', <String, Object>{
+            'modelPath': request.modelPath,
+            'modelId': request.modelId,
+            'instructions': request.instructions,
+            'transcript': request.transcript,
+            'timeoutMs': request.timeoutMs,
+            'task': request.task.wireName,
+          })
+          .timeout(Duration(milliseconds: request.timeoutMs + 10000));
+    } on PlatformException catch (error) {
+      throw GemmaCorrectionClientException(error.code);
+    }
     final correctedText = response?['correctedText'];
     final provider = response?['provider'];
     if (correctedText is! String ||

@@ -137,6 +137,42 @@ void main() {
     expect(store.config.instructions, contains('leading attention word "Hey"'));
   });
 
+  test('migrates the untouched prior default to latest-changes policy', () async {
+    final previousDefault = defaultTranscriptCorrectionInstructions.replaceFirst(
+      'In a repository update command, rewrite "ladies changes" as "latest '
+          'changes" when the sentence clearly means the most recent changes. ',
+      '',
+    );
+    final workbench = Directory('${temp.path}/workbench');
+    await workbench.create(recursive: true);
+    final file = File('${workbench.path}/config.json');
+    await file.writeAsString(
+      jsonEncode(
+        TranscriptCorrectionConfig.defaults
+            .copyWith(instructions: previousDefault)
+            .toJson(),
+      ),
+      flush: true,
+    );
+    var sharedPrompt = previousDefault;
+    final store = TranscriptCorrectionConfigStore(
+      supportDirectory: () async => temp,
+      sharedInstructionsAvailable: () => true,
+      sharedInstructionsReader: () async => sharedPrompt,
+      sharedInstructionsWriter: (value) async => sharedPrompt = value,
+    );
+    addTearDown(store.dispose);
+
+    await store.initialize();
+
+    expect(store.config.instructions, defaultTranscriptCorrectionInstructions);
+    expect(
+      store.config.instructions,
+      contains('rewrite "ladies changes" as "latest changes"'),
+    );
+    expect(sharedPrompt, defaultTranscriptCorrectionInstructions);
+  });
+
   test('creates and atomically updates validated config.json', () async {
     final store = TranscriptCorrectionConfigStore(
       supportDirectory: () async => temp,

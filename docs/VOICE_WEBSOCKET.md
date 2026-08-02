@@ -152,13 +152,41 @@ inbound events. Voice memo finalization retains priority over this action.
 
 ## Single-tap history selector
 
-The single-tap interaction expands progress lookup into a gesture-controlled
-selector with `Dismiss` selected first, a local Memo row, and up to five
-one-line agent rows. Request-ID correlation prevents an arbitrary recent
-response from the same agent from replacing the selected result. The complete
-state machine, data model, failure behavior, implementation, and
-physical-device acceptance flow are documented in
+When no transcript is visibly `Queued:`, the single-tap interaction expands
+progress lookup into a gesture-controlled selector with `Dismiss` selected
+first, a local Memo row, and up to five one-line agent rows. Tapping an agent
+loads its five newest acknowledged exchanges, newest first, and swipe up/down
+pages through their complete bounded content without a network request.
+Request-ID correlation prevents an arbitrary recent response from the same
+agent from replacing a saved result. The complete state machine, data model,
+failure behavior, implementation, and physical-device acceptance flow are documented in
 [`G2_AGENT_HISTORY_SELECTOR.md`](G2_AGENT_HISTORY_SELECTOR.md).
+
+While the selector is open on an agent row, or that agent's detail page
+is open, each VAD speech start snapshots that canonical configured agent. The
+resulting live transcript routes to that agent without requiring a spoken `Hey`
+or agent name. Explicit selection makes the live segment Gemma-eligible even
+without the wake word; only the corrected result is offered to the selected
+agent, while correction-unavailable fallback retains the durable raw text.
+The agent detail title carries a visible active dot; its body advances through
+`Listening…`, `Sending:`, and acknowledged `Sent:` or fallback `Saved:` for the
+latest targeted segment. This explicit gesture selection is the only
+attention-gate bypass. Dismiss, Memo, a selection removed by a configuration
+change, and speech that began before the agent was selected do not bypass
+ordinary routing. The snapshot remains stable if the user swipes or closes the
+selector while STT is completing. At most 32 unfinished snapshots are retained,
+and they are never restored after process restart.
+
+Tap cannot accidentally dismiss an active targeted utterance. During
+`Listening…` it finalizes the current VAD segment for correction and delivery;
+during `Sending:` it moves the queued Gemma job ahead of other ready work. Tap
+returns to its ordinary dismiss behavior only after the detail reaches a
+terminal `Sent:` or `Saved:` state.
+
+Agent-detail rendering is asynchronous with respect to delivery. Full-page G2
+BLE updates retain their ordered, coalesced queue, but the app never waits for
+`Sending:` or terminal text to finish rendering before queuing Gemma, sending
+the corrected command, or saving an acknowledged message.
 
 The client tracks the latest non-negative top-level `event_id`. After an
 unexpected disconnect, it reconnects with bounded backoff, waits for the next
@@ -187,14 +215,23 @@ waiting for Gemma or the network. The segment ID follows that same item through
 correction and routing, so the corrected result does not create a duplicate
 display entry. The live turn reaches STT only after the nominal 1.75-second
 total-silence VAD boundary; speech resuming before that boundary remains in the
-same turn. When correction is enabled, the saved agent names are added to
-the validated correction instructions as local command vocabulary; only the
-corrected result is eligible for agent matching and WebSocket routing. Known
-configured agent names also receive conservative acoustic alias guidance for
-leading command invocations. Routing independently requires the complete word
-`Hey` at the start of the durable raw transcript and the canonical agent phrase
-in the corrected transcript. A bare acoustic variant, a mid-sentence `hey`, or
-a larger word such as `heyday` is not activation evidence. Gemma may repair a
+same turn. A single tap while this item is still `Queued:` is consumed before
+the history selector. If the raw transcript starts with the complete word
+`Hey`, its durable correction job moves ahead of other ready Gemma work; an
+already-running inference remains ahead and is never interrupted. The item
+immediately changes to `Sending:` so a second tap cannot submit it again.
+Otherwise the item resolves to `Saved:` immediately without invoking Gemma or
+sending a WebSocket message. A later asynchronous raw fallback is idempotent and cannot
+send that non-`Hey` transcript. When correction is enabled, saved agent names
+are added to the validated correction instructions as local command
+vocabulary; only the corrected result is eligible for agent matching and
+WebSocket routing. Known configured agent names also receive conservative
+acoustic alias guidance for leading command invocations. Routing independently
+requires the complete word `Hey` at the start of the durable raw transcript and
+the canonical agent phrase in the corrected transcript unless a G2 selector
+row explicitly targeted that still-configured agent when speech began. A bare
+acoustic variant, a mid-sentence `hey`, or a larger word such as `heyday` is not
+activation evidence. Gemma may repair a
 misheard agent name and command body only after the raw leading attention word
 is present. The raw and corrected files remain separate. Explicitly disabling
 correction permits the live raw transcript to route as a documented fallback.

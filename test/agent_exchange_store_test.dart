@@ -156,4 +156,41 @@ void main() {
       expect(await store.latestForAgents(const <String>['Pike']), isEmpty);
     },
   );
+
+  test('loads only the five newest exchanges for one selected agent', () async {
+    var now = DateTime.utc(2026, 1, 1);
+    final store = AgentExchangeStore(
+      supportDirectory: () async => temp,
+      now: () => now,
+    );
+    await store.initialize();
+    for (var index = 0; index < 6; index++) {
+      final sent = File('${temp.path}/pike-$index.sent.message.txt')
+        ..writeAsStringSync('Pike: synthetic request $index\n');
+      await store.recordSent(
+        agent: 'Pike',
+        messagePath: sent.path,
+        legacy: false,
+      );
+      now = now.add(const Duration(minutes: 1));
+    }
+    final other = File('${temp.path}/other.sent.message.txt')
+      ..writeAsStringSync('Agent Two: unrelated synthetic request\n');
+    await store.recordSent(
+      agent: 'Agent Two',
+      messagePath: other.path,
+      legacy: false,
+    );
+
+    final recent = await store.recentForAgent('pike');
+
+    expect(recent, hasLength(5));
+    expect(recent.map((exchange) => exchange.message), <String>[
+      'synthetic request 5',
+      'synthetic request 4',
+      'synthetic request 3',
+      'synthetic request 2',
+      'synthetic request 1',
+    ]);
+  });
 }

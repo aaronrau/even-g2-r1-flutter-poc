@@ -284,6 +284,22 @@ final class AgentExchangeStore {
     return views;
   }
 
+  Future<List<AgentExchangeView>> recentForAgent(
+    String agent, {
+    int maximumExchanges = 5,
+  }) async {
+    _requireInitialized();
+    final normalizedAgent = agent.trim().toLowerCase();
+    if (normalizedAgent.isEmpty || maximumExchanges <= 0) {
+      return const <AgentExchangeView>[];
+    }
+    final records = _records
+        .where((record) => record.agent.toLowerCase() == normalizedAgent)
+        .take(maximumExchanges)
+        .toList(growable: false);
+    return Future.wait(records.map(_readView));
+  }
+
   Future<AgentExchangeView?> viewById(String exchangeId) async {
     _requireInitialized();
     final record = _records.cast<_AgentExchangeRecord?>().firstWhere(

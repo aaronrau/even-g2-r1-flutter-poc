@@ -16,7 +16,6 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     var clearCount = 0;
     var refreshCount = 0;
-    var resetPrimaryCount = 0;
     final selectedTabs = <HomeHistoryTab>[];
     final now = DateTime(2026, 1, 2, 3, 4);
 
@@ -55,7 +54,6 @@ void main() {
           isStorageBusy: false,
           onClearEvents: () => clearCount++,
           onRefreshConversations: () => refreshCount++,
-          onResetPrimarySpeaker: () => resetPrimaryCount++,
           onTabChanged: selectedTabs.add,
         ),
       ),
@@ -114,12 +112,10 @@ void main() {
       ),
       findsNothing,
     );
-    final resetPrimary = find.byKey(
-      const ValueKey<String>('reset-primary-speaker'),
+    expect(
+      find.byKey(const ValueKey<String>('reset-primary-speaker')),
+      findsNothing,
     );
-    expect(tester.getSize(resetPrimary).height, greaterThanOrEqualTo(48));
-    await tester.tap(resetPrimary);
-    expect(resetPrimaryCount, 1);
     final refresh = find.byTooltip('Refresh conversations');
     expect(tester.getSize(refresh).height, greaterThanOrEqualTo(48));
     await tester.tap(refresh);

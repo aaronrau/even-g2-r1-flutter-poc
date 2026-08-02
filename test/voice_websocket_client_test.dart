@@ -226,6 +226,27 @@ void main() {
       isNull,
       reason: 'Hey must be recognized as a complete word.',
     );
+    final selectedAgentRoute = client.routeTranscriptToSelectedAgent(
+      selectedAgent: 'flux',
+      transcript: 'pull the latest changes',
+    );
+    expect(selectedAgentRoute?.agent, 'Flux');
+    expect(selectedAgentRoute?.message, 'pull the latest changes');
+    expect(
+      client.routeTranscriptToSelectedAgent(
+        selectedAgent: 'Agent Not Configured',
+        transcript: 'pull the latest changes',
+      ),
+      isNull,
+      reason: 'A stale menu selection cannot bypass current configuration.',
+    );
+    expect(
+      client.routeTranscriptToSelectedAgent(
+        selectedAgent: 'Flux',
+        transcript: '   ',
+      ),
+      isNull,
+    );
 
     final sent = await client.sendTranscript(
       'Agent One, pull the latest changes',

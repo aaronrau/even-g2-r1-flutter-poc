@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:even_g2_r1_poc/src/audio/audio_pipeline_coordinator.dart';
 import 'package:even_g2_r1_poc/src/wearable_controller.dart';
+import 'package:even_g2_r1_poc/src/websocket/g2_agent_history_state.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -105,6 +107,99 @@ void main() {
         WearableGestureAction.ignore,
       );
     }
+  });
+
+  test('single tap commits a queued transcript before opening history', () {
+    expect(
+      resolveQueuedTranscriptTapAction(
+        gestureType: 0,
+        memoActive: false,
+        queuedTranscript: 'Hey Flux, run the checks.',
+      ),
+      QueuedTranscriptTapAction.correctAndRoute,
+    );
+    expect(
+      resolveQueuedTranscriptTapAction(
+        gestureType: 0,
+        memoActive: false,
+        queuedTranscript: 'Save this locally.',
+      ),
+      QueuedTranscriptTapAction.save,
+    );
+    expect(
+      resolveQueuedTranscriptTapAction(
+        gestureType: 0,
+        memoActive: false,
+        queuedTranscript: 'Please, hey Flux, run the checks.',
+      ),
+      QueuedTranscriptTapAction.save,
+    );
+  });
+
+  test('queued transcript tap does not override active Memo', () {
+    expect(
+      resolveQueuedTranscriptTapAction(
+        gestureType: 0,
+        memoActive: true,
+        queuedTranscript: 'Hey Flux, run the checks.',
+      ),
+      QueuedTranscriptTapAction.none,
+    );
+  });
+
+  test('active agent-detail speech consumes tap instead of dismissing', () {
+    expect(
+      resolveAgentDetailTranscriptTapAction(
+        gestureType: 0,
+        speechState: G2AgentDetailSpeechState.listening,
+      ),
+      AgentDetailTranscriptTapAction.finishSpeech,
+    );
+    expect(
+      resolveAgentDetailTranscriptTapAction(
+        gestureType: 0,
+        speechState: G2AgentDetailSpeechState.sending,
+      ),
+      AgentDetailTranscriptTapAction.prioritizeCorrection,
+    );
+    for (final state in <G2AgentDetailSpeechState?>[
+      null,
+      G2AgentDetailSpeechState.sent,
+      G2AgentDetailSpeechState.saved,
+    ]) {
+      expect(
+        resolveAgentDetailTranscriptTapAction(
+          gestureType: 0,
+          speechState: state,
+        ),
+        AgentDetailTranscriptTapAction.none,
+      );
+    }
+  });
+
+  test('only a Gemma-corrected final transcript can route', () {
+    expect(
+      finalTranscriptCanRoute(
+        const FinalTranscriptDelivery(
+          segmentId: 'segment-1',
+          rawTranscript: 'pull the ladies changes',
+          transcript: 'Pull the latest changes.',
+          isCorrected: true,
+        ),
+      ),
+      isTrue,
+    );
+    expect(
+      finalTranscriptCanRoute(
+        const FinalTranscriptDelivery(
+          segmentId: 'segment-1',
+          rawTranscript: 'pull the ladies changes',
+          transcript: 'pull the ladies changes',
+          isCorrected: false,
+        ),
+      ),
+      isFalse,
+    );
   });
 
   test('history swipes follow the G2 viewport direction', () {

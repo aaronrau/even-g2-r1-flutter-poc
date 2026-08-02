@@ -78,11 +78,15 @@ void main() {
     expect(second.text, 'Repeat this instruction.\nRepeat this instruction.');
   });
 
-  test('detects the complete wake word case-insensitively', () {
-    expect(transcriptContainsWakeWord('HEY Flux, check progress.'), isTrue);
-    expect(transcriptContainsWakeWord('Please, Hey Memo, take this.'), isTrue);
-    expect(transcriptContainsWakeWord('hey'), isTrue);
-    expect(transcriptContainsWakeWord('they should continue'), isFalse);
-    expect(transcriptContainsWakeWord('a heyday story'), isFalse);
+  test('requires the complete wake word at the beginning', () {
+    expect(transcriptBeginsWithWakeWord('HEY Flux, check progress.'), isTrue);
+    expect(transcriptBeginsWithWakeWord('  hey, Memo, take this.'), isTrue);
+    expect(transcriptBeginsWithWakeWord('hey'), isTrue);
+    expect(
+      transcriptBeginsWithWakeWord('Please, Hey Memo, take this.'),
+      isFalse,
+    );
+    expect(transcriptBeginsWithWakeWord('they should continue'), isFalse);
+    expect(transcriptBeginsWithWakeWord('a heyday story'), isFalse);
   });
 }
