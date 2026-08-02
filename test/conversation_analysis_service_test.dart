@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:even_g2_r1_poc/src/audio/conversation_analysis_preferences.dart';
 import 'package:even_g2_r1_poc/src/audio/conversation_analysis_service.dart';
+import 'package:even_g2_r1_poc/src/audio/conversation_model_store.dart';
 import 'package:even_g2_r1_poc/src/audio/conversation_models.dart';
 import 'package:even_g2_r1_poc/src/audio/conversation_record_store.dart';
 import 'package:even_g2_r1_poc/src/audio/shared_audio_export_store.dart';
@@ -10,7 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   test(
-    'loads conversation models only after a durable WAV is queued',
+    'starts its independent models only after a durable WAV is queued',
     () async {
       SharedPreferences.setMockInitialValues(<String, Object>{
         conversationAnalysisEnabledPreferenceKey: true,
@@ -23,6 +25,9 @@ void main() {
         onChanged: () {},
         sharedAudioExportStore: SharedAudioExportStore(isAndroid: false),
         recordStore: ConversationRecordStore(
+          supportDirectory: () async => temporary,
+        ),
+        modelStore: ConversationModelStore(
           supportDirectory: () async => temporary,
         ),
       );
@@ -38,15 +43,15 @@ void main() {
       expect(service.isReady, isFalse);
       expect(service.error, isNull);
 
-      await service.pauseForCorrection();
-      expect(service.state, 'paused_for_correction');
       final queuedWav = File('${temporary.path}/selected-agent.wav')
         ..writeAsBytesSync(const <int>[0, 0]);
       service.acceptFinalizedSegment('selected-agent-segment', queuedWav.path);
-      await Future<void>.delayed(Duration.zero);
       expect(service.pendingCount, 1);
-      expect(service.isStarting, isFalse);
+      expect(service.isStarting, isTrue);
       expect(service.isReady, isFalse);
+
+      await _waitUntil(() => !service.isStarting);
+      expect(service.pendingCount, 1, reason: 'The durable job is preserved.');
     },
   );
 
@@ -88,6 +93,9 @@ void main() {
         onChanged: () {},
         sharedAudioExportStore: SharedAudioExportStore(isAndroid: false),
         recordStore: store,
+        modelStore: ConversationModelStore(
+          supportDirectory: () async => temporary,
+        ),
         clock: () => now,
       );
       addTearDown(() async {
@@ -103,7 +111,6 @@ void main() {
       // Enabling directly keeps this unit test independent from native model
       // startup while exercising the same reset and handoff state machine.
       service.enabled = true;
-      await service.pauseForCorrection();
       await service.setSpeakerMatchThreshold(0.72);
       expect(service.speakerMatchThreshold, 0.72);
       await service.resetSpeakerIdentification();
@@ -138,7 +145,7 @@ void main() {
       );
       expect(service.pendingCount, 1);
       expect(service.isEnrollmentPending, isTrue);
-      expect(service.state, 'enrolling');
+      expect(service.isStarting, isTrue);
 
       service.acceptFinalizedSegment(
         '${resetMicros + 2}-too-soon',
@@ -146,6 +153,7 @@ void main() {
       );
       expect(service.pendingCount, 1);
       expect(logs, contains(contains('sample_analysis_in_progress')));
+      await _waitUntil(() => !service.isStarting);
     },
   );
 
@@ -268,4 +276,14 @@ void main() {
       expect(logs, contains(contains('state=history_reconciled')));
     },
   );
+}
+
+Future<void> _waitUntil(bool Function() condition) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 1));
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('Timed out waiting for the synthetic worker.');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
 }

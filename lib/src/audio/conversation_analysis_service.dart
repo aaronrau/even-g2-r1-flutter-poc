@@ -20,8 +20,12 @@ typedef ConversationServiceLog =
 ///
 /// No live LC3 or PCM buffer is copied. The primary capture/VAD/STT path closes
 /// the WAV first, then offers only its path to this service. This service owns a
-/// separate isolate and recognizer, and none of its futures are awaited by the
-/// primary transcription or routing path.
+/// separate durable queue, isolate, diarizer, and Parakeet recognizer. It is a
+/// strictly parallel consumer: none of its startup, inference, persistence,
+/// cleanup, memory-pressure, or recovery futures may be awaited by capture,
+/// primary transcription, Gemma correction, glasses output, or agent routing.
+/// Running both Parakeet instances concurrently is intentional. Never add a
+/// correction-driven pause or teardown dependency between these paths.
 final class ConversationAnalysisService {
   ConversationAnalysisService({
     required this.log,
@@ -65,7 +69,6 @@ final class ConversationAnalysisService {
   int? _minimumEnrollmentSegmentMicros;
   Future<void>? _memoryPressureRelease;
   Timer? _idleWorkerReleaseTimer;
-  bool _pausedForCorrection = false;
   double _speakerMatchThreshold = defaultSpeakerSignatureMatchThreshold;
 
   bool enabled = false;
@@ -157,7 +160,6 @@ final class ConversationAnalysisService {
     if (!value) {
       _idleWorkerReleaseTimer?.cancel();
       _idleWorkerReleaseTimer = null;
-      _pausedForCorrection = false;
       state = 'disabled';
       _enrollmentRequested = false;
       _minimumEnrollmentSegmentMicros = null;
@@ -316,7 +318,7 @@ final class ConversationAnalysisService {
     );
     state = enrollment ? 'enrolling' : 'queued';
     unawaited(_persistJobs());
-    if (!_pausedForCorrection && _supervisor == null) {
+    if (_supervisor == null && _memoryPressureRelease == null) {
       unawaited(_start());
     } else {
       _dispatch();
@@ -330,20 +332,12 @@ final class ConversationAnalysisService {
       if (settled != null) {
         await settled.future;
       }
-      if (!_disposed &&
-          enabled &&
-          !isReady &&
-          !_pausedForCorrection &&
-          _jobs.isNotEmpty) {
+      if (!_disposed && enabled && !isReady && _jobs.isNotEmpty) {
         await _start();
       }
       return;
     }
-    if (_disposed ||
-        !enabled ||
-        isReady ||
-        _pausedForCorrection ||
-        _jobs.isEmpty) {
+    if (_disposed || !enabled || isReady || _jobs.isEmpty) {
       return;
     }
     _idleWorkerReleaseTimer?.cancel();
@@ -360,7 +354,7 @@ final class ConversationAnalysisService {
         definition: parakeet110mModel,
         onStatus: (message) => _status(message),
       );
-      if (_disposed || !enabled || _pausedForCorrection || _jobs.isEmpty) {
+      if (_disposed || !enabled || _jobs.isEmpty) {
         return;
       }
       final supervisor = ConversationAnalysisSupervisor(
@@ -374,7 +368,7 @@ final class ConversationAnalysisService {
       );
       _supervisor = supervisor;
       await supervisor.start();
-      if (_disposed || !enabled || _pausedForCorrection || _jobs.isEmpty) {
+      if (_disposed || !enabled || _jobs.isEmpty) {
         if (identical(_supervisor, supervisor)) {
           _supervisor = null;
         }
@@ -413,7 +407,6 @@ final class ConversationAnalysisService {
         _jobs.isEmpty ||
         supervisor == null ||
         !supervisor.isReady ||
-        _pausedForCorrection ||
         _disposed) {
       return;
     }
@@ -633,40 +626,6 @@ final class ConversationAnalysisService {
     await _supervisor?.restartForTest();
   }
 
-  Future<void> pauseForCorrection() async {
-    if (!enabled || _disposed) {
-      return;
-    }
-    _pausedForCorrection = true;
-    _idleWorkerReleaseTimer?.cancel();
-    _idleWorkerReleaseTimer = null;
-    await _releaseWorker(reason: 'correction_priority');
-    if (_disposed) {
-      return;
-    }
-    state = 'paused_for_correction';
-    log(
-      'Conversation',
-      '[WorkBench][Conversation] state=$state '
-          'capture=unaffected transcription=unaffected',
-    );
-    onChanged();
-  }
-
-  Future<void> resumeAfterCorrection() async {
-    _pausedForCorrection = false;
-    await _memoryPressureRelease;
-    if (!enabled || _disposed) {
-      return;
-    }
-    if (_jobs.isNotEmpty) {
-      await _start();
-      return;
-    }
-    state = _idleState;
-    onChanged();
-  }
-
   Future<void> handleMemoryPressure() async {
     if (!enabled || _disposed) {
       return;
@@ -677,9 +636,7 @@ final class ConversationAnalysisService {
     if (_disposed) {
       return;
     }
-    state = _pausedForCorrection
-        ? 'paused_for_correction'
-        : 'paused_for_memory';
+    state = 'paused_for_memory';
     log(
       'Conversation',
       '[WorkBench][Conversation] state=$state '
@@ -690,7 +647,7 @@ final class ConversationAnalysisService {
 
   Future<void> resumeAfterMemoryPressure() async {
     await _memoryPressureRelease;
-    if (!enabled || _disposed || _pausedForCorrection) {
+    if (!enabled || _disposed) {
       return;
     }
     if (_jobs.isNotEmpty && _supervisor == null) {
@@ -707,11 +664,7 @@ final class ConversationAnalysisService {
   void _scheduleIdleWorkerRelease() {
     _idleWorkerReleaseTimer?.cancel();
     _idleWorkerReleaseTimer = null;
-    if (_disposed ||
-        _pausedForCorrection ||
-        _jobActive ||
-        _jobs.isNotEmpty ||
-        _supervisor == null) {
+    if (_disposed || _jobActive || _jobs.isNotEmpty || _supervisor == null) {
       return;
     }
     _idleWorkerReleaseTimer = Timer(_idleWorkerReleaseDelay, () {
@@ -721,11 +674,11 @@ final class ConversationAnalysisService {
   }
 
   Future<void> _releaseIdleWorker() async {
-    if (_disposed || _pausedForCorrection || _jobActive || _jobs.isNotEmpty) {
+    if (_disposed || _jobActive || _jobs.isNotEmpty) {
       return;
     }
     await _releaseWorker(reason: 'idle');
-    if (_disposed || _pausedForCorrection || _jobs.isNotEmpty) {
+    if (_disposed || _jobs.isNotEmpty) {
       return;
     }
     state = _idleState;

@@ -204,6 +204,36 @@ never block capture, VAD, STT, or access to the original transcript.
   lost raw files, no capture gaps, an eventually empty correction queue, and
   recovery after killing only the Gemma process.
 
+## Conversation analysis isolation
+
+Treat speaker diarization and its conversation transcript as an optional,
+strictly parallel consumer of an already durable speech WAV. It must never be
+a prerequisite, pause point, resource-release gate, or awaited dependency of
+capture, VAD, primary STT, Gemma correction, glasses updates, or agent
+WebSocket delivery.
+
+- Dispatch the primary transcription worker first. Schedule the conversation
+  handoff independently, and contain every handoff, startup, inference,
+  persistence, export, shutdown, and recovery failure inside the conversation
+  path.
+- Keep conversation analysis on its own durable queue, isolate, diarization
+  models, and Parakeet recognizer. Running a second Parakeet instance in
+  parallel with the primary recognizer is explicitly allowed and preferred to
+  coupling the paths.
+- Never pause or tear down conversation analysis before Gemma correction, and
+  never make correction or agent delivery await conversation worker startup,
+  inference, cleanup, memory-pressure release, or restart.
+- Android memory pressure may release the optional conversation worker, but
+  that release and any later restart remain asynchronous to the primary path.
+  The durable conversation job must remain queued while its worker is absent.
+- Preserve the original WAV and primary transcript regardless of conversation
+  analysis availability or outcome. A conversation failure must not change
+  the primary transcript, correction eligibility, routing, or delivery state.
+- Keep regression coverage proving primary STT dispatch is immediate even when
+  conversation dispatch is slow or fails. During physical validation, compare
+  timestamped primary and conversation worker markers and reject any build in
+  which primary completion waits for conversation readiness or completion.
+
 ## Voice WebSocket bridge
 
 Treat the local agent bridge as an optional downstream consumer of the durable

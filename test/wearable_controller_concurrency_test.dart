@@ -8,6 +8,35 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test(
+    'primary STT dispatch does not await conversation analysis handoff',
+    () async {
+      var primaryDispatched = false;
+      var conversationDispatched = false;
+      Object? conversationError;
+
+      dispatchFinalizedSpeechConsumers(
+        dispatchPrimaryTranscription: () => primaryDispatched = true,
+        dispatchConversationAnalysis: () {
+          conversationDispatched = true;
+          throw StateError('synthetic independent worker failure');
+        },
+        onConversationDispatchError: (error) => conversationError = error,
+      );
+
+      expect(primaryDispatched, isTrue);
+      expect(
+        conversationDispatched,
+        isFalse,
+        reason: 'The optional path must be scheduled independently.',
+      );
+
+      await Future<void>.delayed(Duration.zero);
+      expect(conversationDispatched, isTrue);
+      expect(conversationError, isA<StateError>());
+    },
+  );
+
+  test(
     'coalesces duplicate display work while the first render is active',
     () async {
       final queue = CoalescedDisplayQueue();

@@ -285,6 +285,14 @@ separate durable queue and output files. Model, worker, transcription, speaker
 matching, export, and database failures leave capture, VAD, primary STT, Gemma,
 BLE, and the voice WebSocket unchanged.
 
+Primary STT is dispatched before the conversation handoff, which is scheduled
+on an independent event path and runs in its own isolate. The app intentionally
+allows the primary recognizer and conversation Parakeet 110M recognizer to be
+loaded and executing at the same time. Gemma correction never waits for
+diarization analysis or native worker teardown; Android memory pressure may
+release only the optional worker without joining that cleanup to the primary
+pipeline.
+
 See [Independent conversation analysis](CONVERSATION_ANALYSIS.md) for the
 enrollment, matching, storage, and validation contracts.
 

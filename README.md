@@ -114,8 +114,10 @@ expose for a true locked Hub mode.
   CPU speaker models and Parakeet 110M recognizer. Home's **Conversation** tab
   is separate from Messages; it reads only speaker turns from an app-private
   SQLite index and displays aligned turns with grayscale speaker markers. This
-  optional path cannot delay or route through the ordinary STT, Gemma, glasses,
-  or agent WebSocket path.
+  optional path has its own queue and may run a second Parakeet instance in
+  parallel. Its startup, diarization, transcription, shutdown, and persistence
+  cannot delay or route through the ordinary STT, Gemma, glasses, or agent
+  WebSocket path.
 - Runs Gemma 4 E4B correction through pinned LiteRT-LM in a dedicated Android
   process after Parakeet commits the raw transcript. A complete,
   case-insensitive leading `hey` gates the correction queue, so ambient speech

@@ -31,6 +31,29 @@ typedef ExplicitCorrectionEligibilityProvider = bool Function(String segmentId);
 typedef FinalizedSpeechSegmentHandler =
     void Function(String segmentId, String wavPath);
 
+/// Fans a durable speech WAV out to two strictly independent paths.
+///
+/// Primary STT must always be dispatched first. Conversation analysis is an
+/// optional parallel consumer and must never become an awaited dependency of
+/// primary STT, correction, or delivery, even when its handoff is slow or
+/// fails.
+void dispatchFinalizedSpeechConsumers({
+  required void Function() dispatchPrimaryTranscription,
+  required void Function(Object error) onConversationDispatchError,
+  void Function()? dispatchConversationAnalysis,
+}) {
+  dispatchPrimaryTranscription();
+  final conversation = dispatchConversationAnalysis;
+  if (conversation == null) {
+    return;
+  }
+  unawaited(
+    Future<void>(() => conversation()).catchError((Object error) {
+      onConversationDispatchError(error);
+    }),
+  );
+}
+
 final class FinalTranscriptDelivery {
   const FinalTranscriptDelivery({
     required this.segmentId,
@@ -430,18 +453,22 @@ final class AudioPipelineCoordinator {
     unawaited(
       _exportSharedFiles(<String>[wavPath], reason: 'audio', segmentId: id),
     );
-    _transcription?.transcribe(id, wavPath);
-    try {
-      onFinalizedSpeechSegment?.call(id, wavPath);
-    } catch (error) {
-      log(
-        'Conversation',
-        '[WorkBench][Conversation] state=handoff_failed segment=$id '
-            'capture=unaffected transcription=unaffected '
-            'error=${_oneLine(error)}',
-        isError: true,
-      );
-    }
+    dispatchFinalizedSpeechConsumers(
+      dispatchPrimaryTranscription: () =>
+          _transcription?.transcribe(id, wavPath),
+      dispatchConversationAnalysis: onFinalizedSpeechSegment == null
+          ? null
+          : () => onFinalizedSpeechSegment!(id, wavPath),
+      onConversationDispatchError: (error) {
+        log(
+          'Conversation',
+          '[WorkBench][Conversation] state=handoff_failed segment=$id '
+              'capture=unaffected transcription=unaffected '
+              'error=${_oneLine(error)}',
+          isError: true,
+        );
+      },
+    );
   }
 
   void _onTranscript(TranscriptionResult result) {

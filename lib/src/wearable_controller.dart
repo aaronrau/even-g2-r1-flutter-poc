@@ -253,8 +253,6 @@ final class WearableController extends ChangeNotifier
   final LinkedHashMap<String, _SelectedAgentSpeechRoute>
   _selectedAgentSpeechRoutes =
       LinkedHashMap<String, _SelectedAgentSpeechRoute>();
-  final Set<String> _conversationAnalysisCorrectionPauses = <String>{};
-  Future<void>? _conversationAnalysisCorrectionPause;
   Timer? _agentHistoryWaitTimer;
   bool _agentExchangeStoreReady = false;
   bool _agentHistoryOpening = false;
@@ -1081,9 +1079,6 @@ final class WearableController extends ChangeNotifier
   }
 
   void _handleFinalizedSpeechSegment(String segmentId, String wavPath) {
-    if (_selectedAgentSpeechRoutes.containsKey(segmentId)) {
-      unawaited(_pauseConversationAnalysisForCorrection(segmentId));
-    }
     _conversationAnalysis.acceptFinalizedSegment(segmentId, wavPath);
   }
 
@@ -1470,13 +1465,8 @@ final class WearableController extends ChangeNotifier
     );
   }
 
-  Future<void> _handleFinalTranscript(FinalTranscriptDelivery delivery) async {
-    try {
-      await _handleFinalTranscriptDelivery(delivery);
-    } finally {
-      await _resumeConversationAnalysisAfterCorrection(delivery.segmentId);
-    }
-  }
+  Future<void> _handleFinalTranscript(FinalTranscriptDelivery delivery) =>
+      _handleFinalTranscriptDelivery(delivery);
 
   Future<void> _handleFinalTranscriptDelivery(
     FinalTranscriptDelivery delivery,
@@ -1627,13 +1617,6 @@ final class WearableController extends ChangeNotifier
       );
       return;
     }
-    final correctionEligible = isLiveTranscriptCorrectionEligible(
-      transcript,
-      explicitlyTargeted: selectedRoute != null,
-    );
-    if (correctionEligible) {
-      await _pauseConversationAnalysisForCorrection(segmentId);
-    }
     if (selectedRoute != null) {
       addLog(
         'WebSocket',
@@ -1652,59 +1635,6 @@ final class WearableController extends ChangeNotifier
       segmentId: segmentId,
       transcript: transcript,
     );
-  }
-
-  Future<void> _pauseConversationAnalysisForCorrection(String segmentId) async {
-    final added = _conversationAnalysisCorrectionPauses.add(segmentId);
-    final activePause = _conversationAnalysisCorrectionPause;
-    if (!added || _conversationAnalysisCorrectionPauses.length > 1) {
-      if (activePause != null) {
-        await activePause;
-      }
-      return;
-    }
-    final operation = _performConversationAnalysisCorrectionPause();
-    _conversationAnalysisCorrectionPause = operation;
-    try {
-      await operation;
-    } finally {
-      if (identical(_conversationAnalysisCorrectionPause, operation)) {
-        _conversationAnalysisCorrectionPause = null;
-      }
-    }
-  }
-
-  Future<void> _performConversationAnalysisCorrectionPause() async {
-    try {
-      await _conversationAnalysis.pauseForCorrection();
-    } on Object {
-      addLog(
-        'Conversation',
-        '[WorkBench][Conversation] state=correction_pause_failed '
-            'capture=unaffected transcription=unaffected',
-        isError: true,
-      );
-    }
-  }
-
-  Future<void> _resumeConversationAnalysisAfterCorrection(
-    String segmentId,
-  ) async {
-    if (!_conversationAnalysisCorrectionPauses.remove(segmentId) ||
-        _conversationAnalysisCorrectionPauses.isNotEmpty) {
-      return;
-    }
-    try {
-      await _conversationAnalysisCorrectionPause;
-      await _conversationAnalysis.resumeAfterCorrection();
-    } on Object {
-      addLog(
-        'Conversation',
-        '[WorkBench][Conversation] state=correction_resume_failed '
-            'capture=unaffected transcription=unaffected',
-        isError: true,
-      );
-    }
   }
 
   Future<void> _handleInboundWebSocketEvent(

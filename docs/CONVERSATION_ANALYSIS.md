@@ -36,11 +36,14 @@ unchanged.
 The native conversation worker is loaded on demand when a durable WAV is
 queued, remains warm for up to 30 seconds between nearby turns, and releases
 its independent Parakeet and diarization allocations after the queue drains.
-Before a live Gemma-routed command starts correction, conversation analysis
-releases its worker and leaves its current WAV job in the durable queue. It
-resumes serial analysis after correction completes. This avoids holding both
-large native model stacks during the latency-sensitive send while preserving
-the original WAV, speaker enrollment, and conversation history work.
+It never pauses, releases, or waits for its worker on behalf of Gemma. The
+primary STT dispatch happens first, while the conversation handoff is scheduled
+independently; diarization startup, analysis, transcription, native cleanup,
+storage, and export cannot delay correction or agent delivery. The main STT
+worker and conversation worker may therefore keep two separate Parakeet
+instances active and run them in parallel. Android memory-pressure handling
+may release the optional worker independently, but the primary path never
+awaits that release.
 
 ## Enrollment and matching
 
@@ -157,6 +160,8 @@ Automated acceptance includes:
 - bounded legacy-profile compaction and reset cutover to the next newly started
   speech segment;
 - atomic profile, pending-job, and conversation-record recovery;
+- primary STT dispatch completes without awaiting conversation handoff, and a
+  conversation dispatch failure remains isolated from the primary path;
 - SQLite method-channel indexing and ordered conversation reads;
 - enrollment, disabled, error, paging, 48dp target, and speaker-turn UI states;
 - the complete existing Flutter test suite;
