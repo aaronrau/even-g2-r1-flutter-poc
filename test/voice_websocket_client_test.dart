@@ -642,6 +642,83 @@ void main() {
     expect(client.statusText, 'Connected · 1 server agents');
   });
 
+  test('selected-agent delivery bypasses an ordinary busy queue', () async {
+    const queuedMessage = 'wait in the ordinary outbound queue';
+    const selectedMessage = 'send directly to the selected agent';
+    busyResponsesRemaining[queuedMessage] = 1;
+    final client = await _configuredClient(
+      temp: temp,
+      serverPort: server.port,
+      busyRetryDelays: const <Duration>[Duration(minutes: 1)],
+    );
+    addTearDown(client.close);
+
+    final queued = client.sendAgentMessage(
+      agent: 'Agent One',
+      message: queuedMessage,
+    );
+    await _waitUntil(() => client.statusText.contains('agent busy'));
+
+    final selected = await client
+        .sendAgentMessageWithResult(
+          agent: 'Agent One',
+          message: selectedMessage,
+          deliveryMode: VoiceWebSocketDeliveryMode.immediate,
+        )
+        .timeout(const Duration(seconds: 1));
+
+    expect(selected.sent, isTrue);
+    expect(selected.requestId, isNotEmpty);
+    expect(client.queuedMessageCount, 1);
+    expect(
+      received
+          .where((payload) => payload['type'] == 'message.send')
+          .map((payload) => payload['message']),
+      <String>[queuedMessage, selectedMessage],
+    );
+
+    serverSockets.single.add(
+      jsonEncode(<String, Object>{
+        'type': 'message.completed',
+        'event_id': 10,
+        'agent': 'Agent One',
+        'payload': <String, Object>{
+          'summary': 'The selected-agent fixture completed.',
+        },
+      }),
+    );
+
+    expect(await queued.timeout(const Duration(seconds: 1)), isTrue);
+    expect(client.queuedMessageCount, 0);
+  });
+
+  test('selected-agent busy result never enters the ordinary queue', () async {
+    const message = 'do not queue the selected-agent fixture';
+    alwaysBusyMessages.add(message);
+    final client = await _configuredClient(
+      temp: temp,
+      serverPort: server.port,
+      busyRetryDelays: const <Duration>[Duration(minutes: 1)],
+    );
+    addTearDown(client.close);
+
+    final result = await client
+        .sendAgentMessageWithResult(
+          agent: 'Agent One',
+          message: message,
+          deliveryMode: VoiceWebSocketDeliveryMode.immediate,
+        )
+        .timeout(const Duration(seconds: 1));
+
+    expect(result.sent, isFalse);
+    expect(result.requestId, isNull);
+    expect(client.queuedMessageCount, 0);
+    expect(
+      received.where((payload) => payload['type'] == 'message.send'),
+      hasLength(1),
+    );
+  });
+
   test('a completion event wakes the busy queue before its backoff', () async {
     const message = 'run after the current fixture completes';
     busyResponsesRemaining[message] = 1;

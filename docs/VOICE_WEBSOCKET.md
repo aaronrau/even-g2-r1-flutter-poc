@@ -188,6 +188,14 @@ BLE updates retain their ordered, coalesced queue, but the app never waits for
 `Sending:` or terminal text to finish rendering before queuing Gemma, sending
 the corrected command, or saving an acknowledged message.
 
+After selected-agent Gemma correction completes, the modern client writes that
+command directly to the ready WebSocket with its own correlated request ID. It
+does not enter, wait behind, or retry through the ordinary outbound FIFO or its
+`agent_busy` backoff. The selected detail still changes to `Sent:` only after
+the matching positive `message.accepted` response; rejection, busy, timeout, or
+connection loss resolves it to `Saved:`. Wake-word and other unselected routes
+retain the bounded FIFO, reconnect retry, and busy backoff behavior.
+
 The client tracks the latest non-negative top-level `event_id`. After an
 unexpected disconnect, it reconnects with bounded backoff, waits for the next
 `connection.ready`, then sends:

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:even_g2_r1_poc/src/audio/audio_pipeline_coordinator.dart';
 import 'package:even_g2_r1_poc/src/wearable_controller.dart';
 import 'package:even_g2_r1_poc/src/websocket/g2_agent_history_state.dart';
+import 'package:even_g2_r1_poc/src/websocket/voice_websocket_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -199,6 +200,17 @@ void main() {
         ),
       ),
       isFalse,
+    );
+  });
+
+  test('selected-agent delivery bypasses the ordinary outbound queue', () {
+    expect(
+      deliveryModeForAgentRoute(explicitlySelected: true),
+      VoiceWebSocketDeliveryMode.immediate,
+    );
+    expect(
+      deliveryModeForAgentRoute(explicitlySelected: false),
+      VoiceWebSocketDeliveryMode.queued,
     );
   });
 

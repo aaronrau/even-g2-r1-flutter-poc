@@ -321,6 +321,10 @@ While the selector owns the display:
 - `Listening…`, `Sending:`, and terminal detail renders enter the coalesced
   display queue without blocking Gemma correction, WebSocket delivery, or
   acknowledged-message persistence;
+- a corrected transcript bound to the selected agent bypasses the ordinary
+  outbound FIFO and its busy backoff, while unselected routes retain that
+  queue; the selected detail still waits for its own positive acknowledgement
+  before changing from `Sending:` to `Sent:`;
 - unrelated inbound events are persisted and deferred from the glasses;
 - every BLE write remains high priority and individually time-bounded;
 - dismiss sends the redundant private-text clear before restoring the audio
@@ -388,11 +392,15 @@ gesture-controlled ownership.
   detail; terminal tap retains ordinary dismissal;
 - changing selection after speech starts cannot change that segment's target;
 - removing the snapshotted agent from configuration prevents the send;
+- selected-agent delivery bypasses an existing busy outbound item, while the
+  ordinary item remains queued for its configured retry;
 
 ### Protocol and persistence tests
 
 - only positive modern acknowledgement updates the latest agent command;
 - busy retry preserves the final accepted request ID;
+- selected-agent busy, rejection, timeout, and connection loss return a saved
+  result without entering the ordinary outbound queue;
 - rejection and timeout retain the previous successful command;
 - matching progress/completion attaches to the correct exchange;
 - unrelated and uncorrelated events remain durable but unattached;

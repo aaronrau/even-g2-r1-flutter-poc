@@ -154,6 +154,13 @@ Future<void> completeAgentRouteConsumers({
 bool finalTranscriptCanRoute(FinalTranscriptDelivery delivery) =>
     delivery.isCorrected;
 
+@visibleForTesting
+VoiceWebSocketDeliveryMode deliveryModeForAgentRoute({
+  required bool explicitlySelected,
+}) => explicitlySelected
+    ? VoiceWebSocketDeliveryMode.immediate
+    : VoiceWebSocketDeliveryMode.queued;
+
 final class WearableController extends ChangeNotifier
     with WidgetsBindingObserver {
   static const int _maximumSelectedAgentSpeechRoutes = 32;
@@ -1538,6 +1545,9 @@ final class WearableController extends ChangeNotifier
     final sendResult = await _voiceWebSocket.sendAgentMessageWithResult(
       agent: route.agent,
       message: route.message,
+      deliveryMode: deliveryModeForAgentRoute(
+        explicitlySelected: selectedRoute != null,
+      ),
     );
     final sent = sendResult.sent;
     await completeAgentRouteConsumers(

@@ -20,6 +20,8 @@ enum VoiceWebSocketSummaryRequestOutcome { sent, noSentAgent, unavailable }
 
 enum VoiceWebSocketInboundKind { message, progress, completed, summary }
 
+enum VoiceWebSocketDeliveryMode { queued, immediate }
+
 typedef VoiceWebSocketConnector =
     Future<WebSocket> Function(Uri uri, Map<String, Object> headers);
 
@@ -396,6 +398,7 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   Future<VoiceWebSocketSendResult> sendAgentMessageWithResult({
     required String agent,
     required String message,
+    VoiceWebSocketDeliveryMode deliveryMode = VoiceWebSocketDeliveryMode.queued,
   }) async {
     final canonicalAgent = config.agentNames.firstWhere(
       (name) => name.toLowerCase() == agent.trim().toLowerCase(),
@@ -412,6 +415,12 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     }
 
     if (!config.useLegacyMessageShape) {
+      if (deliveryMode == VoiceWebSocketDeliveryMode.immediate) {
+        return _sendImmediateModernAgentMessage(
+          agent: canonicalAgent,
+          message: trimmedMessage,
+        );
+      }
       if (_disposed ||
           _maximumQueuedMessages <= 0 ||
           _outboundQueue.length >= _maximumQueuedMessages) {
@@ -475,6 +484,39 @@ final class VoiceWebSocketClient extends ChangeNotifier {
         legacy: true,
       );
     }
+  }
+
+  Future<VoiceWebSocketSendResult> _sendImmediateModernAgentMessage({
+    required String agent,
+    required String message,
+  }) async {
+    if (_disposed) {
+      return VoiceWebSocketSendResult(
+        sent: false,
+        agent: agent,
+        message: message,
+        legacy: false,
+      );
+    }
+    final attempt = await _sendModernAgentMessage(
+      _QueuedAgentMessage(
+        agent: agent,
+        message: message,
+        enqueuedAt: DateTime.now(),
+      ),
+      maximumAttempts: 1,
+    );
+    final sent = attempt.outcome == _AcknowledgementOutcome.accepted;
+    if (sent) {
+      _lastSentAgent = agent;
+    }
+    return VoiceWebSocketSendResult(
+      sent: sent,
+      agent: agent,
+      message: message,
+      legacy: false,
+      requestId: sent ? attempt.requestId : null,
+    );
   }
 
   Future<VoiceWebSocketSummaryRequestOutcome>
@@ -554,10 +596,11 @@ final class VoiceWebSocketClient extends ChangeNotifier {
   }
 
   Future<_ModernSendAttempt> _sendModernAgentMessage(
-    _QueuedAgentMessage queued,
-  ) async {
+    _QueuedAgentMessage queued, {
+    int maximumAttempts = 2,
+  }) async {
     final requestId = _newRequestId();
-    for (var attempt = 0; attempt < 2; attempt++) {
+    for (var attempt = 0; attempt < maximumAttempts; attempt++) {
       if (attempt > 0 ||
           _socket == null ||
           _socket!.readyState != WebSocket.open ||
