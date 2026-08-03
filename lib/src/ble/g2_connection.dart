@@ -81,6 +81,9 @@ final class G2Connection {
   bool _fullPageTextIndicatorActive = false;
   int _fullPageTextPageIndex = 0;
   int _fullPageTextPageCount = 1;
+  int _fullPageTextBorderWidth = G2Protocol.fullPageTextBorderWidth;
+  int _fullPageTextBorderColor = G2Protocol.fullPageTextBorderColor;
+  int _fullPageTextPaddingLength = G2Protocol.fullPageTextPaddingLength;
   String _memoDisplayNote = '';
   String _memoDisplayStatus = '';
   List<String> _memoDisplayPages = const <String>[];
@@ -588,6 +591,9 @@ final class G2Connection {
     bool showPageIndicator = false,
     int pageIndex = 0,
     int pageCount = 1,
+    int borderWidth = G2Protocol.fullPageTextBorderWidth,
+    int borderColor = G2Protocol.fullPageTextBorderColor,
+    int paddingLength = G2Protocol.fullPageTextPaddingLength,
   }) async {
     _requireConnected();
     if (_memoDisplayActive) {
@@ -609,6 +615,9 @@ final class G2Connection {
     _visibleGesturePageLabel = null;
     _fullPageTextPageCount = pageCount < 1 ? 1 : pageCount;
     _fullPageTextPageIndex = pageIndex.clamp(0, _fullPageTextPageCount - 1);
+    _fullPageTextBorderWidth = borderWidth.clamp(0, 32);
+    _fullPageTextBorderColor = borderColor.clamp(0, 15);
+    _fullPageTextPaddingLength = paddingLength.clamp(0, 32);
     // A single page does not scroll, and its 288 px full-height thumb would
     // exceed the G2 image-container maximum height of 144 px.
     _fullPageTextIndicatorActive =
@@ -628,6 +637,9 @@ final class G2Connection {
           showPageIndicator: _fullPageTextIndicatorActive,
           pageIndex: _fullPageTextPageIndex,
           pageCount: _fullPageTextPageCount,
+          borderWidth: _fullPageTextBorderWidth,
+          borderColor: _fullPageTextBorderColor,
+          paddingLength: _fullPageTextPaddingLength,
         ),
         reserveFlag: true,
         priority: AsyncWritePriority.high,
@@ -652,6 +664,9 @@ final class G2Connection {
     _fullPageTextIndicatorActive = false;
     _fullPageTextPageIndex = 0;
     _fullPageTextPageCount = 1;
+    _fullPageTextBorderWidth = G2Protocol.fullPageTextBorderWidth;
+    _fullPageTextBorderColor = G2Protocol.fullPageTextBorderColor;
+    _fullPageTextPaddingLength = G2Protocol.fullPageTextPaddingLength;
     _lastPageContent = '';
     if (!isConnected || terminalModeEnabled) {
       _pageCreated = false;
@@ -671,6 +686,9 @@ final class G2Connection {
           showPageIndicator: _fullPageTextIndicatorActive,
           pageIndex: _fullPageTextPageIndex,
           pageCount: _fullPageTextPageCount,
+          borderWidth: _fullPageTextBorderWidth,
+          borderColor: _fullPageTextBorderColor,
+          paddingLength: _fullPageTextPaddingLength,
         ),
         reserveFlag: true,
         priority: AsyncWritePriority.high,
@@ -684,6 +702,9 @@ final class G2Connection {
         showPageIndicator: _fullPageTextIndicatorActive,
         pageIndex: _fullPageTextPageIndex,
         pageCount: _fullPageTextPageCount,
+        borderWidth: _fullPageTextBorderWidth,
+        borderColor: _fullPageTextBorderColor,
+        paddingLength: _fullPageTextPaddingLength,
       ),
       reserveFlag: true,
       priority: AsyncWritePriority.high,
@@ -923,6 +944,9 @@ final class G2Connection {
           showPageIndicator: true,
           pageIndex: pageIndex,
           pageCount: 3,
+          borderWidth: G2Protocol.expandedTextBorderWidth,
+          borderColor: G2Protocol.expandedTextBorderColor,
+          paddingLength: G2Protocol.expandedTextPaddingLength,
         );
         await Future<void>.delayed(const Duration(seconds: 2));
       }
@@ -2533,6 +2557,9 @@ final class G2Connection {
     _fullPageTextIndicatorActive = false;
     _fullPageTextPageIndex = 0;
     _fullPageTextPageCount = 1;
+    _fullPageTextBorderWidth = G2Protocol.fullPageTextBorderWidth;
+    _fullPageTextBorderColor = G2Protocol.fullPageTextBorderColor;
+    _fullPageTextPaddingLength = G2Protocol.fullPageTextPaddingLength;
     _memoDisplayNote = '';
     _memoDisplayStatus = '';
     _memoDisplayPages = const <String>[];

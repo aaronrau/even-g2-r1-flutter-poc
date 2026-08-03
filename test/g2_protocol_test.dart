@@ -105,13 +105,21 @@ void main() {
       expect(text[2], G2Protocol.fullPageTextY);
       expect(text[3], G2Protocol.fullPageTextWidth);
       expect(text[4], G2Protocol.fullPageTextHeight);
+      expect(text[5], G2Protocol.fullPageTextBorderWidth);
+      expect(text[6], G2Protocol.fullPageTextBorderColor);
+      expect(text[8], G2Protocol.fullPageTextPaddingLength);
       expect(text[4]! as int, greaterThan(G2Protocol.visualizerTextHeight));
       expect(update, containsAllInOrder(utf8.encode('world')));
     });
 
-    test('rebuilds an active page with the full-height text container', () {
+    test('rebuilds an active page with expanded zero-padding content', () {
       final protocol = G2Protocol();
-      final rebuild = protocol.rebuildTextPage('seven selector rows');
+      final rebuild = protocol.rebuildTextPage(
+        'Agent - content flowing into row two',
+        borderWidth: G2Protocol.expandedTextBorderWidth,
+        borderColor: G2Protocol.expandedTextBorderColor,
+        paddingLength: G2Protocol.expandedTextPaddingLength,
+      );
       final outer = ProtoReader(rebuild).readFields();
       final page = ProtoReader(outer[7]! as Uint8List).readFields();
       final text = ProtoReader(page[3]! as Uint8List).readFields();
@@ -122,7 +130,13 @@ void main() {
       expect(text[2], G2Protocol.fullPageTextY);
       expect(text[3], G2Protocol.fullPageTextWidth);
       expect(text[4], G2Protocol.fullPageTextHeight);
-      expect(rebuild, containsAllInOrder(utf8.encode('seven selector rows')));
+      expect(text[5], G2Protocol.expandedTextBorderWidth);
+      expect(text[6], G2Protocol.expandedTextBorderColor);
+      expect(text[8], G2Protocol.expandedTextPaddingLength);
+      expect(
+        rebuild,
+        containsAllInOrder(utf8.encode('Agent - content flowing into row two')),
+      );
     });
 
     test('adds one proportional right-side image thumb to detail pages', () {
@@ -132,6 +146,9 @@ void main() {
         showPageIndicator: true,
         pageIndex: 1,
         pageCount: 4,
+        borderWidth: G2Protocol.expandedTextBorderWidth,
+        borderColor: G2Protocol.expandedTextBorderColor,
+        paddingLength: G2Protocol.expandedTextPaddingLength,
       );
       final outer = ProtoReader(rebuild).readFields();
       final page = ProtoReader(outer[7]! as Uint8List).readFields();
@@ -154,12 +171,20 @@ void main() {
         G2Protocol.fullPageTextWidth,
         reason: 'The edge thumb must not narrow the detail text viewport.',
       );
+      expect(body[5], G2Protocol.expandedTextBorderWidth);
+      expect(body[6], G2Protocol.expandedTextBorderColor);
+      expect(body[8], G2Protocol.expandedTextPaddingLength);
       expect(indicator[1], G2Protocol.fullPageIndicatorX);
       expect(indicator[2], geometry.y);
       expect(indicator[3], G2Protocol.fullPageIndicatorWidth);
       expect(indicator[4], geometry.height);
       expect(indicator[5], 10);
       expect(utf8.decode(indicator[6]! as Uint8List), 'img-10');
+      expect(
+        (indicator[1]! as int) + (indicator[3]! as int),
+        G2Protocol.fullPageTextWidth - G2Protocol.fullPageIndicatorInset,
+        reason: 'The thumb must end at the right display edge.',
+      );
       expect(
         utf8.decode(rebuild, allowMalformed: true),
         isNot(contains('poc-scroll')),
@@ -228,7 +253,9 @@ void main() {
           );
           expect(
             geometry.y + geometry.height,
-            lessThanOrEqualTo(G2Protocol.fullPageTextHeight),
+            lessThanOrEqualTo(
+              G2Protocol.fullPageTextHeight - G2Protocol.fullPageIndicatorInset,
+            ),
             reason: 'page ${pageIndex + 1}/$pageCount',
           );
         }

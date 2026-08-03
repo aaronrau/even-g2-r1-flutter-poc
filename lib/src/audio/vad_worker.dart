@@ -30,6 +30,7 @@ final class VadSpeechEvent {
 const Duration vadPreRollDuration = Duration(seconds: 2);
 const Duration vadDetectorSilenceDuration = Duration(milliseconds: 500);
 const Duration vadTranscriptionDelay = Duration(milliseconds: 1250);
+const Duration selectedAgentVadTranscriptionDelay = Duration(seconds: 1);
 const Duration vadTotalSilenceDuration = Duration(milliseconds: 1750);
 const Duration preferredVadSegmentDuration = Duration(seconds: 15);
 const Duration maximumVadSegmentDuration = Duration(seconds: 17);
@@ -253,7 +254,9 @@ final class VadSupervisor {
     required this.onSegment,
     required this.onStatus,
     this.onSpeechEvent,
-  });
+    Duration endpointDelay = vadTranscriptionDelay,
+  }) : assert(endpointDelay > Duration.zero),
+       _endpointDelay = endpointDelay;
 
   final String modelPath;
   final String outputPath;
@@ -261,6 +264,7 @@ final class VadSupervisor {
   final SpeechSegmentSink onSegment;
   final VadStatusSink onStatus;
   final VadSpeechEventSink? onSpeechEvent;
+  Duration _endpointDelay;
 
   ReceivePort? _events;
   ReceivePort? _errors;
@@ -297,6 +301,23 @@ final class VadSupervisor {
 
   void flush() {
     _commands?.send(<String, Object>{'type': 'flush'});
+  }
+
+  /// Selects the quiet interval applied after VAD falls inactive. An active
+  /// endpoint keeps the duration it started with; the new value applies to the
+  /// next quiet transition so a UI change cannot shorten a turn mid-tail.
+  void setEndpointDelay(Duration duration) {
+    if (_disposed || duration == _endpointDelay) {
+      return;
+    }
+    if (duration <= Duration.zero) {
+      throw ArgumentError.value(duration, 'duration', 'Must be positive.');
+    }
+    _endpointDelay = duration;
+    _commands?.send(<String, Object>{
+      'type': 'set_endpoint_delay',
+      'delayMs': duration.inMilliseconds,
+    });
   }
 
   Future<void> restartForTest() async {
@@ -340,6 +361,7 @@ final class VadSupervisor {
         'modelPath': modelPath,
         'outputPath': outputPath,
         'providers': providers,
+        'endpointDelayMs': _endpointDelay.inMilliseconds,
       },
       debugName: 'workbench-vad',
       errorsAreFatal: true,
@@ -557,12 +579,15 @@ void _vadWorker(Map<String, Object> bootstrap) {
   final modelPath = bootstrap['modelPath']! as String;
   final outputPath = bootstrap['outputPath']! as String;
   final providers = (bootstrap['providers']! as List<Object?>).cast<String>();
+  var endpointDelay = Duration(
+    milliseconds: bootstrap['endpointDelayMs']! as int,
+  );
   final commands = ReceivePort();
   final preRoll = VadPreRollBuffer(maximumBytes: preRollBytes);
   final rolloverOverlap = VadPreRollBuffer(maximumBytes: rolloverOverlapBytes);
-  final endpoint = VadEndpointBuffer(
+  var endpoint = VadEndpointBuffer(
     sampleRate: sampleRate,
-    duration: vadTranscriptionDelay,
+    duration: endpointDelay,
   );
   final segmentDuration = VadSegmentDurationTracker(sampleRate: sampleRate);
   final wordBoundary = VadWordBoundaryDetector(sampleRate: sampleRate);
@@ -840,6 +865,18 @@ void _vadWorker(Map<String, Object> bootstrap) {
         return;
       }
       switch (message['type']) {
+        case 'set_endpoint_delay':
+          final delayMs = message['delayMs'];
+          if (delayMs is int && delayMs > 0) {
+            endpointDelay = Duration(milliseconds: delayMs);
+            if (!endpoint.isActive) {
+              endpoint = VadEndpointBuffer(
+                sampleRate: sampleRate,
+                duration: endpointDelay,
+              );
+            }
+          }
+          return;
         case 'pcm':
           final pcm = (message['bytes']! as TransferableTypedData)
               .materialize()
@@ -883,12 +920,16 @@ void _vadWorker(Map<String, Object> bootstrap) {
             if (detected) {
               endpoint.reset();
             } else if (wasDetected) {
+              endpoint = VadEndpointBuffer(
+                sampleRate: sampleRate,
+                duration: endpointDelay,
+              );
               final endpointComplete = endpoint.begin(chunkSamples);
               final clearedBytes = preRoll.clear();
               events.send(<String, Object>{
                 'type': 'speech_ending',
                 'id': segmentId!,
-                'delayMs': vadTranscriptionDelay.inMilliseconds,
+                'delayMs': endpointDelay.inMilliseconds,
               });
               events.send(<String, Object>{
                 'type': 'buffer_cleared',

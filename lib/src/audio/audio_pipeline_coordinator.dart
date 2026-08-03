@@ -136,6 +136,7 @@ final class AudioPipelineCoordinator {
   bool _initialStartupComplete = false;
   bool _disposed = false;
   bool _vadWasReady = false;
+  bool _selectedAgentDetailVadMode = false;
   bool _modelSwitching = false;
   bool _refreshSharedTranscriptsAfterExport = false;
   bool _decodeBackpressureReported = false;
@@ -246,6 +247,9 @@ final class AudioPipelineCoordinator {
         onSegment: _onSpeechSegment,
         onStatus: _vadStatus,
         onSpeechEvent: onVadSpeechEvent,
+        endpointDelay: _selectedAgentDetailVadMode
+            ? selectedAgentVadTranscriptionDelay
+            : vadTranscriptionDelay,
       );
       activeVadProvider = await _vad!.start();
       _vadWasReady = true;
@@ -1022,6 +1026,23 @@ final class AudioPipelineCoordinator {
 
   void flushCurrentSpeech() {
     _vad?.flush();
+  }
+
+  void setSelectedAgentDetailVadMode(bool enabled) {
+    if (_disposed || enabled == _selectedAgentDetailVadMode) {
+      return;
+    }
+    _selectedAgentDetailVadMode = enabled;
+    final delay = enabled
+        ? selectedAgentVadTranscriptionDelay
+        : vadTranscriptionDelay;
+    _vad?.setEndpointDelay(delay);
+    log(
+      'Pipeline',
+      '[WorkBench][VAD] state=endpoint_mode '
+          'source=${enabled ? 'selected_agent_detail' : 'default'} '
+          'delay_ms=${delay.inMilliseconds}',
+    );
   }
 
   Future<bool> prioritizeQueuedCorrection(String segmentId) async {

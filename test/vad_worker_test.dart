@@ -33,6 +33,25 @@ void main() {
     expect(endpoint.capturedMilliseconds, 1250);
   });
 
+  test('selected-agent detail waits one VAD-inactive second before STT', () {
+    expect(selectedAgentVadTranscriptionDelay, const Duration(seconds: 1));
+    final endpoint = VadEndpointBuffer(
+      sampleRate: 16000,
+      duration: selectedAgentVadTranscriptionDelay,
+    );
+
+    expect(endpoint.begin(8000), isFalse);
+    expect(endpoint.capturedMilliseconds, 500);
+
+    // Resumed VAD keeps the same audio turn open. The next inactive boundary
+    // starts a fresh full-second tail before transcription is dispatched.
+    endpoint.reset();
+    expect(endpoint.isActive, isFalse);
+    expect(endpoint.begin(8000), isFalse);
+    expect(endpoint.add(8000), isTrue);
+    expect(endpoint.capturedMilliseconds, 1000);
+  });
+
   test('retains the two-second speech pre-roll', () {
     expect(vadPreRollDuration, const Duration(seconds: 2));
   });

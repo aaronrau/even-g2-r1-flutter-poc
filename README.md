@@ -158,18 +158,26 @@ expose for a true locked Hub mode.
   `summary.result` follows the same durable `Received:` path. During a voice
   memo, double tap retains its higher-priority finish action.
 - Implements the fallback single-tap agent history selector with `Dismiss`
-  selected first, up to five one-line agent rows, and the local Memo row last,
-  and tap-to-dismiss detail pages containing that selected agent's five newest
+  selected first, up to five agent options, and the local Memo option last.
+  Each option begins `Agent - content` and uses a second row only when that
+  combined text overflows. A shared measured layout fills up to 10 visible
+  rows and adaptively pages only when the complete selector does not fit.
+  Tap-to-dismiss detail pages contain that selected agent's five newest
   request-ID-correlated exchanges. Swipe up/down pages through the full recent
-  content without sending a new request. Long detail transcripts use the full
-  576×288 text viewport with a proportional right-edge scroll thumb. While an
+  content without sending a new request; the prior page's final content row is
+  repeated first on the next page. History uses a borderless, zero-padding
+  576×288 text viewport; long details retain nine body rows and show only a
+  proportional right-edge scroll thumb. While an
   agent row or its detail page is selected, speech that starts is bound to that
   configured agent, enters Gemma correction without requiring a spoken `Hey`
   or agent name, and routes only the live corrected result. Agent detail pages
   show an active dot beside the name and replace their body with the latest
   `Listening…`, `Sending:`, and `Sent:`/`Saved:` transcript state. Tapping an
   active detail finishes speech or prioritizes its correction instead of
-  dismissing it. Dismiss and Memo never enable this override. See
+  dismissing it. In agent detail, VAD keeps appending PCM to the same speech
+  turn while speech resumes. One full second with VAD inactive finalizes that
+  turn; only then does STT finish, Gemma correct once, and the selected-agent
+  command send once. Dismiss and Memo never enable this endpoint override. See
   [`docs/G2_AGENT_HISTORY_SELECTOR.md`](docs/G2_AGENT_HISTORY_SELECTOR.md).
 - Draws a dim-to-bright pulsing dot in the upper-left using LC3 global gain and
   an adaptive silence floor.

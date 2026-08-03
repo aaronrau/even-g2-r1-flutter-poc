@@ -20,9 +20,10 @@ This flow extends, rather than replaces, the existing behavior:
 
 ## Product interpretation
 
-The selector keeps one row per agent, with that agent's most recent positively
-acknowledged command as its preview. Opening the row loads up to five complete
-exchanges for only that agent. The target glasses layout contains:
+The selector starts every agent option as `Agent - content` and lets that
+combined text flow into at most one continuation row. Opening the option loads
+up to five complete exchanges for only that agent. The target glasses layout
+contains:
 
 1. `[x]`
 2. up to five configured agent rows
@@ -41,25 +42,46 @@ configuration. The phone's Messages view remains the complete history.
 
 ### Selector
 
-Every option occupies exactly one rendered line. Newlines and repeated
-whitespace in private content are collapsed, and each line is ellipsized to the
-tested G2 width. A representative seven-row page is:
+Every agent occupies one or two rendered lines. Newlines and repeated
+whitespace in private content are collapsed. The first line always starts
+`Agent - content`; only overflow continues on the second line, and longer text
+is ellipsized there. `[x]` remains one line. The selector uses one page whenever
+all entries fit within the 10-row viewport. A representative short selector
+is:
 
 ```text
 > [x]
-  Agent One · latest sent command…
-  Agent Two · No sent message
-  Agent Three · latest sent command…
-  Agent Four · latest sent command…
-  Agent Five · latest sent command…
-  Memo · latest saved memo…
+Agent One - latest sent command
+Agent Two - No sent message
+Agent Three - latest sent command
+Agent Four - No sent message
+Agent Five - latest sent command
+Memo - latest saved memo
+```
+
+When long previews overflow, indivisible one- or two-row entries are
+adaptively packed into nine content rows with the footer using the tenth:
+
+```text
+> [x]
+Agent One - latest sent command that continues
+on the second row…
+Agent Two - another command that continues on
+its second row…
+…
+[ 1/2 · Swipe to select ]
 ```
 
 The marker is the only selection indicator, so the layout remains grayscale
-and does not rely on color. The implementation uses a 48-rune row budget. The
-complete page remains bounded to 512 characters.
+and does not rely on color. Wrapping uses G2 pixel advances instead of a fixed
+rune budget. The complete 10-row page remains bounded to 2,048 characters.
 
-History rebuilds the active Hub surface as a dedicated 576x288 text page. A
+History rebuilds the active Hub surface as a dedicated borderless 576x288 text
+page with zero padding. Host layout uses one shared calibrated wrapping budget.
+Standalone glyph advances overestimate the physically observed firmware width,
+so the utility retains a six-pixel safety inset and adds a 50-unit calibration,
+or roughly five average characters per line. The physical content width remains
+576 pixels. A
 second startup/create command is not sufficient after the visualizer exists;
 the firmware retains the visualizer's compact 520x64 gesture slot, clipping
 the lower rows and producing a misleadingly short scroll indicator. Dismissal
@@ -70,7 +92,7 @@ rebuilds the visualizer page and resumes pulse rendering.
 Selecting an agent opens its five newest acknowledged exchanges, newest first:
 
 ```text
-[ Agent: Agent One ]
+[ Agent: Agent One · Tap to dismiss ]
 Latest conversation
 You: <most recent command>
 Agent: <correlated response or No response yet>
@@ -78,23 +100,23 @@ Agent: <correlated response or No response yet>
 Earlier conversation 2
 You: <previous command>
 Agent: <correlated response or No response yet>
-
-[ Tap to dismiss ]
 ```
 
 Commands and responses may wrap because this is a detail view, not a selector
-row. Memo and conversation details use eight body lines per page with a
-bounded `[ current/total · Tap to dismiss ]` footer. This fills the complete
-ten-line viewport without sacrificing the title or action row. Swipe down
+row. Memo and conversation details place the tap action in the title and use
+nine body lines per page. This fills the complete 10-line viewport. Swipe down
 advances one page and swipe up returns one page; pages stop at either boundary
-instead of wrapping. A final tap clears the private text and restores the audio
-visualizer. Loading is bounded to five direct ledger paths and never scans the
-complete message archive.
+instead of wrapping. The last content row of each page repeats as the first
+content row on the next page, preserving the wearer's reading position. A
+final tap clears the private text and restores the audio visualizer. Loading
+is bounded to five direct ledger paths and never scans the complete message
+archive.
 
-Every detail page begins with `[ Memo ]` or `[ Agent: <name> ]`. Explicit LF,
-CRLF, and CR line breaks in saved Memo or response text remain hard line breaks;
-blank paragraph separators remain blank display rows. Only horizontal spacing
-is normalized before long lines are wrapped.
+Every detail page begins with `[ Memo · Tap to dismiss ]` or
+`[ Agent: <name> · Tap to dismiss ]`. Explicit LF, CRLF, and CR line breaks
+in saved Memo or response text remain hard line breaks; blank paragraph
+separators remain blank display rows. Only horizontal spacing is normalized
+before long lines are wrapped.
 
 Each logical page change rebuilds the full-height text surface instead of only
 updating its content. Current G2 firmware preserves the native text viewport
@@ -108,26 +130,27 @@ other 16 are black, so there are no segmented glyphs or visible background
 track. The thumb shrinks and moves from top to bottom in proportion to the
 current host page. A one-page detail does not need an indicator and therefore
 does not create the otherwise over-height image. The image overlays the edge
-of the full 576-pixel text surface; conservative 45-rune host wrapping keeps
-the last words readable instead of narrowing and clipping the detail body to
-make room for the thumb. Selector pages do not create the image container.
+of the full 576-pixel text surface and its four-pixel foreground bar ends at
+the right display edge. The remaining pixels match the black display, leaving
+only the proportional thumb visible—there is no outline or background track.
+Selector pages do not create the image container.
 
 ### Empty Memo or agent row
 
 Memo is always present:
 
 ```text
-  Memo · No saved memo
+Memo - No saved memo
 ```
 
 An agent with no positively acknowledged command is also retained:
 
 ```text
-  Agent Two · No sent message
+Agent Two - No sent message
 ```
 
-Tapping either empty row shows the same one-line state plus
-`[ Tap to dismiss ]`; it never fabricates or sends agent work. An acknowledged
+Tapping either empty option shows the same state below a title containing
+`Tap to dismiss`; it never fabricates or sends agent work. An acknowledged
 command without a correlated response remains visible with `No response yet`.
 
 ## Gesture contract
@@ -251,8 +274,8 @@ exchange ledger and its direct message-file paths.
 
 Memo is local and is never sent to the agent WebSocket by this selector.
 
-- The selector row uses the newest saved Memo and a one-line preview.
-- Tapping Memo opens the bounded saved note with `[ Tap to dismiss ]`.
+- The Memo option starts `Memo - content` and may use one continuation row.
+- Tapping Memo opens the bounded saved note with the action in its title.
 - An active Memo owns the display and prevents the selector from opening.
 - If Memo starts while the selector is open, Memo preempts and closes the
   selector before rendering its own page.
@@ -352,7 +375,9 @@ gesture-controlled ownership.
 2. The atomic `AgentExchangeStore` sits beside `WebSocketMessageStore`. It owns
    correlation metadata and rebuilds a bounded per-agent view.
 3. The pure `G2AgentHistoryState` model owns selection wrapping, bounded
-   conversation rendering, page state, and cancellation.
+   conversation rendering, page state, and cancellation. Both selector and
+   detail rendering use the same `G2TextLayout` utility for physical width,
+   glyph measurement, row capacity, block packing, and overlapping pages.
 4. Tap and swipe events route through that state before ordinary gesture
    display. Active Memo remains the first gate. While the selector is closed,
    a visible `Queued:` transcript consumes single tap before selector open:
@@ -362,11 +387,16 @@ gesture-controlled ownership.
    While the selector highlights an agent row or its agent detail page
    remains open, VAD speech start snapshots that configured agent for direct
    routing without a spoken wake word or name. Agent details show an active
-   dot and the latest targeted transcript lifecycle in their body.
+   dot and the latest targeted transcript lifecycle in their body. Agent
+   detail switches the VAD endpoint to one inactive second before STT. Speech
+   detected during that endpoint resets it and continues the same audio turn;
+   only the final turn is transcribed, corrected, and sent.
 5. Persistent selector and detail pages use the full 576×288 G2 text
    container. Multi-page details overlay one variable-height right-edge bitmap
-   with a visible 4-pixel thumb inside a valid 20-pixel container. Both use
-   high-priority bounded writes.
+   with a visible 4-pixel thumb inside a valid 20-pixel container. History uses
+   a borderless surface with zero inner padding; selector pages adaptively pack
+   up to 10 visible rows, and detail pages reserve nine rows for content.
+   All use high-priority bounded writes.
 6. The latest saved Memo is read locally without routing it through WebSocket
    or the agent exchange store.
 7. Selector rendering reads app-private atomic records and does not wait on a
@@ -377,9 +407,16 @@ gesture-controlled ownership.
 ### Pure state tests
 
 - opening always selects `[x]`;
-- swipe up/down wraps across `[x]`, five agent rows, and the final Memo row;
-- every selector row is one line and the page remains under 512 characters;
-- empty Memo and agent rows never send;
+- swipe up/down wraps across `[x]`, five agent options, and the final Memo
+  option;
+- every agent starts `Agent - content`, uses at most one continuation row,
+  keeps the selected option visible across page transitions, and leaves each
+  page under 2,048 characters;
+- selector and detail rendering share the same calibrated width and row-layout
+  utility;
+- every detail page exposes nine content rows and repeats the prior page's final
+  row first after a forward swipe;
+- empty Memo and agent options never send;
 - tapping an agent loads its newest five exchanges and enters detail;
 - missing responses render `No response yet` without sending a request;
 - tap in detail dismisses and clears private state;
@@ -390,6 +427,8 @@ gesture-controlled ownership.
   target; Dismiss and Memo modes return no target;
 - agent details render the active dot and `Listening…`/`Sending:`/terminal
   transcript states without replacing another newer segment;
+- selected-agent detail speech uses a one-second VAD-inactive endpoint, resumed
+  VAD keeps the same turn open, and only the finalized turn reaches correction;
 - explicit agent selection makes non-`Hey` live speech correction-eligible,
   while unselected ambient speech remains wake-gated;
 - `ladies changes` is corrected to context-supported `latest changes` before
@@ -424,6 +463,8 @@ gesture-controlled ownership.
   changing selector geometry;
 - duplicate notifications and state callbacks coalesce to one page render and
   one thumb upload while that signature is queued, active, or already shown;
+- rapid swipes retain only the latest pending page while one BLE rebuild is
+  active, instead of replaying every intermediate page;
 - dismiss clears private text before restoring the pulse;
 - BLE timeout cannot stall later selector writes;
 - disconnect/reconnect rerenders no more than one bounded private page.
@@ -436,9 +477,12 @@ representative phone:
 1. send one acknowledged command to each of five synthetic agents;
 2. connect the physical G2/R1 pair;
 3. tap and verify `[x]` is selected first;
-4. swipe through every agent and the final Memo row, checking one-line truncation;
+4. swipe through every agent and the final Memo option, checking the
+   `Agent - content` first row, optional continuation row, borderless surface,
+   and adaptive selector page transition;
 5. select an agent with five exchanges, verify newest-first order and that the
-   right-edge indicator moves through every detail page, then tap to dismiss;
+   right-edge indicator moves through every detail page, with the prior final
+   row repeated first after each forward swipe, then tap to dismiss;
 6. select an agent without a response and verify `No response yet` without any
    outbound request;
 7. verify unrelated inbound events do not replace the open history page;
@@ -482,14 +526,20 @@ harness cannot mechanically actuate the wearable.
 - Agent detail titles show an active dot beside the agent name; the
   body shows `Listening…`, then the transcript as `Sending:`, and finally
   acknowledged `Sent:` or fallback `Saved:`.
-- `[x]`, up to five agent rows, and the final Memo row render as one line each.
+- In detail mode, one uninterrupted second with VAD inactive finalizes the
+  speech turn. VAD activity during that second resets the endpoint and appends
+  audio to the same turn; STT, correction, and the single send happen afterward.
+- `[x]` renders as one line; each agent and Memo start `Agent - content` and
+  flow into at most one bounded continuation line, with adaptive paging only
+  when all entries cannot fit in the 10-row viewport.
 - Swipes select deterministically and wrap.
 - Only acknowledged commands appear as sent.
 - Selecting an agent shows its five newest acknowledged exchanges, newest
   first, without issuing a network request.
 - Every multi-page Memo or agent detail shows a right-edge page-position
   indicator that remains visible and tracks bounded swipe paging; one-page
-  details do not allocate an image container.
+  details do not allocate an image container. Each page contains nine body rows
+  and repeats the prior page's final body row at the top after a forward swipe.
 - A missing response renders `No response yet`; unrelated events do not become
   correlated responses.
 - Tap during active detail speech finishes/prioritizes its send and does not

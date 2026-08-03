@@ -40,10 +40,15 @@ timer.
 The agent history selector uses the Hub rebuild command to replace that compact
 `520x64` gesture slot with a dedicated `576x288` full-page text container. A
 startup/create command is not reused because firmware accepts it only at page
-startup and otherwise retains the existing visualizer geometry. This gives
-`[x]`, five agent rows, and the final Memo row the full vertical viewport.
-Pulse writes pause while history owns the page. Dismissal rebuilds the compact
-visualizer without stopping continuous LC3 capture.
+startup and otherwise retains the existing visualizer geometry. The selector
+uses a borderless container with zero inner padding. Each agent begins as
+`Agent - content` and flows into at most one continuation row.
+A shared measured-text layout fills up to 10 rows. Short entries therefore fit
+the complete `[x]`, five-agent, and Memo selector on one page; longer two-row
+entries are adaptively packed into nine content rows plus a page footer, keeping
+each entry intact and the active selection visible. Pulse writes pause while
+history owns the page. Dismissal rebuilds the compact visualizer without
+stopping continuous LC3 capture.
 
 The ordinary latest-wins display queue uses the same full-height replacement
 for `Queued:`, `Sending:`, `Sent:`, `Saved:`, and inbound `Received:` text. It
@@ -52,26 +57,49 @@ terminal or received status exits the full-page owner after its two-second
 hold, rebuilds the pulse page, and leaves continuous audio capture running.
 
 Memo and five-exchange agent details are host-paginated rather than relying on
-firmware text scrolling. Each page uses one title row, eight wrapped body rows,
-and one action/page row so long transcripts occupy the complete vertical
-viewport. Swipe down advances, swipe up goes back, and neither boundary wraps.
+firmware text scrolling. Each zero-padding page puts the tap action in its title
+row and uses the remaining nine rows for pixel-width-wrapped content. Swipe down
+advances, swipe up goes back, and neither boundary wraps. To preserve reading
+position, the final content row of one page repeats as the first content row of
+the next page.
 A separate firmware-valid 20-pixel-wide image container overlays the right
 edge and renders one continuous 4-pixel solid foreground rectangle; its other
 16 pixels are black, so no background track is visible. The detail text keeps
-the full `576x288` firmware viewport and the conservative 45-rune host wrap
-keeps text readable beside the thumb. One-page details omit the unnecessary
+the full borderless `576x288` firmware viewport. Host wrapping uses the G2
+glyph advances published by
+`@evenrealities/pretext`. A shared 50-unit physical calibration compensates for
+standalone-advance measurement versus firmware kerning and uses roughly five
+more average characters per line without changing the 576-pixel physical
+bounds. The four-pixel thumb ends at the right display edge and is the only
+visible scroll decoration. One-page details omit the unnecessary
 indicator because a 288-pixel image would exceed the G2's 144-pixel
 image-container height limit. On multi-page details the rectangle shrinks and
 moves proportionally. Selector pages do not create the image.
+
+The native `TextContainerProperty` protocol exposes position, size, border,
+padding, identity, event capture, and content, but no font-size control. The
+layout therefore keeps the native readable type size and gains density through
+zero padding, calibrated pixel-width wrapping, adaptive selector paging, and a
+nine-row detail body. Rasterizing smaller text into full-page image quadrants
+would require hundreds of BLE fragments per update and is not used for an
+interactive menu.
 History rendering is serialized and coalesced by page signature before it
-reaches BLE, including while a prior render is in flight. Firmware
-notifications therefore cannot recursively resend the same page. The thumb
-bitmap waits for the same 300 ms page-settle interval as the proven drawing
-tool. A completed controlled rebuild cancels any stale recovery scheduled by
-the firmware's expected page-replacement lifecycle events. The phone's
+reaches BLE. While one render is in flight, only the newest pending page is
+retained, so rapid swipes do not wait behind intermediate full-page rebuilds.
+Firmware notifications therefore cannot recursively resend the same page. The
+thumb bitmap waits for the same 300 ms page-settle interval as the proven
+drawing tool. A completed controlled rebuild cancels any stale recovery
+scheduled by the firmware's expected page-replacement lifecycle events. The phone's
 `Test detail thumb` action closes an open history selector, sends synthetic
 top, middle, and bottom pages at two-second intervals without private history,
 then restores the Hub page automatically.
+
+Selected-agent detail speech changes the VAD endpoint before transcription.
+After VAD falls inactive, the worker retains one second of PCM. Positive VAD
+during that interval resets the endpoint and continues the same speech turn.
+Only an uninterrupted one-second inactive interval finalizes the durable turn,
+dispatches STT, runs Gemma correction, and sends one command. There is no
+second post-transcription timer or transcript-batch gate.
 
 The microphone notification format observed in MentraOS and on hardware is:
 

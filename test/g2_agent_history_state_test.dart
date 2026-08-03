@@ -33,11 +33,16 @@ void main() {
     expect(state.selected?.kind, G2AgentHistoryEntryKind.dismiss);
     expect(state.entries[1].label, 'Pike');
     expect(state.entries.last.kind, G2AgentHistoryEntryKind.memo);
-    expect(state.render(), startsWith('> [x]\n  Pike · validate'));
+    expect(state.render(), startsWith('> [x]\nPike - validate'));
     final rows = state.render().split('\n');
-    expect(rows.last, startsWith('  Memo · Remember'));
-    expect(rows.last, endsWith('…'));
     expect(rows, hasLength(7));
+    expect(rows.last, 'Memo - Remember the synthetic validation result.');
+    expect(state.render(), isNot(contains('Swipe to select')));
+
+    for (var index = 0; index < 4; index++) {
+      state.selectNext();
+    }
+    expect(state.render(), contains('> Agent Four - No sent message'));
     expect(
       state.render().runes.length,
       lessThanOrEqualTo(G2AgentHistoryState.maximumPageCharacters),
@@ -67,9 +72,9 @@ void main() {
     expect(state.selectedSpeechAgent, isNull);
 
     expect(state.mode, G2AgentHistoryMode.detail);
-    expect(state.render(), startsWith('[ Memo ]\n'));
+    expect(state.render(), startsWith('[ Memo · Tap to dismiss ]\n'));
     expect(state.render(), contains('No saved memo'));
-    expect(state.render(), contains('[ Tap to dismiss ]'));
+    expect(state.render().split('\n'), hasLength(10));
   });
 
   test('Pike waits for only its exchange and then shows the response', () {
@@ -89,7 +94,7 @@ void main() {
 
     state.showWaiting(exchange);
     expect(state.selectedSpeechAgent, 'Pike');
-    expect(state.render(), startsWith('[ Agent: Pike • ]\n'));
+    expect(state.render(), startsWith('[ Agent: Pike • · Tap to cancel ]\n'));
     expect(state.render(), contains('Waiting for response'));
     expect(state.acceptResponse('different-exchange', 'Wrong response'), false);
     expect(state.mode, G2AgentHistoryMode.waiting);
@@ -116,7 +121,10 @@ void main() {
         ..showSelectedDetail();
 
       expect(state.selectedSpeechAgent, 'Pike');
-      expect(state.render(), startsWith('[ Agent: Pike • ]\n'));
+      expect(
+        state.render(),
+        startsWith('[ Agent: Pike • · Tap to dismiss ]\n'),
+      );
 
       expect(state.beginTargetedSpeech('segment-1'), isTrue);
       expect(state.render(), contains('Listening…'));
@@ -164,7 +172,7 @@ void main() {
     expect(state.render(), contains('Listening…'));
   });
 
-  test('selector rows collapse private newlines and remain one line', () {
+  test('selector flows Agent - content across at most two full-width rows', () {
     final state = G2AgentHistoryState()
       ..open(
         agents: const <String>['Pike'],
@@ -174,7 +182,8 @@ void main() {
             agent: 'Pike',
             message:
                 'first line\nsecond line with a long synthetic payload '
-                'that must be safely shortened for the glasses',
+                'that must be safely shortened for the glasses and keeps '
+                'overflowing beyond the second permitted display row',
             sentAt: sentAt,
             legacy: false,
           ),
@@ -182,12 +191,51 @@ void main() {
       );
 
     final rows = state.render().split('\n');
-    expect(rows, hasLength(3));
-    expect(
-      rows[1].runes.length,
-      lessThanOrEqualTo(G2AgentHistoryState.maximumRowRunes),
-    );
-    expect(rows[1], isNot(contains('second line\n')));
+    expect(rows, hasLength(4));
+    expect(rows[1], startsWith('Pike - first line second line'));
+    expect(rows[2], isNotEmpty);
+    expect(rows[2], endsWith('…'));
+    expect(rows[1].runes.length, greaterThan(48));
+    expect(rows[2], isNot(startsWith('  ')));
+    expect(rows.last, 'Memo - No saved memo');
+  });
+
+  test('selector adaptively pages long two-row agent entries', () {
+    final longMessage = List<String>.filled(40, 'synthetic-content').join(' ');
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>[
+          'Agent One',
+          'Agent Two',
+          'Agent Three',
+          'Agent Four',
+          'Agent Five',
+        ],
+        exchanges: <AgentExchangeView>[
+          for (var index = 1; index <= 5; index++)
+            AgentExchangeView(
+              id: 'agent-$index',
+              agent:
+                  'Agent ${<String>['One', 'Two', 'Three', 'Four', 'Five'][index - 1]}',
+              message: '$longMessage $index',
+              sentAt: sentAt.add(Duration(minutes: index)),
+              legacy: false,
+            ),
+        ],
+        memo: longMessage,
+      );
+
+    final firstPage = state.render().split('\n');
+    expect(firstPage.length, lessThanOrEqualTo(11));
+    expect(firstPage.last, '[ 1/2 · Swipe to select ]');
+    expect(firstPage.any((line) => line.contains('Agent Five')), isFalse);
+
+    for (var index = 0; index < 5; index++) {
+      state.selectNext();
+    }
+    final secondPage = state.render().split('\n');
+    expect(secondPage.first, startsWith('> Agent Five -'));
+    expect(secondPage.last, '[ 2/2 · Swipe to select ]');
   });
 
   test('long Memo detail pages forward and backward without wrapping', () {
@@ -206,10 +254,12 @@ void main() {
       ..showSelectedDetail();
 
     expect(state.detailPageCount, greaterThan(1));
-    expect(state.render(), contains('[ 1/${state.detailPageCount}'));
+    expect(state.detailPageIndex, 0);
     expect(state.selectPreviousDetailPage(), isFalse);
+    final firstPageLastRow = state.render().split('\n').last;
     expect(state.selectNextDetailPage(), isTrue);
-    expect(state.render(), contains('[ 2/${state.detailPageCount}'));
+    expect(state.detailPageIndex, 1);
+    expect(state.render().split('\n')[1], firstPageLastRow);
     expect(state.selectPreviousDetailPage(), isTrue);
     expect(state.detailPageIndex, 0);
 
@@ -242,9 +292,9 @@ void main() {
       ..showSelectedDetail();
 
     expect(state.detailPageCount, greaterThan(1));
-    expect(state.render(), startsWith('[ Agent: Pike • ]\n'));
+    expect(state.render(), startsWith('[ Agent: Pike • · Tap to dismiss ]\n'));
     while (state.selectNextDetailPage()) {}
-    expect(state.render(), startsWith('[ Agent: Pike • ]\n'));
+    expect(state.render(), startsWith('[ Agent: Pike • · Tap to dismiss ]\n'));
     expect(state.render(), contains('result119'));
     expect(state.render().split('\n'), hasLength(10));
   });
@@ -303,7 +353,7 @@ void main() {
     expect(
       state.render(),
       contains(
-        '[ Agent: Pike • ]\nLatest conversation\n'
+        '[ Agent: Pike • · Tap to dismiss ]\nLatest conversation\n'
         'You: report synthetic progress\nAgent: First result\n'
         'Second result\nThird result\n\n'
         'Final paragraph.',

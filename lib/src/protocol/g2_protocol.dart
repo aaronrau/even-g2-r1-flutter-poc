@@ -562,12 +562,20 @@ final class G2Protocol {
   static const int fullPageTextY = 0;
   static const int fullPageTextWidth = 576;
   static const int fullPageTextHeight = 288;
+  static const int fullPageTextBorderWidth = 0;
+  static const int fullPageTextBorderColor = 5;
+  static const int fullPageTextPaddingLength = 4;
+  static const int expandedTextBorderWidth = 0;
+  static const int expandedTextBorderColor = 5;
+  static const int expandedTextPaddingLength = 0;
   // G2 image containers accept width 20–288 and height 20–144. Keep the
   // visible thumb at the final 4 px of a valid right-edge 20 px image. Detail
   // text keeps the complete 576 px firmware viewport; host wrapping leaves a
   // readable right margin while the black portion of this overlay stays
   // invisible on the display.
-  static const int fullPageIndicatorX = 556;
+  static const int fullPageIndicatorInset = expandedTextBorderWidth;
+  static const int fullPageIndicatorX =
+      fullPageTextWidth - fullPageIndicatorWidth - fullPageIndicatorInset;
   static const int fullPageIndicatorWidth = 20;
   static const int fullPageIndicatorBarWidth = 4;
   static const int fullPageIndicatorMinimumHeight = 20;
@@ -814,6 +822,9 @@ final class G2Protocol {
     bool showPageIndicator = false,
     int pageIndex = 0,
     int pageCount = 1,
+    int borderWidth = fullPageTextBorderWidth,
+    int borderColor = fullPageTextBorderColor,
+    int paddingLength = fullPageTextPaddingLength,
   }) {
     return _textPageMessage(
       content,
@@ -822,6 +833,9 @@ final class G2Protocol {
       showPageIndicator: showPageIndicator,
       pageIndex: pageIndex,
       pageCount: pageCount,
+      borderWidth: borderWidth,
+      borderColor: borderColor,
+      paddingLength: paddingLength,
     );
   }
 
@@ -836,6 +850,9 @@ final class G2Protocol {
     bool showPageIndicator = false,
     int pageIndex = 0,
     int pageCount = 1,
+    int borderWidth = fullPageTextBorderWidth,
+    int borderColor = fullPageTextBorderColor,
+    int paddingLength = fullPageTextPaddingLength,
   }) {
     return _textPageMessage(
       content,
@@ -844,6 +861,9 @@ final class G2Protocol {
       showPageIndicator: showPageIndicator,
       pageIndex: pageIndex,
       pageCount: pageCount,
+      borderWidth: borderWidth,
+      borderColor: borderColor,
+      paddingLength: paddingLength,
     );
   }
 
@@ -854,8 +874,14 @@ final class G2Protocol {
     required bool showPageIndicator,
     required int pageIndex,
     required int pageCount,
+    required int borderWidth,
+    required int borderColor,
+    required int paddingLength,
   }) {
     final renderPageIndicator = showPageIndicator && pageCount > 1;
+    final resolvedBorderWidth = borderWidth.clamp(0, 32);
+    final resolvedBorderColor = borderColor.clamp(0, 15);
+    final resolvedPadding = paddingLength.clamp(0, 32);
     final eventCapture = ProtoWriter()
       ..writeInt32(1, 0)
       ..writeInt32(2, 0)
@@ -874,10 +900,10 @@ final class G2Protocol {
       ..writeInt32(2, fullPageTextY)
       ..writeInt32(3, fullPageTextWidth)
       ..writeInt32(4, fullPageTextHeight)
-      ..writeInt32(5, 0)
-      ..writeInt32(6, 0)
+      ..writeInt32(5, resolvedBorderWidth)
+      ..writeInt32(6, resolvedBorderColor)
       ..writeInt32(7, 0)
-      ..writeInt32(8, 4)
+      ..writeInt32(8, resolvedPadding)
       ..writeInt32(9, 1)
       ..writeString(10, 'poc-text')
       ..writeInt32(11, 0)
@@ -916,12 +942,15 @@ final class G2Protocol {
   }) {
     final count = pageCount < 1 ? 1 : pageCount;
     final index = pageIndex.clamp(0, count - 1);
-    final height = (fullPageTextHeight / count).ceil().clamp(
+    final availableHeight = fullPageTextHeight - (2 * fullPageIndicatorInset);
+    final height = (availableHeight / count).ceil().clamp(
       fullPageIndicatorMinimumHeight,
       fullPageIndicatorMaximumHeight,
     );
-    final travel = fullPageTextHeight - height;
-    final y = count == 1 ? 0 : ((travel * index) / (count - 1)).round();
+    final travel = availableHeight - height;
+    final y =
+        fullPageIndicatorInset +
+        (count == 1 ? 0 : ((travel * index) / (count - 1)).round());
     return (y: y, height: height);
   }
 

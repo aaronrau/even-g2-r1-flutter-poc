@@ -94,6 +94,39 @@ void main() {
     expect(rendered, <String>['selector', 'detail-1']);
   });
 
+  test('renders only the latest swipe page after an active render', () async {
+    final queue = CoalescedDisplayQueue();
+    final started = Completer<void>();
+    final release = Completer<void>();
+    final rendered = <String>[];
+
+    final first = queue.schedule(
+      key: 'detail-1',
+      render: () async {
+        rendered.add('detail-1');
+        started.complete();
+        await release.future;
+      },
+    );
+    await started.future;
+    final second = queue.schedule(
+      key: 'detail-2',
+      render: () async => rendered.add('detail-2'),
+    );
+    final third = queue.schedule(
+      key: 'detail-3',
+      render: () async => rendered.add('detail-3'),
+    );
+    final fourth = queue.schedule(
+      key: 'detail-4',
+      render: () async => rendered.add('detail-4'),
+    );
+    release.complete();
+    await Future.wait(<Future<void>>[first, second, third, fourth]);
+
+    expect(rendered, <String>['detail-1', 'detail-4']);
+  });
+
   test('retries a display key after a failed render', () async {
     final queue = CoalescedDisplayQueue();
     var attempts = 0;

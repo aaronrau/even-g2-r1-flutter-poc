@@ -1,4 +1,5 @@
 import 'agent_exchange_store.dart';
+import '../protocol/g2_text_layout.dart';
 
 enum G2AgentHistoryMode { closed, selector, waiting, detail }
 
@@ -25,11 +26,13 @@ final class G2AgentHistoryEntry {
 final class G2AgentHistoryState {
   static const int maximumAgents = 5;
   static const int maximumAgentConversations = 5;
-  static const int maximumRowRunes = 48;
-  static const int maximumPageCharacters = 512;
+  static const int selectorEntryMaximumLines = 2;
+  static const int maximumPageCharacters =
+      G2TextLayout.historyMaximumPageCharacters;
   static const int maximumDetailRunes = 16384;
-  static const int detailLineRunes = 45;
-  static const int detailBodyLinesPerPage = 8;
+  static const int detailBodyLinesPerPage = 9;
+  static const int detailPageOverlapLines = 1;
+  static const G2TextLayout _layout = G2TextLayout.history;
 
   G2AgentHistoryMode mode = G2AgentHistoryMode.closed;
   List<G2AgentHistoryEntry> entries = const <G2AgentHistoryEntry>[];
@@ -322,20 +325,60 @@ final class G2AgentHistoryState {
       G2AgentHistoryMode.waiting => _renderDetail(cancel: true),
       G2AgentHistoryMode.detail => _renderDetail(cancel: false),
     };
-    return _truncate(rendered, maximumPageCharacters);
+    return _truncate(rendered, _layout.maximumPageCharacters);
   }
 
   String _renderSelector() {
-    final lines = <String>[];
-    for (var index = 0; index < entries.length; index++) {
-      final entry = entries[index];
-      final marker = index == selectedIndex ? '>' : ' ';
-      final content = entry.preview.isEmpty
-          ? entry.label
-          : '${entry.label} · ${entry.preview}';
-      lines.add('$marker ${_truncate(_oneLine(content), maximumRowRunes - 2)}');
+    final pages = _selectorPages();
+    final pageIndex = pages.indexWhere((page) => page.contains(selectedIndex));
+    final visiblePageIndex = pageIndex < 0 ? 0 : pageIndex;
+    final lines = <String>[
+      for (final index in pages[visiblePageIndex])
+        ..._renderSelectorEntry(index),
+    ];
+    if (pages.length > 1) {
+      lines.add(
+        '[ ${visiblePageIndex + 1}/${pages.length} · Swipe to select ]',
+      );
     }
     return lines.join('\n');
+  }
+
+  List<List<int>> _selectorPages() {
+    if (entries.isEmpty) {
+      return const <List<int>>[<int>[]];
+    }
+    final allIndexes = List<int>.generate(entries.length, (index) => index);
+    return _layout.paginateBlocks<int>(
+      allIndexes,
+      rowCount: _selectorEntryLineCount,
+      footerRows: 1,
+    );
+  }
+
+  int _selectorEntryLineCount(int index) {
+    final entry = entries[index];
+    if (entry.preview.isEmpty) {
+      return 1;
+    }
+    return _layout
+        .limitLines(
+          '> ${_oneLine(entry.label)} - ${_oneLine(entry.preview)}',
+          selectorEntryMaximumLines,
+        )
+        .length;
+  }
+
+  List<String> _renderSelectorEntry(int index) {
+    final entry = entries[index];
+    final marker = index == selectedIndex ? '>' : ' ';
+    if (entry.preview.isEmpty) {
+      return <String>['$marker ${_oneLine(entry.label)}'];
+    }
+    return _layout.limitLines(
+      '$marker ${_oneLine(entry.label)} - ${_oneLine(entry.preview)}',
+      selectorEntryMaximumLines,
+    );
   }
 
   String _renderDetail({required bool cancel}) {
@@ -343,39 +386,31 @@ final class G2AgentHistoryState {
         ? 'Agent: ${_oneLine(detailTitle ?? 'Unknown')}'
               '${isAgentDetailSpeechTarget ? ' •' : ''}'
         : _oneLine(detailTitle ?? 'History');
-    final title = '[ ${_truncate(titleLabel, detailLineRunes - 4)} ]';
+    final action = cancel ? 'cancel' : 'dismiss';
+    final titleSuffix = ' · Tap to $action ]';
+    final titleLabelWidth =
+        _layout.wrappingWidthPixels -
+        _layout.textWidth('[ ') -
+        _layout.textWidth(titleSuffix);
+    final title =
+        '[ ${_layout.fitLine(titleLabel, titleLabelWidth)}$titleSuffix';
     final pages = _detailPages();
     final pageIndex = detailPageIndex.clamp(0, pages.length - 1);
     final lines = <String>[title, ...pages[pageIndex]];
     while (lines.length < detailBodyLinesPerPage + 1) {
       lines.add('');
     }
-    final action = cancel ? 'cancel' : 'dismiss';
-    lines.add(
-      pages.length == 1
-          ? '[ Tap to $action ]'
-          : '[ ${pageIndex + 1}/${pages.length} · Tap to $action ]',
-    );
     return lines.join('\n');
   }
 
   List<List<String>> _detailPages() {
     final body = _truncate(_renderDetailBody(), maximumDetailRunes);
-    final wrapped = _wrapDetailLines(body);
-    final pages = <List<String>>[];
-    for (
-      var start = 0;
-      start < wrapped.length;
-      start += detailBodyLinesPerPage
-    ) {
-      final end = (start + detailBodyLinesPerPage).clamp(0, wrapped.length);
-      pages.add(wrapped.sublist(start, end));
-    }
-    return pages.isEmpty
-        ? const <List<String>>[
-            <String>[''],
-          ]
-        : pages;
+    final wrapped = _layout.wrapText(body);
+    return _layout.paginateLines(
+      wrapped,
+      rowsPerPage: detailBodyLinesPerPage,
+      overlapRows: detailPageOverlapLines,
+    );
   }
 
   String _renderDetailBody() {
@@ -419,59 +454,7 @@ final class G2AgentHistoryState {
     detailSpeechState = null;
   }
 
-  static List<String> _wrapDetailLines(String value) {
-    final lines = <String>[];
-    final normalized = value.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
-    for (final sourceLine in normalized.split('\n')) {
-      final paragraph = sourceLine
-          .replaceAll(RegExp(r'[\t\f\v ]+'), ' ')
-          .trim();
-      if (paragraph.isEmpty) {
-        lines.add('');
-        continue;
-      }
-      lines.addAll(_wrapDetailParagraph(paragraph));
-    }
-    while (lines.isNotEmpty && lines.last.isEmpty) {
-      lines.removeLast();
-    }
-    return lines;
-  }
-
-  static List<String> _wrapDetailParagraph(String value) {
-    final words = value.split(' ').where((word) => word.isNotEmpty);
-    final lines = <String>[];
-    var line = '';
-    for (final sourceWord in words) {
-      var remaining = sourceWord;
-      while (remaining.runes.length > detailLineRunes) {
-        if (line.isNotEmpty) {
-          lines.add(line);
-          line = '';
-        }
-        final runes = remaining.runes.toList(growable: false);
-        lines.add(String.fromCharCodes(runes.take(detailLineRunes)));
-        remaining = String.fromCharCodes(runes.skip(detailLineRunes));
-      }
-      if (remaining.isEmpty) {
-        continue;
-      }
-      final candidate = line.isEmpty ? remaining : '$line $remaining';
-      if (candidate.runes.length <= detailLineRunes) {
-        line = candidate;
-      } else {
-        lines.add(line);
-        line = remaining;
-      }
-    }
-    if (line.isNotEmpty) {
-      lines.add(line);
-    }
-    return lines;
-  }
-
-  static String _oneLine(String value) =>
-      value.trim().replaceAll(RegExp(r'\s+'), ' ');
+  static String _oneLine(String value) => _layout.oneLine(value);
 
   static String _truncate(String value, int maximumRunes) {
     final runes = value.runes.toList(growable: false);

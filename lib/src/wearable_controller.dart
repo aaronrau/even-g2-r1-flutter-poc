@@ -47,46 +47,126 @@ final class _SelectedAgentSpeechRoute {
   final String source;
 }
 
-/// Serializes display work and suppresses a duplicate key while it is queued,
-/// in flight, or already rendered.
+/// Serializes display work and keeps only the newest page requested while a
+/// BLE render is active.
 final class CoalescedDisplayQueue {
-  Future<void> _tail = Future<void>.value();
-  Object? _claimedKey;
+  Object? _renderedKey;
+  _QueuedDisplayRender? _active;
+  _QueuedDisplayRender? _pending;
+  Completer<void>? _idleCompleter;
+  int _resetRevision = 0;
 
   Future<void> schedule({
     required Object key,
     required Future<void> Function() render,
     void Function(Object error)? onError,
   }) {
-    final operation = _tail.then<void>((_) async {
-      if (_claimedKey == key) {
-        return;
-      }
-      _claimedKey = key;
-      try {
-        await render();
-      } on Object {
-        if (_claimedKey == key) {
-          _claimedKey = null;
-        }
-        rethrow;
-      }
-    });
-    final guarded = operation.then<void>(
+    final completion = Completer<void>();
+    final guarded = completion.future.then<void>(
       (_) {},
       onError: (Object error) {
         onError?.call(error);
       },
     );
-    _tail = guarded;
+
+    final active = _active;
+    if (active?.key == key) {
+      _supersedePending();
+      active!.completions.add(completion);
+      return guarded;
+    }
+    final pending = _pending;
+    if (pending?.key == key) {
+      pending!.completions.add(completion);
+      return guarded;
+    }
+    if (active == null && pending == null && _renderedKey == key) {
+      completion.complete();
+      return guarded;
+    }
+
+    _supersedePending();
+    _pending = _QueuedDisplayRender(
+      key: key,
+      render: render,
+      completions: <Completer<void>>[completion],
+      resetRevision: _resetRevision,
+    );
+    if (_active == null) {
+      _idleCompleter = Completer<void>();
+      unawaited(_drain());
+    }
     return guarded;
   }
 
   void reset() {
-    _claimedKey = null;
+    _renderedKey = null;
+    _resetRevision++;
   }
 
-  Future<void> waitForIdle() => _tail;
+  Future<void> waitForIdle() => _idleCompleter?.future ?? Future<void>.value();
+
+  void _supersedePending() {
+    final pending = _pending;
+    _pending = null;
+    if (pending == null) {
+      return;
+    }
+    for (final completion in pending.completions) {
+      if (!completion.isCompleted) {
+        completion.complete();
+      }
+    }
+  }
+
+  Future<void> _drain() async {
+    while (_pending != null) {
+      final operation = _pending!;
+      _pending = null;
+      _active = operation;
+      try {
+        await operation.render();
+        if (operation.resetRevision == _resetRevision) {
+          _renderedKey = operation.key;
+        }
+        for (final completion in operation.completions) {
+          if (!completion.isCompleted) {
+            completion.complete();
+          }
+        }
+      } on Object catch (error, stackTrace) {
+        if (_renderedKey == operation.key) {
+          _renderedKey = null;
+        }
+        for (final completion in operation.completions) {
+          if (!completion.isCompleted) {
+            completion.completeError(error, stackTrace);
+          }
+        }
+      } finally {
+        _active = null;
+      }
+    }
+    final idleCompleter = _idleCompleter;
+    _idleCompleter = null;
+    if (idleCompleter != null && !idleCompleter.isCompleted) {
+      idleCompleter.complete();
+    }
+  }
+}
+
+final class _QueuedDisplayRender {
+  const _QueuedDisplayRender({
+    required this.key,
+    required this.render,
+    required this.completions,
+    required this.resetRevision,
+  });
+
+  final Object key;
+  final Future<void> Function() render;
+  final List<Completer<void>> completions;
+  final int resetRevision;
 }
 
 WearableGestureAction resolveWearableGestureAction({
@@ -973,6 +1053,7 @@ final class WearableController extends ChangeNotifier
       _agentHistoryWaitTimer?.cancel();
       _agentHistoryWaitTimer = null;
       _agentHistory.close();
+      _syncSelectedAgentVadMode();
       _historyDisplayQueue.reset();
       _glassesStatusQueue.setPaused(true, owner: 'memo');
     }
@@ -1053,9 +1134,10 @@ final class WearableController extends ChangeNotifier
       case VadSpeechEventType.started:
         final selectedAgent = _agentHistory.selectedSpeechAgent;
         if (selectedAgent != null) {
-          final detailTarget = _agentHistory.beginTargetedSpeech(
-            event.segmentId,
-          );
+          final detailTarget = _agentHistory.isAgentDetailSpeechTarget;
+          if (detailTarget) {
+            _agentHistory.beginTargetedSpeech(event.segmentId);
+          }
           final source = detailTarget ? 'agent_detail' : 'agent_selector';
           _selectedAgentSpeechRoutes[event.segmentId] =
               _SelectedAgentSpeechRoute(agent: selectedAgent, source: source);
@@ -1065,6 +1147,7 @@ final class WearableController extends ChangeNotifier
               _selectedAgentSpeechRoutes.keys.first,
             );
           }
+          _syncSelectedAgentVadMode();
           addLog(
             'WebSocket',
             '[WorkBench][VoiceRoute] state=speech_targeted '
@@ -1279,6 +1362,7 @@ final class WearableController extends ChangeNotifier
           _voiceMemo.isActive ||
           generation != _agentHistoryGeneration) {
         _agentHistory.close();
+        _syncSelectedAgentVadMode();
         return;
       }
       final memo = _voiceMemo.records
@@ -1289,6 +1373,7 @@ final class WearableController extends ChangeNotifier
         exchanges: exchanges,
         memo: memo?.note,
       );
+      _syncSelectedAgentVadMode();
       await _showAgentHistory();
       addLog(
         'WebSocket',
@@ -1312,6 +1397,7 @@ final class WearableController extends ChangeNotifier
     }
     if (selected.kind == G2AgentHistoryEntryKind.memo) {
       _agentHistory.showSelectedDetail();
+      _syncSelectedAgentVadMode();
       await _showAgentHistory();
       return;
     }
@@ -1338,6 +1424,7 @@ final class WearableController extends ChangeNotifier
       return;
     }
     _agentHistory.showAgentConversations(exchanges);
+    _syncSelectedAgentVadMode();
     await _showAgentHistory();
     addLog(
       'WebSocket',
@@ -1348,6 +1435,15 @@ final class WearableController extends ChangeNotifier
 
   void _queueAgentHistoryDisplay() {
     unawaited(_showAgentHistory());
+  }
+
+  void _syncSelectedAgentVadMode() {
+    final hasActiveDetailRoute = _selectedAgentSpeechRoutes.values.any(
+      (route) => route.source == 'agent_detail',
+    );
+    _audioPipeline.setSelectedAgentDetailVadMode(
+      _agentHistory.isAgentDetailSpeechTarget || hasActiveDetailRoute,
+    );
   }
 
   Future<void> sendTestDetailThumb() async {
@@ -1384,6 +1480,9 @@ final class WearableController extends ChangeNotifier
           showPageIndicator: isDetail,
           pageIndex: pageIndex,
           pageCount: pageCount,
+          borderWidth: G2Protocol.expandedTextBorderWidth,
+          borderColor: G2Protocol.expandedTextBorderColor,
+          paddingLength: G2Protocol.expandedTextPaddingLength,
         );
       },
       onError: (_) {
@@ -1407,6 +1506,7 @@ final class WearableController extends ChangeNotifier
       _agentHistoryWaitTimer?.cancel();
       _agentHistoryWaitTimer = null;
       _agentHistory.close();
+      _syncSelectedAgentVadMode();
       _historyDisplayQueue.reset();
       if (clearDisplay && g2.isConnected && !g2.isMemoDisplayActive) {
         try {
@@ -1476,6 +1576,7 @@ final class WearableController extends ChangeNotifier
     final segmentId = delivery.segmentId;
     final transcript = delivery.transcript;
     final selectedRoute = _selectedAgentSpeechRoutes.remove(segmentId);
+    _syncSelectedAgentVadMode();
     if (selectedRoute == null &&
         await _voiceMemo.acceptFinalTranscript(segmentId, transcript)) {
       addLog(
@@ -1484,13 +1585,6 @@ final class WearableController extends ChangeNotifier
             'websocket=skipped',
       );
       return;
-    }
-    if (selectedRoute?.source == 'agent_detail' &&
-        _agentHistory.showTargetedSpeechTranscript(
-          segmentId: segmentId,
-          transcript: transcript,
-        )) {
-      _queueAgentHistoryDisplay();
     }
     if (!finalTranscriptCanRoute(delivery)) {
       await _completeTranscriptProjection(
