@@ -25,9 +25,9 @@ final class G2TextLayout {
     displayHeightPixels: G2Protocol.fullPageTextHeight,
     borderWidthPixels: G2Protocol.expandedTextBorderWidth,
     paddingPixels: G2Protocol.expandedTextPaddingLength,
-    measurementSafetyPixels: 6,
+    measurementSafetyPixels: 18,
     observedWidthCalibrationPixels: 50,
-    maximumVisibleRows: 10,
+    maximumVisibleRows: 9,
     maximumPageCharacters: historyMaximumPageCharacters,
   );
 
@@ -73,26 +73,35 @@ final class G2TextLayout {
     return lines;
   }
 
-  List<String> limitLines(String value, int maximumLines) {
+  List<String> limitLines(
+    String value,
+    int maximumLines, {
+    int? maximumWidthPixels,
+  }) {
     if (maximumLines < 1) {
       throw ArgumentError.value(maximumLines, 'maximumLines', 'must be >= 1');
     }
-    final wrapped = wrapParagraph(value);
+    final resolvedWidth = maximumWidthPixels ?? wrappingWidthPixels;
+    final wrapped = wrapParagraph(value, maximumWidthPixels: resolvedWidth);
     if (wrapped.length <= maximumLines) {
       return wrapped;
     }
     final visible = wrapped.take(maximumLines).toList(growable: false);
-    visible[visible.length - 1] = appendEllipsis(visible.last);
+    visible[visible.length - 1] = appendEllipsis(
+      visible.last,
+      maximumWidthPixels: resolvedWidth,
+    );
     return visible;
   }
 
-  List<String> wrapParagraph(String value) {
+  List<String> wrapParagraph(String value, {int? maximumWidthPixels}) {
+    final resolvedWidth = maximumWidthPixels ?? wrappingWidthPixels;
     final words = value.split(' ').where((word) => word.isNotEmpty);
     final lines = <String>[];
     var line = '';
     for (final sourceWord in words) {
       var remaining = sourceWord;
-      while (textWidth(remaining) > wrappingWidthPixels) {
+      while (textWidth(remaining) > resolvedWidth) {
         if (line.isNotEmpty) {
           lines.add(line);
           line = '';
@@ -102,7 +111,7 @@ final class G2TextLayout {
         var splitAt = 0;
         while (splitAt < runes.length) {
           final nextWidth = width + runeWidth(runes[splitAt]);
-          if (nextWidth > wrappingWidthPixels && splitAt > 0) {
+          if (nextWidth > resolvedWidth && splitAt > 0) {
             break;
           }
           width = nextWidth;
@@ -115,7 +124,7 @@ final class G2TextLayout {
         continue;
       }
       final candidate = line.isEmpty ? remaining : '$line $remaining';
-      if (textWidth(candidate) <= wrappingWidthPixels) {
+      if (textWidth(candidate) <= resolvedWidth) {
         line = candidate;
       } else {
         lines.add(line);
@@ -133,16 +142,24 @@ final class G2TextLayout {
   List<List<T>> paginateBlocks<T>(
     List<T> blocks, {
     required int Function(T block) rowCount,
+    int headerRows = 0,
     int footerRows = 0,
   }) {
     if (blocks.isEmpty) {
       return <List<T>>[];
     }
-    if (footerRows < 0 || footerRows >= maximumVisibleRows) {
+    if (headerRows < 0 || headerRows >= maximumVisibleRows) {
+      throw ArgumentError.value(
+        headerRows,
+        'headerRows',
+        'must be between 0 and maximumVisibleRows - 1',
+      );
+    }
+    if (footerRows < 0 || headerRows + footerRows >= maximumVisibleRows) {
       throw ArgumentError.value(
         footerRows,
         'footerRows',
-        'must be between 0 and maximumVisibleRows - 1',
+        'must leave at least one content row after reserved header rows',
       );
     }
     final totalRows = blocks.fold<int>(0, (sum, block) {
@@ -152,11 +169,11 @@ final class G2TextLayout {
       }
       return sum + rows;
     });
-    if (totalRows <= maximumVisibleRows) {
+    if (totalRows <= maximumVisibleRows - headerRows) {
       return <List<T>>[List<T>.of(blocks)];
     }
 
-    final rowBudget = maximumVisibleRows - footerRows;
+    final rowBudget = maximumVisibleRows - headerRows - footerRows;
     final pages = <List<T>>[];
     var page = <T>[];
     var usedRows = 0;
@@ -230,10 +247,30 @@ final class G2TextLayout {
     return '${String.fromCharCodes(runes).trimRight()}…';
   }
 
-  String appendEllipsis(String value) {
+  /// Fits [value] after a measured fixed prefix without allowing the combined
+  /// row to exceed the wrapping budget.
+  String fitLineWithLeading(
+    String value, {
+    required String leading,
+    int? maximumWidthPixels,
+  }) {
+    final resolvedWidth = maximumWidthPixels ?? wrappingWidthPixels;
+    final contentWidth = resolvedWidth - textWidth(leading);
+    if (contentWidth <= 0) {
+      throw ArgumentError.value(
+        leading,
+        'leading',
+        'must leave positive width for content',
+      );
+    }
+    return '$leading${fitLine(value, contentWidth)}';
+  }
+
+  String appendEllipsis(String value, {int? maximumWidthPixels}) {
+    final resolvedWidth = maximumWidthPixels ?? wrappingWidthPixels;
     final runes = value.trimRight().runes.toList(growable: true);
     while (runes.isNotEmpty &&
-        textWidth('${String.fromCharCodes(runes)}…') > wrappingWidthPixels) {
+        textWidth('${String.fromCharCodes(runes)}…') > resolvedWidth) {
       runes.removeLast();
     }
     return '${String.fromCharCodes(runes).trimRight()}…';

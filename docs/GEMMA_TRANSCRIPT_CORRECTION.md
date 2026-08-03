@@ -79,11 +79,12 @@ continuation WAV. The continuous file and
 live correction/route input remove only an exact repeated boundary-word
 sequence; every original per-chunk raw file remains independently durable.
 
-An agent row selected in the open G2 history selector, including its open
-five-exchange detail page, is explicit routing intent, not acoustic wake evidence.
-Speech that begins while that target is active enters the live Gemma queue even
-without leading `Hey` and routes the corrected transcript to that
-still-configured agent. The raw transcript remains independently durable.
+Listen Mode explicitly activated from an agent's retained-message detail page
+is routing intent, not acoustic wake evidence. Speech that begins while that
+mode is active enters the live Gemma queue even without leading `Hey` and routes
+the corrected transcript to that still-configured agent. Merely highlighting
+an agent row or opening its detail retains the ordinary wake-word path. The raw
+transcript remains independently durable.
 Restored jobs never route, and correction failure preserves the raw fallback.
 Memo and Dismiss never provide this override.
 

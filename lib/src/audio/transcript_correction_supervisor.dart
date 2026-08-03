@@ -233,14 +233,29 @@ final class TranscriptCorrectionSupervisor {
     }
   }
 
-  Future<void> queue(TranscriptCorrectionJob job) async {
+  Future<void> queue(
+    TranscriptCorrectionJob job, {
+    bool prioritize = false,
+  }) async {
     if (_disposed) {
       return;
     }
-    _pending[job.segmentId] = job;
+    _pending.remove(job.segmentId);
+    if (prioritize) {
+      final reordered = <String, TranscriptCorrectionJob>{
+        job.segmentId: job,
+        ..._pending,
+      };
+      _pending
+        ..clear()
+        ..addAll(reordered);
+    } else {
+      _pending[job.segmentId] = job;
+    }
     await _persistPending();
     onStatus(
       '[WorkBench][Correction] state=queued segment=${job.segmentId} '
+      'priority=${prioritize ? 'selected_agent' : 'normal'} '
       'pending=${_pending.length} stt_decode_ms=${job.sttDecodeMs} '
       'stt_total_ms=${job.sttTotalMs}',
     );

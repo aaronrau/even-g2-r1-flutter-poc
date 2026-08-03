@@ -848,6 +848,19 @@ final class VoiceWebSocketClient extends ChangeNotifier {
       }
       return;
     }
+    if (decoded is String) {
+      final message = decoded.trim();
+      if (message.isNotEmpty) {
+        await _deliverInbound(
+          VoiceWebSocketInboundEvent(
+            message: message,
+            kind: VoiceWebSocketInboundKind.message,
+          ),
+          generation,
+        );
+      }
+      return;
+    }
     if (decoded is! Map<String, dynamic>) {
       return;
     }
@@ -862,7 +875,6 @@ final class VoiceWebSocketClient extends ChangeNotifier {
     }
     if (type == 'message.error') {
       _handleRejection(decoded);
-      return;
     }
     if (type is String &&
         (type.startsWith('connection.') || type == 'pong' || type == 'ping')) {

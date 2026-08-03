@@ -276,7 +276,7 @@ void main() {
       return switch (call.method) {
         'currentDirectory' => <String, Object>{'displayName': 'Shared'},
         'listTranscriptions' => List<Object?>.generate(
-          25,
+          125,
           (index) => <Object?, Object?>{
             'id': 'transcript-$index',
             'originalText': 'Transcript $index',
@@ -284,7 +284,7 @@ void main() {
           },
         ),
         'listMessages' => List<Object?>.generate(
-          25,
+          125,
           (index) => <Object?, Object?>{
             'id': 'message-$index',
             'direction': 'received',
@@ -323,12 +323,12 @@ void main() {
       store.transcripts,
       hasLength(SharedAudioExportStore.maximumVisibleTranscripts),
     );
-    expect(store.transcripts.first.id, 'transcript-24');
+    expect(store.transcripts.first.id, 'transcript-124');
     expect(
       store.messages,
       hasLength(SharedAudioExportStore.maximumVisibleMessages),
     );
-    expect(store.messages.first.id, 'message-24');
+    expect(store.messages.first.id, 'message-124');
     expect(
       store.conversations,
       hasLength(SharedAudioExportStore.maximumVisibleConversationTurns),

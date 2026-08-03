@@ -6,6 +6,30 @@ transcript context beyond the explicit test phrase.
 
 ## Required markers
 
+Before every single-run or suite playback, foreground Work Bench and exercise
+its primary button through a complete connected → **Disconnect** →
+**Connect devices** → connected cycle. If the app starts disconnected, connect
+it first and then perform that full cycle. Do not call Android BLE APIs or app
+internals as a shortcut. Playback remains blocked until at least two fresh G2
+audio summaries arrive after the final reconnect. Preserve
+`connection-preflight.log` and `connection-preflight.json` with the trial.
+
+```text
+[WorkBench][Test] state=connection_initial_connect case=preflight
+[WorkBench][Test] state=connection_initial_retry case=preflight  # only when startup delayed the first tap
+[WorkBench][Test] state=connection_reconnect_start case=preflight
+[WorkBench][Test] state=connection_disconnect_ready case=preflight
+[WorkBench][Test] state=connection_audio_wait case=preflight
+[WorkBench][Test] state=connection_reconnect_ready case=preflight
+```
+
+The initial-connect markers are conditional when the app already receives live
+G2 audio. A startup retry waits for the current pipeline-ready marker, while
+fresh audio that arrives during that wait takes precedence and continues the
+cycle immediately. Initial G2 audio can precede completion of the app's
+connection action; retry the visible **Disconnect** control until the expected
+disconnect marker arrives instead of bypassing the button.
+
 The host runner brackets every acoustic stimulus with markers written through
 Android's `log` command:
 
@@ -23,9 +47,10 @@ peak-normalized to 95% for physical playback, 90% computer playback volume, one
 second of zero-PCM leading silence, and 500 ms of zero-PCM trailing silence.
 The report must identify both the clean generated stimulus and the file
 actually played with SHA-256, byte length, sample rate, channel count, and
-duration, plus the applied normalization gain. Phone-speaker fallback must play
-the same normalized, padded fixture. The original volume is restored in a
-`finally` path.
+duration, the applied normalization gain, and
+`playback_path=computer_speaker`. Phone/app playback is not a valid fixture and
+must be rejected before a trial starts. The original computer volume is
+restored in a `finally` path.
 
 ```text
 [WorkBench][Capture] state=ready journal=writable

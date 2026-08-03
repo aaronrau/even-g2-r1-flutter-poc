@@ -6,9 +6,13 @@ import 'package:flutter/material.dart';
 import '../audio/shared_audio_export_store.dart';
 import '../audio/voice_memo_models.dart';
 import '../ble/ble_models.dart';
+import '../websocket/agent_exchange_store.dart';
 import 'workbench_theme.dart';
 
 enum HomeHistoryTab { events, messages, conversations }
+
+typedef DirectAgentMessageSender =
+    Future<bool> Function({required String agent, required String message});
 
 final class HomeHistoryPanel extends StatefulWidget {
   const HomeHistoryPanel({
@@ -26,11 +30,15 @@ final class HomeHistoryPanel extends StatefulWidget {
     required this.isLoadingConversations,
     required this.isStorageBusy,
     this.messages = const <SharedWebSocketMessage>[],
+    this.agentNames = const <String>[],
+    this.agentMessages = const <AgentMessageView>[],
     this.transcriptions = const <SharedTranscript>[],
     this.supportsSharedFolder = false,
     this.isLoadingMessages = false,
+    this.isLoadingAgentMessages = false,
     this.sharedFolderName,
     this.messageError,
+    this.agentMessageError,
     this.conversationError,
     this.onClearEvents,
     this.onChooseFolder,
@@ -38,6 +46,7 @@ final class HomeHistoryPanel extends StatefulWidget {
     this.onRefreshConversations,
     this.onLoadMessages,
     this.onLoadConversations,
+    this.onSendAgentMessage,
     this.onTabChanged,
     this.onToggleTranscriptAudio,
     this.isPlayingTranscript,
@@ -58,11 +67,15 @@ final class HomeHistoryPanel extends StatefulWidget {
   final bool isLoadingConversations;
   final bool isStorageBusy;
   final List<SharedWebSocketMessage> messages;
+  final List<String> agentNames;
+  final List<AgentMessageView> agentMessages;
   final List<SharedTranscript> transcriptions;
   final bool supportsSharedFolder;
   final bool isLoadingMessages;
+  final bool isLoadingAgentMessages;
   final String? sharedFolderName;
   final String? messageError;
+  final String? agentMessageError;
   final String? conversationError;
   final VoidCallback? onClearEvents;
   final VoidCallback? onChooseFolder;
@@ -70,6 +83,7 @@ final class HomeHistoryPanel extends StatefulWidget {
   final VoidCallback? onRefreshConversations;
   final Future<void> Function()? onLoadMessages;
   final Future<void> Function()? onLoadConversations;
+  final DirectAgentMessageSender? onSendAgentMessage;
   final ValueChanged<HomeHistoryTab>? onTabChanged;
   final ValueChanged<SharedTranscript>? onToggleTranscriptAudio;
   final bool Function(SharedTranscript transcript)? isPlayingTranscript;
@@ -92,6 +106,12 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
   bool _isLoadingConversationsForTab = false;
   bool _messagesLoadedOnce = false;
   bool _conversationsLoadedOnce = false;
+  bool _isSendingAgentMessage = false;
+  bool _agentSendSucceeded = false;
+  String? _selectedMessageAgent;
+  String? _agentSendStatus;
+  final TextEditingController _agentMessageController = TextEditingController();
+  final FocusNode _agentMessageFocusNode = FocusNode();
 
   HomeHistoryTab get _selectedTab =>
       HomeHistoryTab.values[_tabController.index];
@@ -110,8 +130,19 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.sharedFolderName != widget.sharedFolderName ||
         oldWidget.messages.length != widget.messages.length ||
-        oldWidget.transcriptions.length != widget.transcriptions.length) {
+        oldWidget.transcriptions.length != widget.transcriptions.length ||
+        oldWidget.agentMessages.length != widget.agentMessages.length) {
       _visibleMessageCount = _messagePageSize;
+    }
+    final selectedAgent = _selectedMessageAgent;
+    if (selectedAgent != null &&
+        !widget.agentNames.any(
+          (agent) => agent.toLowerCase() == selectedAgent.toLowerCase(),
+        )) {
+      _agentMessageFocusNode.unfocus();
+      _selectedMessageAgent = null;
+      _agentMessageController.clear();
+      _agentSendStatus = null;
     }
     if (oldWidget.conversations.length != widget.conversations.length ||
         oldWidget.voiceMemos.length != widget.voiceMemos.length) {
@@ -127,6 +158,8 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     _tabController
       ..removeListener(_tabChanged)
       ..dispose();
+    _agentMessageController.dispose();
+    _agentMessageFocusNode.dispose();
     super.dispose();
   }
 
@@ -310,6 +343,58 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
   }
 
   Widget _buildMessages(BuildContext context) {
+    final agents = _configuredAgents();
+    final selectedAgent = _selectedMessageAgent;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        if (agents.isNotEmpty) ...<Widget>[
+          SizedBox(
+            height: 48,
+            child: ListView.separated(
+              key: const ValueKey<String>('message-agent-chips'),
+              scrollDirection: Axis.horizontal,
+              itemCount: agents.length + 1,
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return ChoiceChip(
+                    key: const ValueKey<String>('message-agent-all'),
+                    label: const Text('All'),
+                    selected: selectedAgent == null,
+                    showCheckmark: false,
+                    onSelected: _isSendingAgentMessage
+                        ? null
+                        : (_) => _selectMessageAgent(null),
+                  );
+                }
+                final agent = agents[index - 1];
+                final selected =
+                    selectedAgent?.toLowerCase() == agent.toLowerCase();
+                return ChoiceChip(
+                  key: ValueKey<String>('message-agent-$agent'),
+                  label: Text(agent),
+                  selected: selected,
+                  showCheckmark: false,
+                  onSelected: _isSendingAgentMessage
+                      ? null
+                      : (value) => _selectMessageAgent(value ? agent : null),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+        Expanded(
+          child: selectedAgent == null
+              ? _buildAllMessages(context)
+              : _buildAgentMessages(context, selectedAgent),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAllMessages(BuildContext context) {
     final theme = Theme.of(context);
     final folderName = widget.sharedFolderName;
     if (folderName == null) {
@@ -483,6 +568,120 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
     );
   }
 
+  Widget _buildAgentMessages(BuildContext context, String agent) {
+    final theme = Theme.of(context);
+    final messages =
+        widget.agentMessages
+            .where(
+              (message) => message.agent.toLowerCase() == agent.toLowerCase(),
+            )
+            .toList(growable: false)
+          ..sort((left, right) {
+            final byTime = right.updatedAt.compareTo(left.updatedAt);
+            return byTime != 0 ? byTime : right.id.compareTo(left.id);
+          });
+    final visibleCount = min(_visibleMessageCount, messages.length);
+    final canSend =
+        !_isSendingAgentMessage &&
+        _agentMessageController.text.trim().isNotEmpty &&
+        widget.onSendAgentMessage != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text(
+          '${messages.length} saved '
+          '${messages.length == 1 ? 'message' : 'messages'} with $agent',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodySmall,
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          key: const ValueKey<String>('direct-agent-message-field'),
+          controller: _agentMessageController,
+          focusNode: _agentMessageFocusNode,
+          enabled: !_isSendingAgentMessage,
+          minLines: 1,
+          maxLines: 3,
+          textInputAction: TextInputAction.send,
+          decoration: InputDecoration(
+            labelText: 'Message $agent',
+            suffixIcon: IconButton(
+              key: const ValueKey<String>('dismiss-agent-message-keyboard'),
+              tooltip: 'Dismiss keyboard',
+              onPressed: _agentMessageFocusNode.unfocus,
+              icon: const Icon(Icons.close),
+            ),
+          ),
+          onChanged: (_) {
+            setState(() {
+              _agentSendStatus = null;
+              _agentSendSucceeded = false;
+            });
+          },
+          onSubmitted: (_) {
+            if (canSend) {
+              unawaited(_sendSelectedAgentMessage());
+            }
+          },
+        ),
+        if (_agentSendStatus case final String status) ...<Widget>[
+          const SizedBox(height: 8),
+          Semantics(
+            liveRegion: true,
+            child: Text(
+              status,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: _agentSendSucceeded
+                    ? theme.colorScheme.onSurface
+                    : theme.colorScheme.error,
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 12),
+        Expanded(
+          child: switch ((
+            widget.isLoadingAgentMessages,
+            messages.isEmpty,
+            widget.agentMessageError,
+          )) {
+            (true, true, _) => _buildLoadingState(
+              context,
+              key: const ValueKey<String>('agent-messages-loading'),
+              label: 'Loading agent messages…',
+            ),
+            (_, true, final String error) => Center(
+              child: Text(
+                error,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+            (_, true, _) => Center(
+              child: Text(
+                'No messages with $agent yet',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+            _ => NotificationListener<ScrollNotification>(
+              onNotification: (notification) =>
+                  _loadMoreMessages(notification, messages.length),
+              child: ListView.separated(
+                key: const ValueKey<String>('agent-messages-list'),
+                itemCount: visibleCount,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (context, index) =>
+                    _buildAgentMessage(context, messages[index]),
+              ),
+            ),
+          },
+        ),
+      ],
+    );
+  }
+
   List<_MessageHistoryEntry> _messageHistory() {
     final history = <_MessageHistoryEntry>[
       for (final message in widget.messages)
@@ -494,7 +693,7 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
       final byTime = right.updatedAt.compareTo(left.updatedAt);
       return byTime != 0 ? byTime : right.id.compareTo(left.id);
     });
-    return history.take(_messagePageSize).toList(growable: false);
+    return history;
   }
 
   Widget _buildWebSocketMessage(
@@ -519,6 +718,114 @@ final class _HomeHistoryPanelState extends State<HomeHistoryPanel>
         ],
       ),
     );
+  }
+
+  Widget _buildAgentMessage(BuildContext context, AgentMessageView message) {
+    final theme = Theme.of(context);
+    final direction = switch (message.direction) {
+      AgentMessageDirection.sent => 'Sent',
+      AgentMessageDirection.received => 'Received',
+    };
+    return Padding(
+      key: ValueKey<String>('agent-message-${message.id}'),
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(direction, style: theme.textTheme.titleSmall),
+          const SizedBox(height: 4),
+          Text(
+            _withoutLeadingAgent(message.message, message.agent),
+            style: theme.textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            _savedLabel(context, message.updatedAt),
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<String> _configuredAgents() {
+    final seen = <String>{};
+    return widget.agentNames
+        .map((agent) => agent.trim())
+        .where((agent) => agent.isNotEmpty && seen.add(agent.toLowerCase()))
+        .toList(growable: false);
+  }
+
+  void _selectMessageAgent(String? agent) {
+    if (agent == null) {
+      _agentMessageFocusNode.unfocus();
+    }
+    setState(() {
+      _selectedMessageAgent = agent;
+      _visibleMessageCount = _messagePageSize;
+      _agentMessageController.clear();
+      _agentSendStatus = null;
+      _agentSendSucceeded = false;
+    });
+    if (agent != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted &&
+            _selectedMessageAgent?.toLowerCase() == agent.toLowerCase()) {
+          _agentMessageFocusNode.requestFocus();
+        }
+      });
+    }
+  }
+
+  Future<void> _sendSelectedAgentMessage() async {
+    final agent = _selectedMessageAgent;
+    final sender = widget.onSendAgentMessage;
+    final message = _agentMessageController.text.trim();
+    if (agent == null || sender == null || message.isEmpty) {
+      return;
+    }
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() {
+      _isSendingAgentMessage = true;
+      _agentSendStatus = null;
+      _agentSendSucceeded = false;
+    });
+    var sent = false;
+    try {
+      sent = await sender(agent: agent, message: message);
+    } on Object {
+      sent = false;
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isSendingAgentMessage = false;
+      _agentSendSucceeded = sent;
+      if (sent) {
+        _agentMessageController.clear();
+        _agentSendStatus = 'Sent to $agent.';
+      } else {
+        _agentSendStatus = 'Could not send to $agent. Check the connection.';
+      }
+    });
+  }
+
+  String _withoutLeadingAgent(String value, String agent) {
+    final trimmed = value.trim();
+    final normalizedAgent = agent.trim().replaceFirst(RegExp(r':+$'), '');
+    if (normalizedAgent.isEmpty) {
+      return trimmed;
+    }
+    return trimmed
+        .replaceFirst(
+          RegExp(
+            '^${RegExp.escape(normalizedAgent)}\\s*:\\s*',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .trimLeft();
   }
 
   Widget _buildConversations(BuildContext context) {

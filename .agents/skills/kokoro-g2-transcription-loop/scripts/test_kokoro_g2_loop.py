@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import contextlib
 import importlib.util
+import io
 import struct
 import sys
 import tempfile
@@ -37,25 +39,82 @@ class ScoringTest(unittest.TestCase):
             ["run", "--output-dir", "/tmp/test-run"]
         )
         self.assertEqual(args.computer_volume, 0.90)
-        self.assertIsNone(args.phone_volume)
+        self.assertEqual(MODULE.PLAYBACK_PATH, "computer_speaker")
+        self.assertFalse(hasattr(args, "phone_speaker"))
+        self.assertFalse(hasattr(args, "phone_volume"))
         self.assertEqual(args.leading_silence_seconds, 1.0)
         self.assertEqual(args.trailing_silence_seconds, 0.5)
+        self.assertEqual(args.connection_timeout, 60.0)
 
-    def test_phone_volume_uses_device_range(self) -> None:
-        volume = MODULE.parse_media_volume(
-            "[V] volume is 7 in range [0..15]"
+    def test_preflight_command_requires_app_button_reconnect(self) -> None:
+        args = MODULE.parser().parse_args(
+            ["preflight", "--output-dir", "/tmp/test-preflight"]
         )
-        self.assertIsNotNone(volume)
-        assert volume is not None
-        self.assertEqual(volume.current, 7)
-        self.assertEqual(volume.at_fraction(0.90), 14)
 
-        wide_volume = MODULE.parse_media_volume(
-            "[V] volume is 0 in range [0..150]"
+        self.assertEqual(args.command, "preflight")
+        self.assertEqual(args.connection_timeout, 60.0)
+
+    def test_physical_run_rejects_phone_speaker_playback(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                MODULE.parser().parse_args(
+                    [
+                        "run",
+                        "--output-dir",
+                        "/tmp/test-run",
+                        "--phone-speaker",
+                    ]
+                )
+
+    def test_connection_button_tap_point_uses_phone_geometry(self) -> None:
+        self.assertEqual(
+            MODULE.connection_button_tap_point(
+                "Physical size: 1080x2400\n",
+                "Physical density: 480\n",
+            ),
+            (216, 156),
         )
-        self.assertIsNotNone(wide_volume)
-        assert wide_volume is not None
-        self.assertEqual(wide_volume.at_fraction(0.90), 135)
+        with self.assertRaises(RuntimeError):
+            MODULE.connection_button_tap_point(
+                "Physical size: 2400x1080\n",
+                "Physical density: 480\n",
+            )
+
+    def test_connection_test_markers_are_bounded(self) -> None:
+        self.assertEqual(
+            MODULE.test_marker("connection_reconnect_ready", "preflight"),
+            "[WorkBench][Test] "
+            "state=connection_reconnect_ready case=preflight",
+        )
+        self.assertIn(
+            "state=connection_disconnect_ready",
+            MODULE.test_marker("connection_disconnect_ready", "preflight"),
+        )
+        self.assertIn(
+            "state=connection_initial_retry",
+            MODULE.test_marker("connection_initial_retry", "preflight"),
+        )
+        with self.assertRaises(ValueError):
+            MODULE.test_marker("unbounded", "preflight")
+
+    def test_late_audio_wins_while_waiting_for_pipeline_ready(self) -> None:
+        marker = MODULE.test_marker("connection_audio_wait", "initial_connect")
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "connection.log"
+            log.write_text(
+                "\n".join([marker, self._audio(1), self._audio(2)]),
+                encoding="utf-8",
+            )
+
+            samples, pipeline_ready = MODULE._wait_for_audio_or_log_pattern(
+                log,
+                marker,
+                MODULE.PIPELINE_READY_RE,
+                timeout_seconds=0.1,
+            )
+
+        self.assertEqual(samples, 2)
+        self.assertFalse(pipeline_ready)
 
     def test_android_log_tag_can_be_restored_to_empty(self) -> None:
         self.assertEqual(
@@ -188,6 +247,38 @@ class ScoringTest(unittest.TestCase):
             min_frames_per_second=90,
         )
         self.assertTrue(report.passed)
+
+    def test_report_rejects_a_failed_connection_preflight(self) -> None:
+        log = "\n".join(
+            [
+                self._audio(5),
+                self._audio(90),
+                "[WorkBench][Transcript][FINAL] segment=1 text=hello",
+            ]
+        )
+        failed = MODULE.build_report(
+            expected="hello",
+            log_text=log,
+            baseline_count=1,
+            max_wer=0.25,
+            min_activity_rise=30,
+            min_frames_per_second=90,
+            connection_preflight_passed=False,
+        )
+        passed = MODULE.build_report(
+            expected="hello",
+            log_text=log,
+            baseline_count=1,
+            max_wer=0.25,
+            min_activity_rise=30,
+            min_frames_per_second=90,
+            connection_preflight_passed=True,
+        )
+
+        self.assertFalse(failed.checks["connection_preflight"])
+        self.assertFalse(failed.passed)
+        self.assertTrue(passed.checks["connection_preflight"])
+        self.assertTrue(passed.passed)
 
     def test_report_combines_vad_split_transcripts_in_order(self) -> None:
         log = "\n".join(

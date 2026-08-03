@@ -210,10 +210,33 @@ void main() {
     );
   });
 
-  test('active agent-detail speech consumes tap instead of dismissing', () {
+  test('detail tap activates, exits, sends, and dismisses by state', () {
     expect(
       resolveAgentDetailTranscriptTapAction(
         gestureType: 0,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.listen,
+        listenModeSelected: false,
+        speechState: null,
+      ),
+      AgentDetailTranscriptTapAction.activateListenMode,
+    );
+    expect(
+      resolveAgentDetailTranscriptTapAction(
+        gestureType: 0,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.listen,
+        listenModeSelected: true,
+        speechState: null,
+      ),
+      AgentDetailTranscriptTapAction.exitListenMode,
+    );
+    expect(
+      resolveAgentDetailTranscriptTapAction(
+        gestureType: 0,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.listen,
+        listenModeSelected: true,
         speechState: G2AgentDetailSpeechState.listening,
       ),
       AgentDetailTranscriptTapAction.finishSpeech,
@@ -221,23 +244,94 @@ void main() {
     expect(
       resolveAgentDetailTranscriptTapAction(
         gestureType: 0,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.listen,
+        listenModeSelected: false,
         speechState: G2AgentDetailSpeechState.sending,
       ),
-      AgentDetailTranscriptTapAction.prioritizeCorrection,
+      AgentDetailTranscriptTapAction.dismiss,
     );
-    for (final state in <G2AgentDetailSpeechState?>[
-      null,
-      G2AgentDetailSpeechState.sent,
-      G2AgentDetailSpeechState.saved,
-    ]) {
-      expect(
-        resolveAgentDetailTranscriptTapAction(
-          gestureType: 0,
-          speechState: state,
-        ),
-        AgentDetailTranscriptTapAction.none,
-      );
-    }
+    expect(
+      resolveAgentDetailTranscriptTapAction(
+        gestureType: 1,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.listen,
+        listenModeSelected: false,
+        speechState: G2AgentDetailSpeechState.sending,
+      ),
+      AgentDetailTranscriptTapAction.none,
+    );
+    expect(
+      resolveAgentDetailTranscriptTapAction(
+        gestureType: 0,
+        isAgentDetail: false,
+        detailControl: G2AgentDetailControl.listen,
+        listenModeSelected: false,
+        speechState: null,
+      ),
+      AgentDetailTranscriptTapAction.none,
+    );
+    expect(
+      resolveAgentDetailTranscriptTapAction(
+        gestureType: 0,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.back,
+        listenModeSelected: false,
+        speechState: null,
+      ),
+      AgentDetailTranscriptTapAction.returnToSelector,
+    );
+  });
+
+  test('detail swipes move between controls before paging', () {
+    expect(
+      resolveAgentDetailSwipeAction(
+        gestureType: 2,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.listen,
+      ),
+      AgentDetailSwipeAction.nextPage,
+    );
+    expect(
+      resolveAgentDetailSwipeAction(
+        gestureType: 1,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.listen,
+      ),
+      AgentDetailSwipeAction.focusBack,
+    );
+    expect(
+      resolveAgentDetailSwipeAction(
+        gestureType: 2,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.back,
+      ),
+      AgentDetailSwipeAction.focusListen,
+    );
+    expect(
+      resolveAgentDetailSwipeAction(
+        gestureType: 1,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.back,
+      ),
+      AgentDetailSwipeAction.previousPage,
+    );
+    expect(
+      resolveAgentDetailSwipeAction(
+        gestureType: 0,
+        isAgentDetail: true,
+        detailControl: G2AgentDetailControl.listen,
+      ),
+      AgentDetailSwipeAction.none,
+    );
+    expect(
+      resolveAgentDetailSwipeAction(
+        gestureType: 2,
+        isAgentDetail: false,
+        detailControl: G2AgentDetailControl.listen,
+      ),
+      AgentDetailSwipeAction.nextPage,
+    );
   });
 
   test('only a Gemma-corrected final transcript can route', () {
@@ -265,10 +359,10 @@ void main() {
     );
   });
 
-  test('selected-agent delivery bypasses the ordinary outbound queue', () {
+  test('selected-agent delivery uses the retrying outbound queue', () {
     expect(
       deliveryModeForAgentRoute(explicitlySelected: true),
-      VoiceWebSocketDeliveryMode.immediate,
+      VoiceWebSocketDeliveryMode.queued,
     );
     expect(
       deliveryModeForAgentRoute(explicitlySelected: false),

@@ -15,8 +15,20 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
 ## Run the loop
 
 1. Read [references/workbench-log-contract.md](references/workbench-log-contract.md).
-2. Confirm exactly one Android device is available and Work Bench shows G2
-   audio streaming.
+2. Foreground Work Bench and use its primary connection button for a complete
+   preflight cycle. If necessary, connect first; then tap **Disconnect**, wait
+   for **Connect devices**, tap **Connect devices**, and wait for
+   **Disconnect** plus fresh G2 audio frame summaries. The physical runners do
+   this automatically and refuse to start playback if the app button or fresh
+   post-reconnect audio is unavailable. If the connection button is initially
+   disabled during app startup, the runner waits for the current pipeline-ready
+   marker and retries that same visible button. Late fresh audio also satisfies
+   the wait immediately; it is never discarded merely because connection took
+   longer than the first probe. If initial connection work still owns the
+   button after audio begins, the runner retries the visible **Disconnect**
+   control until the expected disconnect marker arrives. Never infer readiness
+   from an old connection marker. With more than one Android device attached,
+   pass the intended Work Bench device through `--serial`.
 3. Prepare the isolated computer-side runtime:
 
    ```bash
@@ -48,20 +60,11 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
    silent log defaults cannot erase the evidence, then restores every prior tag
    value.
 
-   If the workstation sink is not physically audible near the glasses, keep
-   generation and orchestration on the computer but use the debug build's
-   phone-speaker loop:
-
-   ```bash
-   python3 .agents/skills/kokoro-g2-transcription-loop/scripts/kokoro_g2_loop.py run \
-     --phone-speaker \
-     --output-dir /tmp/workbench-kokoro-phone-001
-   ```
-
-   Phone-speaker playback uses 90% of the device-reported media-volume range
-   by default, including devices whose maximum index is greater than 15, and
-   restores the original phone volume in `finally`. Use `--phone-volume` only
-   as a raw device-index override during runner diagnosis.
+   Physical playback is computer-speaker only. The runner has no phone-speaker
+   option and rejects `--phone-speaker`; never push the fixture to the Android
+   device or trigger playback from the app. If the workstation sink is not
+   physically audible near the glasses, stop and report that hardware setup as
+   the earliest failed boundary.
 
 5. Inspect `report.json`, `device.log`, `stimulus.wav`, and the padded playback
    WAV in the output directory. The report records SHA-256, byte length, sample
@@ -69,6 +72,8 @@ Kokoro on computer → computer speaker → G2 microphones → BLE LC3
    files. Do not accept a transcript-only pass. Require all of:
 
    - both host-controlled playback boundary markers were observed;
+   - the app-button disconnect/reconnect preflight completed and fresh G2 audio
+     frames arrived before computer playback;
    - G2 audio frames continued during playback;
    - audio activity rose clearly above samples recorded before the playback
      start marker;
@@ -181,6 +186,8 @@ report the pass ratio and each distinct failure boundary.
 
 - `prepare`: create an isolated Sherpa-ONNX environment and download the
   official quantized Kokoro model.
+- `preflight`: exercise only the mandatory Work Bench app-button
+  disconnect/reconnect and fresh-audio gate without playing a fixture.
 - `generate`: synthesize only, useful for checking workstation playback.
 - `run`: synthesize, capture logcat, play the phrase, and write a JSON report.
 - `score-log`: rescore an existing device log without replaying audio.
@@ -188,8 +195,8 @@ report the pass ratio and each distinct failure boundary.
 - `python3 .agents/skills/kokoro-g2-transcription-loop/scripts/test_kokoro_g2_loop.py && python3
   .agents/skills/kokoro-g2-transcription-loop/scripts/test_kokoro_turn_suite.py`:
   verify playback boundary scoring, quiet-baseline isolation, padding,
-  immutable artifact handling, stale-transcript rejection, and suite
-  integration.
+  immutable artifact handling, mandatory app-button reconnection,
+  computer-only playback, stale-transcript rejection, and suite integration.
 
 Run
 `python3 .agents/skills/kokoro-g2-transcription-loop/scripts/kokoro_g2_loop.py COMMAND --help`

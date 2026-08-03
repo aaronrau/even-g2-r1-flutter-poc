@@ -5,6 +5,7 @@ import 'package:even_g2_r1_poc/src/audio/voice_memo_models.dart';
 import 'package:even_g2_r1_poc/src/ble/ble_models.dart';
 import 'package:even_g2_r1_poc/src/ui/home_history_panel.dart';
 import 'package:even_g2_r1_poc/src/ui/workbench_theme.dart';
+import 'package:even_g2_r1_poc/src/websocket/agent_exchange_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -244,6 +245,289 @@ void main() {
     expect(chooseButton, findsOneWidget);
     await tester.tap(chooseButton);
     expect(chooseCount, 1);
+  });
+
+  testWidgets('filters agent messages and sends directly from its chip', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    String? sentAgent;
+    String? sentMessage;
+    final now = DateTime(2026, 1, 2, 3, 4);
+
+    await tester.pumpWidget(
+      _app(
+        HomeHistoryPanel(
+          events: const <PooledLog>[],
+          conversations: const <SharedConversationTurn>[],
+          agentNames: const <String>['Flux', 'Pike'],
+          agentMessages: <AgentMessageView>[
+            AgentMessageView(
+              id: 'flux-sent',
+              agent: 'Flux',
+              direction: AgentMessageDirection.sent,
+              message: 'Inspect the synthetic build.',
+              updatedAt: now,
+            ),
+            AgentMessageView(
+              id: 'flux-received',
+              agent: 'Flux',
+              direction: AgentMessageDirection.received,
+              message: 'Flux: Synthetic build is ready.',
+              updatedAt: now.add(const Duration(minutes: 1)),
+            ),
+            AgentMessageView(
+              id: 'pike-received',
+              agent: 'Pike',
+              direction: AgentMessageDirection.received,
+              message: 'Pike: Unrelated synthetic update.',
+              updatedAt: now.add(const Duration(minutes: 2)),
+            ),
+          ],
+          analysisEnabled: false,
+          needsEnrollment: false,
+          analysisState: 'disabled',
+          knownSpeakerCount: 0,
+          pendingConversationCount: 0,
+          isLoadingConversations: false,
+          isStorageBusy: false,
+          onSendAgentMessage:
+              ({required String agent, required String message}) async {
+                sentAgent = agent;
+                sentMessage = message;
+                return true;
+              },
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Messages'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ChoiceChip), findsNWidgets(3));
+    expect(
+      tester
+          .widget<ChoiceChip>(
+            find.byKey(const ValueKey<String>('message-agent-all')),
+          )
+          .selected,
+      isTrue,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('direct-agent-message-field')),
+      findsNothing,
+    );
+    expect(
+      tester
+          .getSize(find.byKey(const ValueKey<String>('message-agent-Flux')))
+          .height,
+      greaterThanOrEqualTo(48),
+    );
+    await tester.tap(find.byKey(const ValueKey<String>('message-agent-Flux')));
+    await tester.pumpAndSettle();
+
+    final selectedAgentField = tester.widget<TextField>(
+      find.byKey(const ValueKey<String>('direct-agent-message-field')),
+    );
+    expect(selectedAgentField.focusNode?.hasFocus, isTrue);
+    expect(find.text('2 saved messages with Flux'), findsOneWidget);
+    expect(find.text('Inspect the synthetic build.'), findsOneWidget);
+    expect(find.text('Synthetic build is ready.'), findsOneWidget);
+    expect(find.textContaining('Unrelated synthetic update'), findsNothing);
+    expect(find.text('Sent'), findsOneWidget);
+    expect(find.text('Received'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('direct-agent-message-field')),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .getSize(
+            find.byKey(const ValueKey<String>('direct-agent-message-field')),
+          )
+          .width,
+      greaterThan(300),
+    );
+    expect(find.byIcon(Icons.send), findsNothing);
+
+    await tester.enterText(
+      find.byKey(const ValueKey<String>('direct-agent-message-field')),
+      'Run the next synthetic check.',
+    );
+    await tester.pump();
+    final dismissKeyboard = find.byKey(
+      const ValueKey<String>('dismiss-agent-message-keyboard'),
+    );
+    expect(dismissKeyboard, findsOneWidget);
+    expect(tester.getSize(dismissKeyboard).height, greaterThanOrEqualTo(48));
+    await tester.tap(dismissKeyboard);
+    await tester.pumpAndSettle();
+    expect(selectedAgentField.focusNode?.hasFocus, isFalse);
+    expect(find.text('Run the next synthetic check.'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('direct-agent-message-field')),
+    );
+    await tester.pumpAndSettle();
+    expect(selectedAgentField.focusNode?.hasFocus, isTrue);
+
+    await tester.testTextInput.receiveAction(TextInputAction.send);
+    await tester.pumpAndSettle();
+
+    expect(sentAgent, 'Flux');
+    expect(sentMessage, 'Run the next synthetic check.');
+    expect(find.text('Sent to Flux.'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextField>(
+            find.byKey(const ValueKey<String>('direct-agent-message-field')),
+          )
+          .controller
+          ?.text,
+      isEmpty,
+    );
+
+    await tester.tap(find.byKey(const ValueKey<String>('message-agent-Pike')));
+    await tester.pumpAndSettle();
+    expect(selectedAgentField.focusNode?.hasFocus, isTrue);
+
+    await tester.tap(find.byKey(const ValueKey<String>('message-agent-all')));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<ChoiceChip>(
+            find.byKey(const ValueKey<String>('message-agent-all')),
+          )
+          .selected,
+      isTrue,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('direct-agent-message-field')),
+      findsNothing,
+    );
+    expect(selectedAgentField.focusNode?.hasFocus, isFalse);
+    expect(find.textContaining('Shared message folders'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('retains a direct message draft when sending fails', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _app(
+        HomeHistoryPanel(
+          events: const <PooledLog>[],
+          conversations: const <SharedConversationTurn>[],
+          agentNames: const <String>['Flux'],
+          analysisEnabled: false,
+          needsEnrollment: false,
+          analysisState: 'disabled',
+          knownSpeakerCount: 0,
+          pendingConversationCount: 0,
+          isLoadingConversations: false,
+          isStorageBusy: false,
+          onSendAgentMessage:
+              ({required String agent, required String message}) async => false,
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Messages'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Flux'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey<String>('direct-agent-message-field')),
+      'Keep this synthetic draft.',
+    );
+    await tester.pump();
+    await tester.testTextInput.receiveAction(TextInputAction.send);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Could not send to Flux. Check the connection.'),
+      findsOneWidget,
+    );
+    expect(find.text('Keep this synthetic draft.'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('loads more All and selected-agent messages while scrolling', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final now = DateTime(2026, 1, 2);
+
+    await tester.pumpWidget(
+      _app(
+        HomeHistoryPanel(
+          events: const <PooledLog>[],
+          conversations: const <SharedConversationTurn>[],
+          messages: List<SharedWebSocketMessage>.generate(
+            30,
+            (index) => SharedWebSocketMessage(
+              id: 'shared-$index',
+              direction: SharedWebSocketMessageDirection.received,
+              text: 'Shared synthetic message $index',
+              updatedAt: now.add(Duration(minutes: index)),
+            ),
+          ),
+          agentNames: const <String>['Flux'],
+          agentMessages: List<AgentMessageView>.generate(
+            30,
+            (index) => AgentMessageView(
+              id: 'agent-$index',
+              agent: 'Flux',
+              direction: AgentMessageDirection.received,
+              message: 'Flux: Agent synthetic message $index',
+              updatedAt: now.add(Duration(minutes: index)),
+            ),
+          ),
+          sharedFolderName: 'Synthetic history',
+          analysisEnabled: false,
+          needsEnrollment: false,
+          analysisState: 'disabled',
+          knownSpeakerCount: 0,
+          pendingConversationCount: 0,
+          isLoadingConversations: false,
+          isStorageBusy: false,
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Messages'));
+    await tester.pumpAndSettle();
+
+    int visibleItems(String key) {
+      final list = tester.widget<ListView>(find.byKey(ValueKey<String>(key)));
+      final separatedChildCount = list.childrenDelegate.estimatedChildCount!;
+      return (separatedChildCount + 1) ~/ 2;
+    }
+
+    expect(visibleItems('messages-list'), 20);
+    await tester.fling(
+      find.byKey(const ValueKey<String>('messages-list')),
+      const Offset(0, -5000),
+      2500,
+    );
+    await tester.pumpAndSettle();
+    expect(visibleItems('messages-list'), 30);
+
+    await tester.tap(find.byKey(const ValueKey<String>('message-agent-Flux')));
+    await tester.pumpAndSettle();
+
+    expect(visibleItems('agent-messages-list'), 20);
+    await tester.fling(
+      find.byKey(const ValueKey<String>('agent-messages-list')),
+      const Offset(0, -5000),
+      2500,
+    );
+    await tester.pumpAndSettle();
+    expect(visibleItems('agent-messages-list'), 30);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('shows first-load indicators for Messages and Conversation', (
@@ -500,7 +784,7 @@ void main() {
     expect(delegate.estimatedChildCount, 30);
   });
 
-  testWidgets('retains only the twenty most recent Messages items', (
+  testWidgets('loads retained Messages items in twenty-row pages', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
@@ -542,7 +826,9 @@ void main() {
 
     expect(_visibleMessageItems(tester), 20);
     await _jumpListToEnd(tester, 'messages-list');
-    expect(_visibleMessageItems(tester), 20);
+    expect(_visibleMessageItems(tester), 40);
+    await _jumpListToEnd(tester, 'messages-list');
+    expect(_visibleMessageItems(tester), 45);
     expect(tester.takeException(), isNull);
   });
 

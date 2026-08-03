@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:even_g2_r1_poc/src/websocket/voice_websocket_client.dart';
 import 'package:even_g2_r1_poc/src/websocket/voice_websocket_config.dart';
+import 'package:even_g2_r1_poc/src/websocket/websocket_message_store.dart';
+import 'package:even_g2_r1_poc/src/websocket/g2_agent_history_state.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -226,8 +228,23 @@ void main() {
       isNull,
       reason: 'Hey must be recognized as a complete word.',
     );
+    final detail = G2AgentHistoryState()
+      ..open(agents: config.agentNames, exchanges: const [])
+      ..selectNext()
+      ..selectNext()
+      ..selectNext()
+      ..showSelectedDetail()
+      ..selectDetailListenMode();
+    expect(detail.selectedSpeechAgent, 'Flux');
+    expect(
+      detail.render(),
+      startsWith(
+        '   [Flux]\n'
+        '< • Listen Mode - Tap to stop\n',
+      ),
+    );
     final selectedAgentRoute = client.routeTranscriptToSelectedAgent(
-      selectedAgent: 'flux',
+      selectedAgent: detail.selectedSpeechAgent!,
       transcript: 'pull the latest changes',
     );
     expect(selectedAgentRoute?.agent, 'Flux');
@@ -317,6 +334,80 @@ void main() {
       'type': 'connection.resume',
       'resume_after_event_id': 43,
     });
+  });
+
+  test('atomically saves every readable received socket message', () async {
+    final messageStore = WebSocketMessageStore(
+      supportDirectory: () async => temp,
+    );
+    await messageStore.initialize();
+    final savedMessages = <String>[];
+    final fourMessagesSaved = Completer<void>();
+    final configStore = VoiceWebSocketConfigStore(
+      supportDirectory: () async => temp,
+    );
+    final client = VoiceWebSocketClient(
+      configStore: configStore,
+      reconnectDelays: const <Duration>[Duration(milliseconds: 10)],
+      readyTimeout: const Duration(seconds: 1),
+      onInboundEvent: (event) async {
+        await messageStore.save(
+          direction: WebSocketMessageDirection.received,
+          message: event.message,
+        );
+        savedMessages.add(event.message);
+        if (savedMessages.length == 4 && !fourMessagesSaved.isCompleted) {
+          fourMessagesSaved.complete();
+        }
+      },
+    );
+    addTearDown(client.close);
+    await client.initialize();
+    await client.saveConfig(
+      VoiceWebSocketConfig.validate(
+        host: '127.0.0.1',
+        port: server.port,
+        secret: 'example-secret',
+        authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
+        agentNames: const <String>['Agent One'],
+        useLegacyMessageShape: false,
+      ),
+    );
+    await _waitUntil(() => client.isReady);
+
+    serverSockets.single
+      ..add('Plain synthetic update.')
+      ..add(jsonEncode('JSON synthetic update.'))
+      ..add(
+        jsonEncode(<String, Object>{
+          'type': 'message.progress',
+          'event_id': 501,
+          'agent': 'Agent One',
+          'payload': <String, Object>{'summary': 'Synthetic progress update.'},
+        }),
+      )
+      ..add(
+        jsonEncode(<String, Object>{
+          'type': 'message.error',
+          'request_id': 'unmatched-synthetic-request',
+          'message': 'Synthetic socket error update.',
+        }),
+      );
+
+    await fourMessagesSaved.future.timeout(const Duration(seconds: 10));
+
+    expect(savedMessages, <String>[
+      'Plain synthetic update.',
+      'JSON synthetic update.',
+      'Agent One: Synthetic progress update.',
+      'Synthetic socket error update.',
+    ]);
+    final paths = await messageStore.savedPaths();
+    expect(paths, hasLength(4));
+    for (final path in paths) {
+      expect(path, endsWith('.received.message.txt'));
+      expect(await File(path).readAsString(), isNotEmpty);
+    }
   });
 
   test(
@@ -642,82 +733,106 @@ void main() {
     expect(client.statusText, 'Connected · 1 server agents');
   });
 
-  test('selected-agent delivery bypasses an ordinary busy queue', () async {
-    const queuedMessage = 'wait in the ordinary outbound queue';
+  test('selected-agent delivery reuses the socket and retries busy', () async {
     const selectedMessage = 'send directly to the selected agent';
-    busyResponsesRemaining[queuedMessage] = 1;
+    busyResponsesRemaining[selectedMessage] = 1;
     final client = await _configuredClient(
       temp: temp,
       serverPort: server.port,
       busyRetryDelays: const <Duration>[Duration(minutes: 1)],
+      agentNames: const <String>['Agent One', 'Flux'],
     );
     addTearDown(client.close);
 
-    final queued = client.sendAgentMessage(
-      agent: 'Agent One',
-      message: queuedMessage,
+    final detail = G2AgentHistoryState()
+      ..open(agents: client.config.agentNames, exchanges: const [])
+      ..selectNext()
+      ..selectNext()
+      ..showSelectedDetail()
+      ..selectDetailListenMode();
+    expect(detail.selectedSpeechAgent, 'Flux');
+    expect(
+      detail.render(),
+      startsWith(
+        '   [Flux]\n'
+        '< • Listen Mode - Tap to stop\n',
+      ),
+    );
+    final selectedRoute = client.routeTranscriptToSelectedAgent(
+      selectedAgent: detail.selectedSpeechAgent!,
+      transcript: selectedMessage,
+    );
+    expect(selectedRoute?.agent, 'Flux');
+
+    final selectedFuture = client.sendAgentMessageWithResult(
+      agent: selectedRoute!.agent,
+      message: selectedRoute.message,
+      deliveryMode: VoiceWebSocketDeliveryMode.queued,
     );
     await _waitUntil(() => client.statusText.contains('agent busy'));
-
-    final selected = await client
-        .sendAgentMessageWithResult(
-          agent: 'Agent One',
-          message: selectedMessage,
-          deliveryMode: VoiceWebSocketDeliveryMode.immediate,
-        )
-        .timeout(const Duration(seconds: 1));
-
-    expect(selected.sent, isTrue);
-    expect(selected.requestId, isNotEmpty);
     expect(client.queuedMessageCount, 1);
-    expect(
-      received
-          .where((payload) => payload['type'] == 'message.send')
-          .map((payload) => payload['message']),
-      <String>[queuedMessage, selectedMessage],
-    );
 
     serverSockets.single.add(
       jsonEncode(<String, Object>{
         'type': 'message.completed',
         'event_id': 10,
-        'agent': 'Agent One',
+        'agent': 'Flux',
         'payload': <String, Object>{
           'summary': 'The selected-agent fixture completed.',
         },
       }),
     );
 
-    expect(await queued.timeout(const Duration(seconds: 1)), isTrue);
-    expect(client.queuedMessageCount, 0);
-  });
+    final selected = await selectedFuture.timeout(const Duration(seconds: 1));
 
-  test('selected-agent busy result never enters the ordinary queue', () async {
-    const message = 'do not queue the selected-agent fixture';
-    alwaysBusyMessages.add(message);
-    final client = await _configuredClient(
-      temp: temp,
-      serverPort: server.port,
-      busyRetryDelays: const <Duration>[Duration(minutes: 1)],
-    );
-    addTearDown(client.close);
-
-    final result = await client
-        .sendAgentMessageWithResult(
-          agent: 'Agent One',
-          message: message,
-          deliveryMode: VoiceWebSocketDeliveryMode.immediate,
-        )
-        .timeout(const Duration(seconds: 1));
-
-    expect(result.sent, isFalse);
-    expect(result.requestId, isNull);
+    expect(selected.sent, isTrue);
+    expect(selected.requestId, isNotEmpty);
     expect(client.queuedMessageCount, 0);
     expect(
-      received.where((payload) => payload['type'] == 'message.send'),
+      serverSockets,
       hasLength(1),
+      reason: 'A busy retry must reuse the existing ready WebSocket.',
+    );
+    expect(
+      received
+          .where((payload) => payload['type'] == 'message.send')
+          .map((payload) => (payload['agent'], payload['message'])),
+      <(Object?, Object?)>[
+        ('Flux', selectedMessage),
+        ('Flux', selectedMessage),
+      ],
     );
   });
+
+  test(
+    'immediate delivery returns an agent-busy result without queuing',
+    () async {
+      const message = 'do not queue the selected-agent fixture';
+      alwaysBusyMessages.add(message);
+      final client = await _configuredClient(
+        temp: temp,
+        serverPort: server.port,
+        busyRetryDelays: const <Duration>[Duration(minutes: 1)],
+      );
+      addTearDown(client.close);
+
+      final result = await client
+          .sendAgentMessageWithResult(
+            agent: 'Agent One',
+            message: message,
+            deliveryMode: VoiceWebSocketDeliveryMode.immediate,
+          )
+          .timeout(const Duration(seconds: 1));
+
+      expect(result.sent, isFalse);
+      expect(result.requestId, isNull);
+      expect(client.queuedMessageCount, 0);
+      expect(
+        received.where((payload) => payload['type'] == 'message.send'),
+        hasLength(1),
+      );
+    },
+  );
 
   test('a completion event wakes the busy queue before its backoff', () async {
     const message = 'run after the current fixture completes';
@@ -904,6 +1019,7 @@ Future<VoiceWebSocketClient> _configuredClient({
   int maximumQueuedMessages = 32,
   Duration maximumBusyQueueAge = const Duration(minutes: 5),
   List<Duration> busyRetryDelays = const <Duration>[Duration(milliseconds: 10)],
+  List<String> agentNames = const <String>['Agent One'],
 }) async {
   final store = VoiceWebSocketConfigStore(supportDirectory: () async => temp);
   final client = VoiceWebSocketClient(
@@ -922,7 +1038,7 @@ Future<VoiceWebSocketClient> _configuredClient({
       port: serverPort,
       secret: 'example-secret',
       authHeader: VoiceWebSocketAuthHeader.authorizationBearer,
-      agentNames: const <String>['Agent One'],
+      agentNames: agentNames,
       useLegacyMessageShape: false,
     ),
   );

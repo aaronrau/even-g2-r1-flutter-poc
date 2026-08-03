@@ -41,6 +41,7 @@ ENGLISH_SPEAKERS = {
     2: "bf_vale",
 }
 PLAYBACK_PEAK_FRACTION = 0.95
+PLAYBACK_PATH = "computer_speaker"
 
 AUDIO_RE = re.compile(
     r"\[Even G2/R1\]\[Audio\].*?"
@@ -64,6 +65,12 @@ TRANSCRIPTION_RECOVERED_RE = re.compile(
     r"\[WorkBench\]\[Transcription\]\s+state=ready\b.*\brecovered=true"
 )
 TEST_MARKER_TAG = "WorkBenchTest"
+EXPECTED_DISCONNECT_RE = re.compile(
+    r"\[WorkBench\]\[Bluetooth\]\s+state=disconnected\s+expected=true"
+)
+PIPELINE_READY_RE = re.compile(
+    r"\[WorkBench\]\[Pipeline\]\s+state=ready\b"
+)
 
 
 @dataclass(frozen=True)
@@ -85,20 +92,9 @@ class Report:
     playback_volume: float | None
     leading_silence_seconds: float | None
     trailing_silence_seconds: float | None
+    connection_preflight_observed: bool | None
     checks: dict[str, bool]
     passed: bool
-
-
-@dataclass(frozen=True)
-class MediaVolume:
-    current: int
-    minimum: int
-    maximum: int
-
-    def at_fraction(self, fraction: float) -> int:
-        if not 0.0 <= fraction <= 1.0:
-            raise ValueError("Playback volume must be between 0.0 and 1.0")
-        return round(self.minimum + (self.maximum - self.minimum) * fraction)
 
 
 def cache_root() -> Path:
@@ -415,59 +411,6 @@ def merge_overlapping_transcripts(
     return " ".join(merged).strip()
 
 
-def parse_media_volume(output: str) -> MediaVolume | None:
-    match = re.search(
-        r"volume is (\d+) in range \[(\d+)\.\.(\d+)\]",
-        output,
-    )
-    if match is None:
-        return None
-    return MediaVolume(
-        current=int(match.group(1)),
-        minimum=int(match.group(2)),
-        maximum=int(match.group(3)),
-    )
-
-
-def get_media_volume(adb_prefix: list[str]) -> MediaVolume | None:
-    result = subprocess.run(
-        [
-            *adb_prefix,
-            "shell",
-            "cmd",
-            "media_session",
-            "volume",
-            "--stream",
-            "3",
-            "--get",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None
-    return parse_media_volume(result.stdout + result.stderr)
-
-
-def set_media_volume(adb_prefix: list[str], volume: int) -> None:
-    subprocess.run(
-        [
-            *adb_prefix,
-            "shell",
-            "cmd",
-            "media_session",
-            "volume",
-            "--stream",
-            "3",
-            "--set",
-            str(volume),
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-
 def get_android_property(adb_prefix: list[str], name: str) -> str:
     result = subprocess.run(
         [*adb_prefix, "shell", "getprop", name],
@@ -557,6 +500,21 @@ def _audio_values(lines: Iterable[str]) -> list[tuple[float, int]]:
 def playback_marker(state: str, case_name: str) -> str:
     if state not in {"playback_start", "playback_end"}:
         raise ValueError(f"Unsupported playback marker state: {state}")
+    return test_marker(state, case_name)
+
+
+def test_marker(state: str, case_name: str) -> str:
+    if state not in {
+        "connection_reconnect_start",
+        "connection_initial_connect",
+        "connection_initial_retry",
+        "connection_disconnect_ready",
+        "connection_audio_wait",
+        "connection_reconnect_ready",
+        "playback_start",
+        "playback_end",
+    }:
+        raise ValueError(f"Unsupported test marker state: {state}")
     safe_case = re.sub(r"[^a-zA-Z0-9_.-]+", "_", case_name).strip("_")
     if not safe_case:
         safe_case = "unnamed"
@@ -568,7 +526,7 @@ def emit_android_test_marker(
     state: str,
     case_name: str,
 ) -> str:
-    marker = playback_marker(state, case_name)
+    marker = test_marker(state, case_name)
     subprocess.run(
         [*adb_prefix, "shell", "log", "-t", TEST_MARKER_TAG, marker],
         check=True,
@@ -600,6 +558,7 @@ def build_report(
     playback_volume: float | None = None,
     leading_silence_seconds: float | None = None,
     trailing_silence_seconds: float | None = None,
+    connection_preflight_passed: bool | None = None,
 ) -> Report:
     lines = log_text.splitlines()
     before_playback, scored_log, playback_start_observed = split_at_marker(
@@ -665,6 +624,7 @@ def build_report(
         "no_unexpected_disconnect": not unexpected_disconnect,
         "capture_safe": not capture_failure,
         "transcription_recovered": restarts == 0 or recovered,
+        "connection_preflight": connection_preflight_passed is not False,
     }
     return Report(
         expected=expected,
@@ -684,6 +644,7 @@ def build_report(
         playback_volume=playback_volume,
         leading_silence_seconds=leading_silence_seconds,
         trailing_silence_seconds=trailing_silence_seconds,
+        connection_preflight_observed=connection_preflight_passed,
         checks=checks,
         passed=all(checks.values()),
     )
@@ -723,6 +684,326 @@ def ensure_single_device(adb: str, serial: str | None) -> str:
             f"Expected exactly one Android device, found {len(devices)}"
         )
     return devices[0]
+
+
+def connection_button_tap_point(
+    size_output: str,
+    density_output: str,
+) -> tuple[int, int]:
+    sizes = re.findall(r"(\d+)x(\d+)", size_output)
+    densities = re.findall(r"(\d+)", density_output)
+    if not sizes or not densities:
+        raise RuntimeError("Could not resolve the Android display geometry")
+    width, height = map(int, sizes[-1])
+    density = int(densities[-1]) / 160.0
+    if width <= 0 or height <= 0 or density <= 0:
+        raise RuntimeError("Android display geometry is invalid")
+    if width >= height:
+        raise RuntimeError("Work Bench must be in portrait before preflight")
+
+    # HomePage's connection action begins 12dp from the left and occupies the
+    # 52dp app bar immediately beneath the status bar. This point is well
+    # inside that visible FilledButton on supported phone-sized viewports.
+    return (
+        min(width - 1, round(72 * density)),
+        min(height - 1, round(52 * density)),
+    )
+
+
+def _connection_button_point(adb_prefix: list[str]) -> tuple[int, int]:
+    size = subprocess.run(
+        [*adb_prefix, "shell", "wm", "size"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    density = subprocess.run(
+        [*adb_prefix, "shell", "wm", "density"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return connection_button_tap_point(size, density)
+
+
+def _tap_connection_button(
+    adb_prefix: list[str],
+    point: tuple[int, int],
+) -> None:
+    x, y = point
+    subprocess.run(
+        [
+            *adb_prefix,
+            "shell",
+            "input",
+            "touchscreen",
+            "tap",
+            str(x),
+            str(y),
+        ],
+        check=True,
+    )
+
+
+def _audio_samples_after_marker(log_path: Path, marker: str) -> int:
+    try:
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    _, scored_log, observed = split_at_marker(log_text, marker)
+    return 0 if observed is not True else len(_audio_values(scored_log.splitlines()))
+
+
+def _wait_for_audio_samples(
+    log_path: Path,
+    marker: str,
+    *,
+    timeout_seconds: float,
+    minimum_samples: int = 2,
+) -> int:
+    deadline = time.monotonic() + timeout_seconds
+    samples = 0
+    while time.monotonic() < deadline:
+        samples = _audio_samples_after_marker(log_path, marker)
+        if samples >= minimum_samples:
+            return samples
+        time.sleep(0.5)
+    return samples
+
+
+def _wait_for_log_pattern(
+    log_path: Path,
+    marker: str,
+    pattern: re.Pattern[str],
+    *,
+    timeout_seconds: float,
+) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            log_text = ""
+        _, after_marker, observed = split_at_marker(log_text, marker)
+        if observed is True and pattern.search(after_marker):
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def _wait_for_audio_or_log_pattern(
+    log_path: Path,
+    marker: str,
+    pattern: re.Pattern[str],
+    *,
+    timeout_seconds: float,
+    minimum_samples: int = 2,
+) -> tuple[int, bool]:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        samples = _audio_samples_after_marker(log_path, marker)
+        if samples >= minimum_samples:
+            return samples, False
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            log_text = ""
+        _, after_marker, observed = split_at_marker(log_text, marker)
+        if observed is True and pattern.search(after_marker):
+            return samples, True
+        time.sleep(0.25)
+    return _audio_samples_after_marker(log_path, marker), False
+
+
+def run_connection_preflight(
+    adb_prefix: list[str],
+    log_path: Path,
+    *,
+    timeout_seconds: float = 60.0,
+) -> dict[str, object]:
+    if timeout_seconds <= 0:
+        raise ValueError("Connection timeout must be positive")
+    report_path = log_path.with_suffix(".json")
+    required_log_tags = (
+        "log.tag.WorkBenchTest",
+        "log.tag.flutter",
+        "log.tag.WorkBench",
+    )
+    previous_log_tags: dict[str, str] = {}
+    log_handle = None
+    log_process = None
+    report: dict[str, object] = {
+        "method": "app_button_disconnect_reconnect",
+        "ready": False,
+        "audio_summary_samples": 0,
+        "stage": "launch",
+    }
+    try:
+        for tag in required_log_tags:
+            previous_log_tags[tag] = get_android_property(adb_prefix, tag)
+            set_android_property(adb_prefix, tag, "V")
+        subprocess.run([*adb_prefix, "logcat", "-c"], check=True)
+        log_handle = log_path.open("w", encoding="utf-8")
+        log_process = subprocess.Popen(
+            [*adb_prefix, "logcat", "-v", "time"],
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        subprocess.run(
+            [
+                *adb_prefix,
+                "shell",
+                "monkey",
+                "-p",
+                APP_PACKAGE,
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.0)
+        button_point = _connection_button_point(adb_prefix)
+
+        report["stage"] = "initial_audio_probe"
+        initial_probe = emit_android_test_marker(
+            adb_prefix,
+            "connection_audio_wait",
+            "initial_probe",
+        )
+        initial_samples = _wait_for_audio_samples(
+            log_path,
+            initial_probe,
+            timeout_seconds=min(5.0, timeout_seconds),
+        )
+        if initial_samples < 2:
+            report["stage"] = "initial_connect"
+            emit_android_test_marker(
+                adb_prefix,
+                "connection_initial_connect",
+                "preflight",
+            )
+            _tap_connection_button(adb_prefix, button_point)
+            initial_connect_marker = emit_android_test_marker(
+                adb_prefix,
+                "connection_audio_wait",
+                "initial_connect",
+            )
+            initial_samples = _wait_for_audio_samples(
+                log_path,
+                initial_connect_marker,
+                timeout_seconds=min(15.0, timeout_seconds),
+            )
+            pipeline_ready = False
+            if initial_samples < 2:
+                initial_samples, pipeline_ready = _wait_for_audio_or_log_pattern(
+                    log_path,
+                    initial_connect_marker,
+                    PIPELINE_READY_RE,
+                    timeout_seconds=timeout_seconds,
+                )
+            if initial_samples < 2 and pipeline_ready:
+                report["stage"] = "initial_connect_retry"
+                emit_android_test_marker(
+                    adb_prefix,
+                    "connection_initial_retry",
+                    "preflight",
+                )
+                _tap_connection_button(adb_prefix, button_point)
+                initial_retry_marker = emit_android_test_marker(
+                    adb_prefix,
+                    "connection_audio_wait",
+                    "initial_retry",
+                )
+                initial_samples = _wait_for_audio_samples(
+                    log_path,
+                    initial_retry_marker,
+                    timeout_seconds=timeout_seconds,
+                )
+            if initial_samples < 2:
+                raise RuntimeError(
+                    "Work Bench did not connect from its app button"
+                )
+
+        report["stage"] = "disconnect"
+        reconnect_marker = emit_android_test_marker(
+            adb_prefix,
+            "connection_reconnect_start",
+            "preflight",
+        )
+        disconnect_deadline = time.monotonic() + timeout_seconds
+        disconnected = False
+        while time.monotonic() < disconnect_deadline:
+            _tap_connection_button(adb_prefix, button_point)
+            remaining = disconnect_deadline - time.monotonic()
+            disconnected = _wait_for_log_pattern(
+                log_path,
+                reconnect_marker,
+                EXPECTED_DISCONNECT_RE,
+                timeout_seconds=min(5.0, max(0.1, remaining)),
+            )
+            if disconnected:
+                break
+        if not disconnected:
+            raise RuntimeError(
+                "Work Bench app button did not complete the disconnect"
+            )
+        emit_android_test_marker(
+            adb_prefix,
+            "connection_disconnect_ready",
+            "preflight",
+        )
+        time.sleep(0.5)
+        report["stage"] = "reconnect"
+        _tap_connection_button(adb_prefix, button_point)
+        audio_wait_marker = emit_android_test_marker(
+            adb_prefix,
+            "connection_audio_wait",
+            "preflight",
+        )
+        samples = _wait_for_audio_samples(
+            log_path,
+            audio_wait_marker,
+            timeout_seconds=timeout_seconds,
+        )
+        if samples < 2:
+            raise RuntimeError(
+                "G2 audio summaries did not resume after app-button reconnect"
+            )
+        emit_android_test_marker(
+            adb_prefix,
+            "connection_reconnect_ready",
+            "preflight",
+        )
+        report["ready"] = True
+        report["audio_summary_samples"] = samples
+        report["stage"] = "ready"
+        return report
+    except BaseException as error:
+        report["failure"] = type(error).__name__
+        raise
+    finally:
+        if log_process is not None:
+            log_process.terminate()
+            try:
+                log_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                log_process.kill()
+                log_process.wait(timeout=5)
+        if log_handle is not None:
+            log_handle.close()
+        for tag, value in previous_log_tags.items():
+            try:
+                set_android_property(adb_prefix, tag, value)
+            except subprocess.CalledProcessError:
+                pass
+        report_path.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
 
 
 def prepare_artifact_directory(output_dir: Path) -> None:
@@ -893,20 +1174,12 @@ def run_physical(args: argparse.Namespace) -> int:
         stimulus,
         output_dir,
     )
-    if args.phone_speaker:
-        playback = padded_wav_copy(
-            normalized_stimulus,
-            output_dir,
-            leading_silence_seconds=args.leading_silence_seconds,
-            trailing_silence_seconds=args.trailing_silence_seconds,
-        )
-    else:
-        playback = playback_copy(
-            normalized_stimulus,
-            output_dir,
-            leading_silence_seconds=args.leading_silence_seconds,
-            trailing_silence_seconds=args.trailing_silence_seconds,
-        )
+    playback = playback_copy(
+        normalized_stimulus,
+        output_dir,
+        leading_silence_seconds=args.leading_silence_seconds,
+        trailing_silence_seconds=args.trailing_silence_seconds,
+    )
     test_case = "single"
     playback_start = playback_marker("playback_start", test_case)
     playback_end = playback_marker("playback_end", test_case)
@@ -922,6 +1195,12 @@ def run_physical(args: argparse.Namespace) -> int:
     if package_result.returncode != 0 or "package:" not in package_result.stdout:
         raise RuntimeError(f"Work Bench is not installed ({APP_PACKAGE})")
 
+    connection_preflight = run_connection_preflight(
+        adb_prefix,
+        output_dir / "connection-preflight.log",
+        timeout_seconds=args.connection_timeout,
+    )
+
     required_log_tags = (
         "log.tag.WorkBenchTest",
         "log.tag.flutter",
@@ -930,8 +1209,6 @@ def run_physical(args: argparse.Namespace) -> int:
     previous_log_tags: dict[str, str] = {}
     log_handle = None
     log_process = None
-    media_volume = None
-    phone_volume = None
     wpctl = None
     previous_computer_volume = None
     try:
@@ -946,78 +1223,18 @@ def run_physical(args: argparse.Namespace) -> int:
             stderr=subprocess.STDOUT,
             text=True,
         )
-        media_volume = (
-            get_media_volume(adb_prefix) if args.phone_speaker else None
-        )
-        if args.phone_speaker and media_volume is None:
-            raise RuntimeError("Could not read the phone media-volume range")
-        phone_volume = (
-            None
-            if media_volume is None
-            else (
-                args.phone_volume
-                if args.phone_volume is not None
-                else media_volume.at_fraction(args.computer_volume)
-            )
-        )
-        wpctl = None if args.phone_speaker else require_tool("wpctl")
-        previous_computer_volume = (
-            None if wpctl is None else get_computer_volume(wpctl)
-        )
-        if wpctl is not None:
-            set_computer_volume(wpctl, args.computer_volume)
+        wpctl = require_tool("wpctl")
+        previous_computer_volume = get_computer_volume(wpctl)
+        set_computer_volume(wpctl, args.computer_volume)
         time.sleep(args.baseline_seconds)
         emit_android_test_marker(adb_prefix, "playback_start", test_case)
         try:
-            if args.phone_speaker:
-                remote = "/data/local/tmp/workbench-kokoro-test.wav"
-                subprocess.run(
-                    [*adb_prefix, "push", str(playback), remote],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                )
-                subprocess.run(
-                    [
-                        *adb_prefix,
-                        "shell",
-                        "run-as",
-                        APP_PACKAGE,
-                        "cp",
-                        remote,
-                        "files/kokoro-test.wav",
-                    ],
-                    check=True,
-                )
-                assert phone_volume is not None
-                set_media_volume(adb_prefix, phone_volume)
-                subprocess.run(
-                    [
-                        *adb_prefix,
-                        "shell",
-                        "am",
-                        "broadcast",
-                        "-a",
-                        f"{APP_PACKAGE}.PLAY_KOKORO_TEST",
-                        "-p",
-                        APP_PACKAGE,
-                    ],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                )
-                with wave.open(str(playback), "rb") as wav:
-                    time.sleep(wav.getnframes() / wav.getframerate())
-            else:
-                player = args.player or require_tool("pw-play")
-                subprocess.run([player, str(playback)], check=True)
+            player = args.player or require_tool("pw-play")
+            subprocess.run([player, str(playback)], check=True)
         finally:
             emit_android_test_marker(adb_prefix, "playback_end", test_case)
         time.sleep(args.wait_after)
     finally:
-        if media_volume is not None:
-            try:
-                set_media_volume(adb_prefix, media_volume.current)
-            except subprocess.CalledProcessError:
-                pass
         if wpctl is not None and previous_computer_volume is not None:
             try:
                 set_computer_volume(wpctl, previous_computer_volume)
@@ -1051,6 +1268,7 @@ def run_physical(args: argparse.Namespace) -> int:
         playback_volume=args.computer_volume,
         leading_silence_seconds=args.leading_silence_seconds,
         trailing_silence_seconds=args.trailing_silence_seconds,
+        connection_preflight_passed=connection_preflight["ready"] is True,
     )
     report_document = asdict(report)
     report_document["test_fixture"] = {
@@ -1059,15 +1277,9 @@ def run_physical(args: argparse.Namespace) -> int:
         "speaker_id": args.speaker_id,
         "speaker_name": ENGLISH_SPEAKERS[args.speaker_id],
         "speed": args.speed,
-        "playback_path": (
-            "phone_speaker" if args.phone_speaker else "computer_speaker"
-        ),
-        "phone_volume_index": phone_volume,
-        "phone_volume_range": (
-            None
-            if media_volume is None
-            else [media_volume.minimum, media_volume.maximum]
-        ),
+        "playback_path": PLAYBACK_PATH,
+        "computer_volume": args.computer_volume,
+        "connection_preflight": connection_preflight,
         "peak_normalization": peak_normalization,
         "stimulus": wav_manifest(stimulus),
         "playback": wav_manifest(playback),
@@ -1078,6 +1290,28 @@ def run_physical(args: argparse.Namespace) -> int:
     )
     print(report_path.read_text(encoding="utf-8"))
     return 0 if report.passed else 2
+
+
+def run_preflight_command(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir).resolve()
+    prepare_artifact_directory(output_dir)
+    adb = select_adb(args.adb)
+    serial = ensure_single_device(adb, args.serial)
+    adb_prefix = [adb, "-s", serial]
+    package_result = subprocess.run(
+        [*adb_prefix, "shell", "pm", "path", APP_PACKAGE],
+        capture_output=True,
+        text=True,
+    )
+    if package_result.returncode != 0 or "package:" not in package_result.stdout:
+        raise RuntimeError(f"Work Bench is not installed ({APP_PACKAGE})")
+    report = run_connection_preflight(
+        adb_prefix,
+        output_dir / "connection-preflight.log",
+        timeout_seconds=args.connection_timeout,
+    )
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return 0
 
 
 def score_existing(args: argparse.Namespace) -> int:
@@ -1105,6 +1339,12 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
 
     commands.add_parser("prepare")
+
+    preflight = commands.add_parser("preflight")
+    preflight.add_argument("--output-dir", required=True)
+    preflight.add_argument("--adb")
+    preflight.add_argument("--serial")
+    preflight.add_argument("--connection-timeout", type=float, default=60.0)
 
     generate = commands.add_parser("generate")
     generate.add_argument("--text", default=DEFAULT_TEXT)
@@ -1148,31 +1388,15 @@ def parser() -> argparse.ArgumentParser:
         type=float,
         default=0.90,
         help=(
-            "Playback-volume fraction. Controls the computer sink or the "
-            "phone media range; the original volume is always restored."
+            "Computer-speaker volume fraction; the original sink volume is "
+            "always restored."
         ),
     )
     run.add_argument("--leading-silence-seconds", type=float, default=1.0)
     run.add_argument("--trailing-silence-seconds", type=float, default=0.5)
-    run.add_argument(
-        "--phone-speaker",
-        action="store_true",
-        help=(
-            "Trigger the debug app's phone-speaker playback hook instead of "
-            "the workstation sink; useful when the computer has no audible "
-            "speaker near the glasses."
-        ),
-    )
-    run.add_argument(
-        "--phone-volume",
-        type=int,
-        help=(
-            "Raw phone media-volume index override. By default the runner "
-            "uses the same playback fraction as --computer-volume."
-        ),
-    )
     run.add_argument("--baseline-seconds", type=float, default=4.0)
     run.add_argument("--wait-after", type=float, default=12.0)
+    run.add_argument("--connection-timeout", type=float, default=60.0)
     add_scoring_arguments(run)
 
     score = commands.add_parser("score-log")
@@ -1188,6 +1412,8 @@ def main() -> int:
     if args.command == "prepare":
         prepare()
         return 0
+    if args.command == "preflight":
+        return run_preflight_command(args)
     if args.command == "generate":
         synthesize(
             args.text,

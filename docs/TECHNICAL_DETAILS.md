@@ -41,12 +41,14 @@ The agent history selector uses the Hub rebuild command to replace that compact
 `520x64` gesture slot with a dedicated `576x288` full-page text container. A
 startup/create command is not reused because firmware accepts it only at page
 startup and otherwise retains the existing visualizer geometry. The selector
-uses a borderless container with zero inner padding. Each agent begins as
-`Agent - content` and flows into at most one continuation row.
-A shared measured-text layout fills up to 10 rows. Short entries therefore fit
+uses a borderless container with the same four-pixel inner inset on every
+selector and detail rebuild. Each agent begins as
+`Agent - content` and flows into at most one continuation row. A fixed 20-pixel
+pointer gutter keeps both rows aligned when selection moves.
+A shared measured-text layout fills up to nine rows. Short entries therefore fit
 the complete `[x]`, five-agent, and Memo selector on one page; longer two-row
-entries are adaptively packed into nine content rows plus a page footer, keeping
-each entry intact and the active selection visible. Pulse writes pause while
+entries use the eight rows beneath the fixed header, with complete-block
+look-ahead scrolling that keeps the next entry visible. Pulse writes pause while
 history owns the page. Dismissal rebuilds the compact visualizer without
 stopping continuous LC3 capture.
 
@@ -56,22 +58,26 @@ never sends those messages through the compact visualizer text update. A
 terminal or received status exits the full-page owner after its two-second
 hold, rebuilds the pulse page, and leaves continuous audio capture running.
 
-Memo and five-exchange agent details are host-paginated rather than relying on
-firmware text scrolling. Each zero-padding page puts the tap action in its title
-row and uses the remaining nine rows for pixel-width-wrapped content. Swipe down
-advances, swipe up goes back, and neither boundary wraps. To preserve reading
-position, the final content row of one page repeats as the first content row of
-the next page.
+Memo and retained-message agent details are host-paginated rather than relying
+on firmware text scrolling. Each page reuses the four-pixel history inset, puts
+the tap action in its fixed controls, and uses eight body rows below Memo's one
+title or seven body rows below an agent's title and Listen Mode control for
+pixel-width-wrapped content.
+Swipe down advances, swipe up goes back, and neither boundary wraps. To
+preserve reading position, the final content row of one page repeats as the
+first content row of the next page.
 A separate firmware-valid 20-pixel-wide image container overlays the right
-edge and renders one continuous 4-pixel solid foreground rectangle; its other
-16 pixels are black, so no background track is visible. The detail text keeps
+edge and renders one continuous 4-pixel solid foreground rectangle. Fourteen
+black pixels precede it and a two-pixel black mask follows it, covering the
+native edge artifact so no background track is visible. The detail text keeps
 the full borderless `576x288` firmware viewport. Host wrapping uses the G2
 glyph advances published by
 `@evenrealities/pretext`. A shared 50-unit physical calibration compensates for
 standalone-advance measurement versus firmware kerning and uses roughly five
-more average characters per line without changing the 576-pixel physical
-bounds. The four-pixel thumb ends at the right display edge and is the only
-visible scroll decoration. One-page details omit the unnecessary
+more average characters per line. The text container remains 576 pixels wide,
+with 568 pixels inside the stable inset. The thumb stops two pixels before the
+right edge and is the only visible scroll decoration. One-page details omit
+the unnecessary
 indicator because a 288-pixel image would exceed the G2's 144-pixel
 image-container height limit. On multi-page details the rectangle shrinks and
 moves proportionally. Selector pages do not create the image.
@@ -79,10 +85,10 @@ moves proportionally. Selector pages do not create the image.
 The native `TextContainerProperty` protocol exposes position, size, border,
 padding, identity, event capture, and content, but no font-size control. The
 layout therefore keeps the native readable type size and gains density through
-zero padding, calibrated pixel-width wrapping, adaptive selector paging, and a
-nine-row detail body. Rasterizing smaller text into full-page image quadrants
-would require hundreds of BLE fragments per update and is not used for an
-interactive menu.
+the small stable inset, calibrated pixel-width wrapping, adaptive selector
+paging, and the seven-row agent or eight-row Memo detail body. Rasterizing
+smaller text into full-page image quadrants would require hundreds of BLE
+fragments per update and is not used for an interactive menu.
 History rendering is serialized and coalesced by page signature before it
 reaches BLE. While one render is in flight, only the newest pending page is
 retained, so rapid swipes do not wait behind intermediate full-page rebuilds.

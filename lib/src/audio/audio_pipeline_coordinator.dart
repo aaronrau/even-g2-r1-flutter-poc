@@ -611,7 +611,7 @@ final class AudioPipelineCoordinator {
               'source=${explicitlyTargeted ? 'selected_agent' : 'wake_word'} '
               'terms=${correctionTerms.length}',
         );
-        await correction.queue(correctionJob);
+        await correction.queue(correctionJob, prioritize: explicitlyTargeted);
       } else {
         log(
           'Pipeline',

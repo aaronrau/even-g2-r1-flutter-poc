@@ -965,6 +965,7 @@ def run_case(
             "speaker_id": args.speaker_id,
             "speaker_name": loop.ENGLISH_SPEAKERS[args.speaker_id],
             "speed": args.speed,
+            "playback_path": loop.PLAYBACK_PATH,
             "computer_volume": args.computer_volume,
             "inter_utterance_silence_seconds": case.silence_seconds,
             "stimulus": loop.wav_manifest(stimulus),
@@ -1054,6 +1055,7 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--player")
     root.add_argument("--baseline-seconds", type=float, default=4.0)
     root.add_argument("--wait-after", type=float, default=8.0)
+    root.add_argument("--connection-timeout", type=float, default=60.0)
     root.add_argument(
         "--result-timeout",
         type=float,
@@ -1085,6 +1087,12 @@ def main() -> int:
     )
     if package_result.returncode != 0 or "package:" not in package_result.stdout:
         raise RuntimeError(f"Work Bench is not installed ({loop.APP_PACKAGE})")
+
+    connection_preflight = loop.run_connection_preflight(
+        adb_prefix,
+        output_dir / "connection-preflight.log",
+        timeout_seconds=args.connection_timeout,
+    )
 
     selected_names = set(args.case or ())
     if selected_names:
@@ -1136,12 +1144,16 @@ def main() -> int:
     report = {
         "speaker_id": args.speaker_id,
         "speaker_name": loop.ENGLISH_SPEAKERS[args.speaker_id],
+        "playback_path": loop.PLAYBACK_PATH,
         "computer_volume_during_test": args.computer_volume,
         "computer_volume_restored_to": original_volume,
+        "connection_preflight": connection_preflight,
         "leading_silence_seconds": args.leading_silence_seconds,
         "trailing_silence_seconds": args.trailing_silence_seconds,
         "cases": [asdict(result) for result in results],
-        "passed": bool(results) and all(result.passed for result in results),
+        "passed": connection_preflight["ready"] is True
+        and bool(results)
+        and all(result.passed for result in results),
     }
     report_path = output_dir / "suite-report.json"
     report_path.write_text(

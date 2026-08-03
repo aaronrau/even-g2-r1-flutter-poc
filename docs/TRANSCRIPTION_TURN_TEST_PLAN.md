@@ -12,8 +12,8 @@ speech → 500 ms detector silence → clear prior pre-roll
 ```
 
 All acoustic stimuli use Kokoro speaker `af_maple` (`sid=0`, American English)
-through the computer speaker. The phone-speaker debug fallback is not used for
-this suite.
+through the computer speaker. Phone/app playback is forbidden and rejected by
+both physical runners.
 
 ## Test validity architecture
 
@@ -40,6 +40,16 @@ fail the case. Playback uses a fixed 90% computer volume, one second of
 zero-PCM leading silence, and 500 ms of zero-PCM trailing silence; original
 volume is restored on every exit path.
 
+Before a single run or suite starts playback, its runner foregrounds Work
+Bench, connects first if needed, taps **Disconnect**, waits for
+**Connect devices**, taps **Connect devices**, and waits for **Disconnect** and
+fresh G2 frame summaries. The runner preserves the preflight log and JSON
+result and fails before speaker playback if the button cycle or audio readiness
+does not complete. When startup leaves the button disabled, it waits for the
+current pipeline-ready marker and retries the same visible control; fresh audio
+arriving during that wait proceeds immediately. Stale connection markers are
+never accepted.
+
 Every trial uses a fresh output directory. Its report records the clean
 stimulus and actual playback WAV hashes and formats. Preserve all passing and
 failing reports. A passing retry is additional evidence, not a replacement for
@@ -47,7 +57,7 @@ an earlier failure.
 
 ## Run
 
-With Work Bench connected and G2 audio streaming:
+With the phone unlocked and both G2 lenses available to Work Bench:
 
 ```bash
 python3 .agents/skills/kokoro-g2-transcription-loop/scripts/kokoro_turn_suite.py \

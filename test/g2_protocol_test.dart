@@ -112,7 +112,7 @@ void main() {
       expect(update, containsAllInOrder(utf8.encode('world')));
     });
 
-    test('rebuilds an active page with expanded zero-padding content', () {
+    test('rebuilds an active page with a stable history inset', () {
       final protocol = G2Protocol();
       final rebuild = protocol.rebuildTextPage(
         'Agent - content flowing into row two',
@@ -133,6 +133,7 @@ void main() {
       expect(text[5], G2Protocol.expandedTextBorderWidth);
       expect(text[6], G2Protocol.expandedTextBorderColor);
       expect(text[8], G2Protocol.expandedTextPaddingLength);
+      expect(text[8], 4);
       expect(
         rebuild,
         containsAllInOrder(utf8.encode('Agent - content flowing into row two')),
@@ -165,6 +166,7 @@ void main() {
       final header = ByteData.sublistView(bitmap);
 
       expect(G2Protocol.fullPageIndicatorBarWidth, 4);
+      expect(G2Protocol.fullPageIndicatorTrailingClearance, 2);
       expect(page[1], 3);
       expect(
         body[3],
@@ -183,7 +185,7 @@ void main() {
       expect(
         (indicator[1]! as int) + (indicator[3]! as int),
         G2Protocol.fullPageTextWidth - G2Protocol.fullPageIndicatorInset,
-        reason: 'The thumb must end at the right display edge.',
+        reason: 'The black mask must end at the right display edge.',
       );
       expect(
         utf8.decode(rebuild, allowMalformed: true),
@@ -196,17 +198,33 @@ void main() {
       expect(header.getInt32(22, Endian.little), geometry.height);
       final packedRowBytes = (G2Protocol.fullPageIndicatorWidth + 1) ~/ 2;
       final paddedRowBytes = (packedRowBytes + 3) & ~3;
-      final blackBytes =
+      final leadingBlackBytes =
           (G2Protocol.fullPageIndicatorWidth -
-              G2Protocol.fullPageIndicatorBarWidth) ~/
+              G2Protocol.fullPageIndicatorBarWidth -
+              G2Protocol.fullPageIndicatorTrailingClearance) ~/
           2;
       final barBytes = G2Protocol.fullPageIndicatorBarWidth ~/ 2;
+      final trailingBlackBytes =
+          G2Protocol.fullPageIndicatorTrailingClearance ~/ 2;
       for (var row = 0; row < geometry.height; row++) {
         final offset = 118 + row * paddedRowBytes;
-        expect(bitmap.sublist(offset, offset + blackBytes), everyElement(0x00));
         expect(
-          bitmap.sublist(offset + blackBytes, offset + blackBytes + barBytes),
+          bitmap.sublist(offset, offset + leadingBlackBytes),
+          everyElement(0x00),
+        );
+        expect(
+          bitmap.sublist(
+            offset + leadingBlackBytes,
+            offset + leadingBlackBytes + barBytes,
+          ),
           everyElement(0xff),
+        );
+        expect(
+          bitmap.sublist(
+            offset + leadingBlackBytes + barBytes,
+            offset + leadingBlackBytes + barBytes + trailingBlackBytes,
+          ),
+          everyElement(0x00),
         );
         expect(
           bitmap.sublist(offset + packedRowBytes, offset + paddedRowBytes),

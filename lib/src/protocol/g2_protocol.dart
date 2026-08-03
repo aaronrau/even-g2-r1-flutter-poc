@@ -567,7 +567,10 @@ final class G2Protocol {
   static const int fullPageTextPaddingLength = 4;
   static const int expandedTextBorderWidth = 0;
   static const int expandedTextBorderColor = 5;
-  static const int expandedTextPaddingLength = 0;
+  // Keep the history selector and every rebuilt detail page on the same
+  // firmware inset. Without a non-zero inset, the first glyph can appear to
+  // shift at the display edge when a physical swipe rebuilds the page.
+  static const int expandedTextPaddingLength = 4;
   // G2 image containers accept width 20–288 and height 20–144. Keep the
   // visible thumb at the final 4 px of a valid right-edge 20 px image. Detail
   // text keeps the complete 576 px firmware viewport; host wrapping leaves a
@@ -578,6 +581,9 @@ final class G2Protocol {
       fullPageTextWidth - fullPageIndicatorWidth - fullPageIndicatorInset;
   static const int fullPageIndicatorWidth = 20;
   static const int fullPageIndicatorBarWidth = 4;
+  // Leave black pixels after the thumb so the uploaded image masks the native
+  // right-edge scroll artifact instead of drawing a second line beside it.
+  static const int fullPageIndicatorTrailingClearance = 2;
   static const int fullPageIndicatorMinimumHeight = 20;
   static const int fullPageIndicatorMaximumHeight = 144;
   static const int maximumMemoRunes = 4096;
@@ -966,12 +972,15 @@ final class G2Protocol {
       fullPageIndicatorWidth * geometry.height,
       0,
     );
-    final barStart = fullPageIndicatorWidth - fullPageIndicatorBarWidth;
+    final barStart =
+        fullPageIndicatorWidth -
+        fullPageIndicatorTrailingClearance -
+        fullPageIndicatorBarWidth;
     for (var y = 0; y < geometry.height; y++) {
       final rowStart = y * fullPageIndicatorWidth;
       pixels.fillRange(
         rowStart + barStart,
-        rowStart + fullPageIndicatorWidth,
+        rowStart + barStart + fullPageIndicatorBarWidth,
         0xff,
       );
     }

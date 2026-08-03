@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import contextlib
 import importlib.util
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -34,9 +36,22 @@ class TurnSuiteTest(unittest.TestCase):
 
     def test_suite_uses_the_validated_playback_fixture_defaults(self) -> None:
         args = MODULE.parser().parse_args(["--output-dir", "/tmp/test-suite"])
+        self.assertEqual(MODULE.loop.PLAYBACK_PATH, "computer_speaker")
         self.assertEqual(args.computer_volume, 0.90)
         self.assertEqual(args.leading_silence_seconds, 1.0)
         self.assertEqual(args.trailing_silence_seconds, 0.5)
+        self.assertEqual(args.connection_timeout, 60.0)
+
+    def test_suite_rejects_phone_speaker_playback(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                MODULE.parser().parse_args(
+                    [
+                        "--output-dir",
+                        "/tmp/test-suite",
+                        "--phone-speaker",
+                    ]
+                )
 
     def test_duration_and_boundary_profiles_cover_extremes(self) -> None:
         durations = {case.name: case for case in MODULE.DURATION_CASES}

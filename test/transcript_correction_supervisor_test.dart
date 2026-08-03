@@ -673,6 +673,46 @@ void main() {
     },
   );
 
+  test(
+    'queues a selected-agent correction behind only active inference',
+    () async {
+      final blockingClient = _BlockingGemmaClient();
+      final statuses = <String>[];
+      final supervisor = TranscriptCorrectionSupervisor(
+        speechPath: speech.path,
+        configStore: configStore,
+        modelStore: modelStore,
+        client: blockingClient,
+        onCorrected: (_) {},
+        onUncorrected: (_, _, _) {},
+        onStatus: (message, {isError = false}) => statuses.add(message),
+      );
+      addTearDown(supervisor.dispose);
+      await supervisor.start();
+
+      await _queue(supervisor, speech, 'first', 'Hey Flux, first task');
+      await blockingClient.firstStarted.future;
+      await _queue(supervisor, speech, 'second', 'Hey Flux, second task');
+      await _queue(
+        supervisor,
+        speech,
+        'selected',
+        'selected agent task',
+        prioritize: true,
+      );
+
+      blockingClient.releaseFirst.complete();
+      await _waitFor(() => supervisor.pendingCount == 0);
+
+      expect(blockingClient.transcripts, <String>[
+        'Hey Flux, first task',
+        'selected agent task',
+        'Hey Flux, second task',
+      ]);
+      expect(statuses, contains(contains('priority=selected_agent')));
+    },
+  );
+
   test('does not restore a transcript with a durable skip marker', () async {
     File(
       '${speech.path}/terminal.raw.txt',
@@ -749,8 +789,9 @@ Future<void> _queue(
   TranscriptCorrectionSupervisor supervisor,
   Directory speech,
   String id,
-  String text,
-) async {
+  String text, {
+  bool prioritize = false,
+}) async {
   final raw = File('${speech.path}/$id.raw.txt')..writeAsStringSync('$text\n');
   await supervisor.queue(
     TranscriptCorrectionJob(
@@ -763,6 +804,7 @@ Future<void> _queue(
       sttTotalMs: 60,
       queuedAt: DateTime.now().toUtc(),
     ),
+    prioritize: prioritize,
   );
 }
 

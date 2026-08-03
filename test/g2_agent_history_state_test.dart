@@ -1,9 +1,16 @@
 import 'package:even_g2_r1_poc/src/websocket/agent_exchange_store.dart';
 import 'package:even_g2_r1_poc/src/websocket/g2_agent_history_state.dart';
+import 'package:even_g2_r1_poc/src/protocol/g2_text_layout.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   final sentAt = DateTime.utc(2026, 1, 1);
+
+  String stamp(DateTime value) {
+    final local = value.toLocal();
+    return '[${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}]';
+  }
 
   test('opens with [x] first, five agents, and Memo last', () {
     final state = G2AgentHistoryState();
@@ -33,20 +40,64 @@ void main() {
     expect(state.selected?.kind, G2AgentHistoryEntryKind.dismiss);
     expect(state.entries[1].label, 'Pike');
     expect(state.entries.last.kind, G2AgentHistoryEntryKind.memo);
-    expect(state.render(), startsWith('> [x]\nPike - validate'));
+    expect(
+      state.render(),
+      startsWith(' > [x] - Swipe to Select\n    Pike - validate'),
+    );
     final rows = state.render().split('\n');
     expect(rows, hasLength(7));
-    expect(rows.last, 'Memo - Remember the synthetic validation result.');
-    expect(state.render(), isNot(contains('Swipe to select')));
+    expect(rows.last, '    Memo - Remember the synthetic validation result.');
+    expect(state.render(), contains('[x] - Swipe to Select'));
 
     for (var index = 0; index < 4; index++) {
       state.selectNext();
     }
-    expect(state.render(), contains('> Agent Four - No sent message'));
+    expect(state.render(), contains(' > Agent Four - No messages'));
     expect(
       state.render().runes.length,
       lessThanOrEqualTo(G2AgentHistoryState.maximumPageCharacters),
     );
+  });
+
+  test('selector previews each agent newest sent or received message', () {
+    final state = G2AgentHistoryState();
+    state.open(
+      agents: const <String>['Pike', 'Vale'],
+      exchanges: const <AgentExchangeView>[],
+      messages: <AgentMessageView>[
+        AgentMessageView(
+          id: 'pike-sent',
+          agent: 'Pike',
+          direction: AgentMessageDirection.sent,
+          message: 'older sent preview',
+          updatedAt: sentAt,
+        ),
+        AgentMessageView(
+          id: 'pike-received',
+          agent: 'Pike',
+          direction: AgentMessageDirection.received,
+          message: 'Pike: newest received preview',
+          updatedAt: sentAt.add(const Duration(minutes: 2)),
+        ),
+        AgentMessageView(
+          id: 'vale-received',
+          agent: 'Vale',
+          direction: AgentMessageDirection.received,
+          message: 'older received preview',
+          updatedAt: sentAt,
+        ),
+        AgentMessageView(
+          id: 'vale-sent',
+          agent: 'Vale',
+          direction: AgentMessageDirection.sent,
+          message: 'Vale: newest sent preview',
+          updatedAt: sentAt.add(const Duration(minutes: 3)),
+        ),
+      ],
+    );
+
+    expect(state.entries[1].preview, 'newest received preview');
+    expect(state.entries[2].preview, 'newest sent preview');
   });
 
   test('swipes wrap and empty Memo opens a dismissible detail', () {
@@ -64,7 +115,7 @@ void main() {
     expect(state.selectedSpeechAgent, isNull);
     state.selectNext();
     expect(state.selected?.label, 'Pike');
-    expect(state.selectedSpeechAgent, 'Pike');
+    expect(state.selectedSpeechAgent, isNull);
     state.selectNext();
     expect(state.selected?.label, 'Memo');
     expect(state.selectedSpeechAgent, isNull);
@@ -74,7 +125,7 @@ void main() {
     expect(state.mode, G2AgentHistoryMode.detail);
     expect(state.render(), startsWith('[ Memo · Tap to dismiss ]\n'));
     expect(state.render(), contains('No saved memo'));
-    expect(state.render().split('\n'), hasLength(10));
+    expect(state.render().split('\n'), hasLength(9));
   });
 
   test('Pike waits for only its exchange and then shows the response', () {
@@ -93,8 +144,11 @@ void main() {
       ..selectNext();
 
     state.showWaiting(exchange);
-    expect(state.selectedSpeechAgent, 'Pike');
-    expect(state.render(), startsWith('[ Pike: • · Tap to cancel ]\n'));
+    expect(state.selectedSpeechAgent, isNull);
+    expect(
+      state.render(),
+      startsWith('< [Pike - Tap to cancel]\n  · Listen Mode\n'),
+    );
     expect(state.render(), contains('Waiting for response'));
     expect(state.acceptResponse('different-exchange', 'Wrong response'), false);
     expect(state.mode, G2AgentHistoryMode.waiting);
@@ -102,11 +156,18 @@ void main() {
       state.acceptResponse(
         'pike-exchange',
         'Pike: Synthetic device response received.',
+        receivedAt: sentAt.add(const Duration(minutes: 1)),
       ),
       true,
     );
     expect(state.mode, G2AgentHistoryMode.detail);
-    expect(state.render(), contains('Synthetic device response received'));
+    expect(
+      state.render(),
+      contains(
+        '${stamp(sentAt.add(const Duration(minutes: 1)))} '
+        'Synthetic device response received.',
+      ),
+    );
   });
 
   test(
@@ -120,11 +181,42 @@ void main() {
         ..selectNext()
         ..showSelectedDetail();
 
+      expect(state.selectedSpeechAgent, isNull);
+      expect(state.beginTargetedSpeech('segment-1'), isFalse);
+      expect(
+        state.render(),
+        startsWith('   [Pike]\n> • Listen Mode - Tap to start\n'),
+      );
+
+      expect(state.selectDetailListenMode(), isTrue);
+      expect(state.selectDetailListenMode(), isFalse);
       expect(state.selectedSpeechAgent, 'Pike');
-      expect(state.render(), startsWith('[ Pike: • · Tap to dismiss ]\n'));
+      expect(
+        state.render(),
+        startsWith(
+          '   [Pike]\n'
+          '< • Listen Mode - Tap to stop\n',
+        ),
+      );
 
       expect(state.beginTargetedSpeech('segment-1'), isTrue);
-      expect(state.render(), contains('Listening…'));
+      expect(
+        state.render(),
+        startsWith('   [Pike]\n< • Listening - Tap to send\n'),
+      );
+
+      expect(state.finishTargetedSpeechCapture('segment-1'), isTrue);
+      expect(state.detailSpeechState, G2AgentDetailSpeechState.sending);
+      expect(state.detailListenModeSelected, isFalse);
+      expect(
+        state.render(),
+        startsWith(
+          '   [Pike - Tap to dismiss]\n'
+          '< • Sending - Tap to dismiss\n',
+        ),
+      );
+      expect(state.markTargetedSpeechSending('segment-1'), isFalse);
+      expect(state.beginTargetedSpeech('segment-2'), isFalse);
 
       expect(
         state.showTargetedSpeechTranscript(
@@ -133,6 +225,7 @@ void main() {
         ),
         isTrue,
       );
+      expect(state.render(), contains('< • Sending - Tap to dismiss'));
       expect(state.render(), contains('Sending: pull the latest changes'));
 
       expect(
@@ -143,9 +236,67 @@ void main() {
         ),
         isTrue,
       );
-      expect(state.render(), contains('Sent: pull the latest changes'));
+      expect(state.render(), contains('> • Sent - Tap to start'));
+      expect(state.render(), contains('No conversation yet'));
     },
   );
+
+  test('finishing speech replaces Listening with its delivery transcript', () {
+    final messages = <AgentMessageView>[
+      for (var index = 0; index < 40; index++)
+        AgentMessageView(
+          id: 'delivery-message-$index',
+          agent: 'Pike',
+          direction: AgentMessageDirection.sent,
+          message: 'Pike: retained delivery history row $index',
+          updatedAt: sentAt.add(Duration(minutes: index)),
+        ),
+    ];
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext()
+      ..showAgentMessages(messages);
+
+    expect(state.selectNextDetailPage(), isTrue);
+    expect(state.selectDetailListenMode(), isTrue);
+    expect(state.beginTargetedSpeech('delivery-segment'), isTrue);
+    expect(state.finishTargetedSpeechCapture('delivery-segment'), isTrue);
+
+    expect(state.detailSpeechState, G2AgentDetailSpeechState.sending);
+    expect(state.detailPageIndex, 0);
+    expect(state.render(), contains('< • Sending - Tap to dismiss'));
+    expect(state.render(), contains('Sending…'));
+    expect(state.selectPreviousDetailPage(), isFalse);
+    expect(state.selectNextDetailPage(), isFalse);
+
+    expect(
+      state.showTargetedSpeechTranscript(
+        segmentId: 'delivery-segment',
+        transcript: 'send the retained synthetic command',
+      ),
+      isTrue,
+    );
+    expect(state.detailPageIndex, 0);
+    expect(
+      state.render(),
+      contains('Sending: send the retained synthetic command'),
+    );
+
+    expect(
+      state.completeTargetedSpeech(
+        segmentId: 'delivery-segment',
+        transcript: 'send the retained synthetic command',
+        sent: true,
+      ),
+      isTrue,
+    );
+    expect(state.render(), contains('> • Sent - Tap to start'));
+    expect(state.detailPageIndex, 0);
+    expect(state.render(), contains('retained delivery history row 39'));
+  });
 
   test('a newer detail utterance cannot be overwritten by an older result', () {
     final state = G2AgentHistoryState()
@@ -155,6 +306,7 @@ void main() {
       )
       ..selectNext()
       ..showSelectedDetail()
+      ..selectDetailListenMode()
       ..beginTargetedSpeech('segment-1')
       ..beginTargetedSpeech('segment-2');
 
@@ -167,6 +319,232 @@ void main() {
       isFalse,
     );
     expect(state.render(), contains('Listening…'));
+  });
+
+  test(
+    'stopping Listen Mode restores history and clears its transient turn',
+    () {
+      final messages = <AgentMessageView>[
+        for (var index = 0; index < 40; index++)
+          AgentMessageView(
+            id: 'message-$index',
+            agent: 'Pike',
+            direction: index.isEven
+                ? AgentMessageDirection.sent
+                : AgentMessageDirection.received,
+            message: 'Pike: retained synthetic history row $index',
+            updatedAt: sentAt.add(Duration(minutes: index)),
+          ),
+      ];
+      final state = G2AgentHistoryState()
+        ..open(
+          agents: const <String>['Pike'],
+          exchanges: const <AgentExchangeView>[],
+        )
+        ..selectNext()
+        ..showAgentMessages(messages);
+
+      expect(state.selectNextDetailPage(), isTrue);
+      final historyPageIndex = state.detailPageIndex;
+      final historyBody = state.render().split('\n').skip(2).join('\n');
+
+      expect(state.selectDetailListenMode(), isTrue);
+      expect(state.detailPageIndex, historyPageIndex);
+      expect(state.beginTargetedSpeech('segment-1'), isTrue);
+      expect(state.detailPageIndex, 0);
+      expect(state.render(), contains('Listening…'));
+
+      expect(state.exitDetailListenMode(), isTrue);
+      expect(state.exitDetailListenMode(), isFalse);
+      expect(state.selectedSpeechAgent, isNull);
+      expect(state.activeDetailSpeechSegmentId, isNull);
+      expect(state.detailSpeechState, isNull);
+      expect(state.detailPageIndex, historyPageIndex);
+      expect(state.render().split('\n').skip(2).join('\n'), historyBody);
+      expect(state.beginTargetedSpeech('segment-2'), isFalse);
+      expect(
+        state.render(),
+        startsWith('   [Pike]\n> • Listen Mode - Tap to start\n'),
+      );
+      expect(
+        state.showTargetedSpeechTranscript(
+          segmentId: 'segment-1',
+          transcript: 'finish the active synthetic turn',
+        ),
+        isFalse,
+      );
+      expect(
+        state.completeTargetedSpeech(
+          segmentId: 'segment-1',
+          transcript: 'finish the active synthetic turn',
+          sent: true,
+        ),
+        isFalse,
+      );
+      expect(state.selectPreviousDetailPage(), isTrue);
+      expect(state.selectNextDetailPage(), isTrue);
+      expect(state.detailPageIndex, historyPageIndex);
+    },
+  );
+
+  test('closing a sending detail revokes its target for new speech', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Pike'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext()
+      ..showSelectedDetail()
+      ..selectDetailListenMode()
+      ..beginTargetedSpeech('segment-1')
+      ..markTargetedSpeechSending('segment-1')
+      ..exitDetailListenMode(preserveActiveSpeech: true);
+
+    expect(state.selectedSpeechAgent, isNull);
+    expect(state.activeDetailSpeechSegmentId, 'segment-1');
+
+    state.close();
+
+    expect(state.selectedSpeechAgent, isNull);
+    expect(state.activeDetailSpeechSegmentId, isNull);
+    expect(state.beginTargetedSpeech('segment-2'), isFalse);
+  });
+
+  test('swipes focus the back and Listen controls without losing history', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext()
+      ..showSelectedDetail();
+
+    expect(state.detailControl, G2AgentDetailControl.listen);
+    expect(
+      state.render(),
+      startsWith('   [Flux]\n> • Listen Mode - Tap to start\n'),
+    );
+
+    expect(state.selectDetailListenMode(), isTrue);
+    expect(
+      state.render(),
+      startsWith('   [Flux]\n< • Listen Mode - Tap to stop\n'),
+    );
+    expect(state.exitDetailListenMode(), isTrue);
+    expect(state.focusAgentBackControl(), isTrue);
+    expect(state.focusAgentBackControl(), isFalse);
+    expect(
+      state.render(),
+      startsWith('< [Flux]\n  • Listen Mode - Tap to start\n'),
+    );
+    expect(state.selectDetailListenMode(), isFalse);
+
+    expect(state.focusAgentListenControl(), isTrue);
+    expect(state.focusAgentListenControl(), isFalse);
+    expect(
+      state.render(),
+      startsWith('   [Flux]\n> • Listen Mode - Tap to start\n'),
+    );
+
+    expect(state.focusAgentBackControl(), isTrue);
+    expect(state.returnToSelector(), isTrue);
+    expect(state.mode, G2AgentHistoryMode.selector);
+    expect(state.selected?.label, 'Flux');
+    expect(state.returnToSelector(), isFalse);
+  });
+
+  test('a matching response refreshes page one and preserves detail state', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux', 'Pike'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext()
+      ..showAgentMessages(<AgentMessageView>[
+        AgentMessageView(
+          id: 'old-flux-message',
+          agent: 'Flux',
+          direction: AgentMessageDirection.received,
+          message: 'Flux: older synthetic response',
+          updatedAt: sentAt,
+        ),
+      ]);
+
+    expect(state.focusAgentBackControl(), isTrue);
+    expect(
+      state.refreshOpenAgentMessages(
+        agent: 'Pike',
+        messages: const <AgentMessageView>[],
+      ),
+      isFalse,
+    );
+    expect(state.detailControl, G2AgentDetailControl.back);
+
+    expect(
+      state.refreshOpenAgentMessages(
+        agent: 'Flux',
+        messages: <AgentMessageView>[
+          AgentMessageView(
+            id: 'new-flux-message',
+            agent: 'Flux',
+            direction: AgentMessageDirection.received,
+            message: 'Flux: newest synthetic response',
+            updatedAt: sentAt.add(const Duration(minutes: 1)),
+          ),
+          AgentMessageView(
+            id: 'old-flux-message',
+            agent: 'Flux',
+            direction: AgentMessageDirection.received,
+            message: 'Flux: older synthetic response',
+            updatedAt: sentAt,
+          ),
+        ],
+      ),
+      isTrue,
+    );
+    expect(state.detailControl, G2AgentDetailControl.back);
+    expect(state.detailPageIndex, 0);
+    expect(state.render(), startsWith('< [Flux]\n'));
+    expect(state.render(), contains('newest synthetic response'));
+    expect(
+      state.render().indexOf('newest synthetic response'),
+      lessThan(state.render().indexOf('older synthetic response')),
+    );
+  });
+
+  test('a response refresh remains underneath active listening', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext()
+      ..showSelectedDetail()
+      ..selectDetailListenMode()
+      ..beginTargetedSpeech('active-flux-segment');
+
+    expect(
+      state.refreshOpenAgentMessages(
+        agent: 'Flux',
+        messages: <AgentMessageView>[
+          AgentMessageView(
+            id: 'live-flux-response',
+            agent: 'Flux',
+            direction: AgentMessageDirection.received,
+            message: 'Flux: live synthetic response',
+            updatedAt: sentAt,
+          ),
+        ],
+      ),
+      isTrue,
+    );
+    expect(state.detailListenModeSelected, isTrue);
+    expect(state.activeDetailSpeechSegmentId, 'active-flux-segment');
+    expect(state.render(), contains('Listening…'));
+
+    expect(state.exitDetailListenMode(), isTrue);
+    expect(state.detailPageIndex, 0);
+    expect(state.render(), contains('live synthetic response'));
   });
 
   test('selector flows Agent - content across at most two full-width rows', () {
@@ -189,15 +567,40 @@ void main() {
 
     final rows = state.render().split('\n');
     expect(rows, hasLength(4));
-    expect(rows[1], startsWith('Pike - first line second line'));
+    expect(rows[1], startsWith('    Pike - first line second line'));
     expect(rows[2], isNotEmpty);
     expect(rows[2], endsWith('…'));
     expect(rows[1].runes.length, greaterThan(48));
-    expect(rows[2], isNot(startsWith('  ')));
-    expect(rows.last, 'Memo - No saved memo');
+    expect(rows[2], startsWith('     '));
+    expect(
+      G2TextLayout.history.textWidth(rows[2]),
+      lessThanOrEqualTo(G2TextLayout.history.wrappingWidthPixels),
+    );
+    expect(rows.last, '    Memo - No saved memo');
+
+    const layout = G2TextLayout.history;
+    final unselectedPrefix = rows[1].substring(0, rows[1].indexOf('Pike'));
+    state.selectNext();
+    final selectedRow = state
+        .render()
+        .split('\n')
+        .firstWhere((line) => line.contains('Pike -'));
+    final selectedPrefix = selectedRow.substring(
+      0,
+      selectedRow.indexOf('Pike'),
+    );
+    expect(
+      layout.textWidth(unselectedPrefix),
+      layout.textWidth(selectedPrefix),
+    );
+    expect(selectedRow, startsWith(' > Pike -'));
+    expect(
+      state.render().split('\n').where((line) => line.contains('Pike -')),
+      hasLength(1),
+    );
   });
 
-  test('selector adaptively pages long two-row agent entries', () {
+  test('selector scrolls only when a complete selected block overflows', () {
     final longMessage = List<String>.filled(40, 'synthetic-content').join(' ');
     final state = G2AgentHistoryState()
       ..open(
@@ -223,16 +626,126 @@ void main() {
       );
 
     final firstPage = state.render().split('\n');
-    expect(firstPage.length, lessThanOrEqualTo(11));
-    expect(firstPage.last, '[ 1/2 · Swipe to select ]');
+    expect(firstPage.length, lessThanOrEqualTo(9));
+    expect(firstPage.first, ' > [x] - Swipe to Select');
     expect(firstPage.any((line) => line.contains('Agent Five')), isFalse);
+
+    for (var index = 0; index < 4; index++) {
+      state.selectNext();
+    }
+    final firstBoundary = state.render().split('\n');
+    expect(firstBoundary[1], startsWith('    Agent Two -'));
+    expect(firstBoundary, contains(startsWith(' > Agent Four -')));
+    expect(firstBoundary.any((line) => line.contains('Agent One -')), isFalse);
+    expect(firstBoundary.any((line) => line.contains('Agent Five -')), isTrue);
+
+    state.selectNext();
+    final secondBoundary = state.render().split('\n');
+    expect(secondBoundary[1], startsWith('    Agent Three -'));
+    expect(secondBoundary, contains(startsWith(' > Agent Five -')));
+    expect(secondBoundary, contains(startsWith('    Memo -')));
+    expect(secondBoundary.length, lessThanOrEqualTo(9));
+    expect(secondBoundary.first, '    [x] - Swipe to Select');
+    expect(secondBoundary.join('\n'), isNot(contains(RegExp(r'\d+/\d+'))));
+    expect(secondBoundary.any((line) => line.contains('Agent One -')), isFalse);
+    expect(secondBoundary.any((line) => line.contains('Agent Two -')), isFalse);
+  });
+
+  test('selector moves cursor while blocks fit and scrolls at the edge', () {
+    final longMessage = List<String>.filled(30, 'synthetic-content').join(' ');
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux', 'Pike', 'Vale', 'Brock'],
+        exchanges: <AgentExchangeView>[
+          for (final agent in <String>['Flux', 'Pike', 'Vale', 'Brock'])
+            AgentExchangeView(
+              id: agent.toLowerCase(),
+              agent: agent,
+              message: longMessage,
+              sentAt: sentAt,
+              legacy: false,
+            ),
+        ],
+        memo: longMessage,
+      );
+
+    state.selectNext();
+    expect(state.selected?.label, 'Flux');
+    expect(state.render().split('\n')[1], startsWith(' > Flux -'));
+
+    state.selectNext();
+    expect(state.selected?.label, 'Pike');
+    expect(state.render().split('\n')[1], startsWith('    Flux -'));
+    expect(state.render(), contains(' > Pike -'));
+    expect(state.render(), contains('Vale -'));
+
+    state.selectNext();
+    expect(state.selected?.label, 'Vale');
+    expect(state.render().split('\n')[1], startsWith('    Flux -'));
+    expect(state.render(), contains(' > Vale -'));
+
+    state.selectNext();
+    expect(state.selected?.label, 'Brock');
+    expect(state.render().split('\n')[1], startsWith('    Pike -'));
+    expect(state.render(), isNot(contains('Flux -')));
+    expect(state.render(), contains(' > Brock -'));
+    expect(state.render(), contains('Memo -'));
+
+    state.selectNext();
+    expect(state.selected?.label, 'Memo');
+    expect(state.render().split('\n')[1], startsWith('    Pike -'));
+    expect(state.render(), contains(' > Memo -'));
+
+    state.selectPrevious();
+    expect(state.selected?.label, 'Brock');
+    expect(state.render().split('\n')[1], startsWith('    Pike -'));
+    expect(state.render(), contains(' > Brock -'));
+
+    state.selectPrevious();
+    expect(state.selected?.label, 'Vale');
+    expect(state.render().split('\n')[1], startsWith('    Pike -'));
+    expect(state.render(), contains(' > Vale -'));
+
+    state.selectPrevious();
+    expect(state.selected?.label, 'Pike');
+    expect(state.render().split('\n')[1], startsWith('    Flux -'));
+    expect(state.render(), contains(' > Pike -'));
+    expect(state.render(), contains('Pike -'));
+    expect(state.render(), isNot(contains(RegExp(r'\d+/\d+'))));
+  });
+
+  test('selector removes only the minimum mixed-height overflow block', () {
+    final longMessage = List<String>.filled(30, 'synthetic-content').join(' ');
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux', 'Pike', 'Vale', 'Brock', 'Nova'],
+        exchanges: <AgentExchangeView>[
+          for (final agent in <String>['Flux', 'Pike', 'Vale', 'Brock', 'Nova'])
+            AgentExchangeView(
+              id: agent.toLowerCase(),
+              agent: agent,
+              message: agent == 'Pike' || agent == 'Brock'
+                  ? longMessage
+                  : 'short update',
+              sentAt: sentAt,
+              legacy: false,
+            ),
+        ],
+        memo: longMessage,
+      );
 
     for (var index = 0; index < 5; index++) {
       state.selectNext();
     }
-    final secondPage = state.render().split('\n');
-    expect(secondPage.first, startsWith('> Agent Five -'));
-    expect(secondPage.last, '[ 2/2 · Swipe to select ]');
+    expect(state.selected?.label, 'Nova');
+    expect(state.render(), isNot(contains('Flux -')));
+    expect(state.render(), contains(' > Nova -'));
+    expect(state.render(), contains('Memo -'));
+    final shifted = state.render().split('\n');
+    expect(shifted, hasLength(9));
+    expect(shifted[1], startsWith('    Pike -'));
+    expect(shifted.join('\n'), isNot(contains('Flux -')));
+    expect(shifted, contains(startsWith('    Memo -')));
   });
 
   test('long Memo detail pages forward and backward without wrapping', () {
@@ -289,15 +802,21 @@ void main() {
       ..showSelectedDetail();
 
     expect(state.detailPageCount, greaterThan(1));
-    expect(state.render(), startsWith('[ Pike: • · Tap to dismiss ]\n'));
+    expect(
+      state.render(),
+      startsWith('   [Pike]\n> • Listen Mode - Tap to start\n'),
+    );
     while (state.selectNextDetailPage()) {}
-    expect(state.render(), startsWith('[ Pike: • · Tap to dismiss ]\n'));
+    expect(
+      state.render(),
+      startsWith('   [Pike]\n> • Listen Mode - Tap to start\n'),
+    );
     expect(state.render(), contains('result119'));
-    expect(state.render().split('\n'), hasLength(10));
+    expect(state.render().split('\n'), hasLength(9));
   });
 
   test(
-    'agent detail shows the five newest conversations and pages both ways',
+    'agent detail shows every retained conversation and pages both ways',
     () {
       final exchanges = <AgentExchangeView>[
         for (var index = 0; index < 6; index++)
@@ -316,14 +835,26 @@ void main() {
         ..showAgentConversations(exchanges);
 
       expect(state.detailPageCount, greaterThan(1));
+      expect(state.selectedSpeechAgent, isNull);
+      expect(state.selectDetailListenMode(), isTrue);
+      expect(state.selectedSpeechAgent, 'Pike');
+      expect(
+        state.render(),
+        startsWith(
+          '   [Pike]\n'
+          '< • Listen Mode - Tap to stop\n',
+        ),
+      );
       final pages = <String>[state.render()];
       while (state.selectNextDetailPage()) {
         pages.add(state.render());
       }
+      expect(state.detailListenModeSelected, isTrue);
+      expect(state.selectedSpeechAgent, 'Pike');
       final rendered = pages.join('\n');
       expect(rendered, contains('synthetic request 5'));
-      expect(rendered, contains('synthetic response 1'));
-      expect(rendered, isNot(contains('synthetic request 0')));
+      expect(rendered, contains('synthetic response 0'));
+      expect(rendered, contains('synthetic request 0'));
       expect(state.selectPreviousDetailPage(), isTrue);
     },
   );
@@ -350,8 +881,8 @@ void main() {
     expect(
       state.render(),
       contains(
-        '[ Pike: • · Tap to dismiss ]\nLatest conversation\n'
-        'You: report synthetic progress\nPike: First result\n'
+        '   [Pike]\n> • Listen Mode - Tap to start\n${stamp(sentAt)} '
+        'report synthetic progress\n${stamp(sentAt)} First result\n'
         'Second result\nThird result\n\n'
         'Final paragraph.',
       ),
@@ -375,14 +906,152 @@ void main() {
       )
       ..selectNext();
 
-    expect(state.render(), contains('> Flux - inspect the synthetic build'));
+    expect(state.render(), contains(' > Flux - inspect the synthetic build'));
     expect(state.render(), isNot(contains('Flux - Flux:')));
 
     state.showSelectedDetail();
-    expect(state.render(), startsWith('[ Flux: • · Tap to dismiss ]\n'));
-    expect(state.render(), contains('Flux: synthetic build is ready'));
+    expect(
+      state.render(),
+      startsWith('   [Flux]\n> • Listen Mode - Tap to start\n'),
+    );
+    expect(
+      state.render(),
+      contains('${stamp(sentAt)} synthetic build is ready'),
+    );
     expect(state.render(), isNot(contains('Flux: Flux:')));
+    expect(state.render(), isNot(contains('Flux: synthetic build is ready')));
     expect(state.render(), isNot(contains('Agent:')));
+  });
+
+  test('lists every response update by timestamp without speaker labels', () {
+    final firstResponseAt = sentAt.add(const Duration(seconds: 30));
+    final finalResponseAt = sentAt.add(const Duration(minutes: 1));
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux'],
+        exchanges: <AgentExchangeView>[
+          AgentExchangeView(
+            id: 'flux-exchange',
+            agent: 'Flux',
+            message: 'Flux: inspect the synthetic build',
+            sentAt: sentAt,
+            legacy: false,
+            response: 'Flux: synthetic build is ready',
+            responseAt: finalResponseAt,
+            responseMessages: <AgentResponseView>[
+              AgentResponseView(
+                message: 'Flux: inspection in progress',
+                receivedAt: firstResponseAt,
+              ),
+              AgentResponseView(
+                message: 'Flux: synthetic build is ready',
+                receivedAt: finalResponseAt,
+              ),
+            ],
+          ),
+        ],
+      )
+      ..selectNext()
+      ..showSelectedDetail();
+
+    final rendered = state.render();
+    expect(rendered, contains('${stamp(sentAt)} inspect the synthetic build'));
+    expect(
+      rendered,
+      contains('${stamp(firstResponseAt)} inspection in progress'),
+    );
+    expect(
+      rendered,
+      contains('${stamp(finalResponseAt)} synthetic build is ready'),
+    );
+    expect(
+      rendered.indexOf('synthetic build is ready'),
+      lessThan(rendered.indexOf('inspection in progress')),
+    );
+    expect(
+      rendered.indexOf('inspection in progress'),
+      lessThan(rendered.indexOf('inspect the synthetic build')),
+    );
+    expect(rendered, isNot(contains('You:')));
+    expect(rendered, isNot(contains('Flux: inspection')));
+  });
+
+  test('loads the same newest-first agent messages as the phone tab', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux'],
+        exchanges: const <AgentExchangeView>[],
+      )
+      ..selectNext()
+      ..showAgentMessages(<AgentMessageView>[
+        AgentMessageView(
+          id: 'sent-oldest',
+          agent: 'Flux',
+          direction: AgentMessageDirection.sent,
+          message: 'Flux: inspect the synthetic build',
+          updatedAt: sentAt,
+        ),
+        AgentMessageView(
+          id: 'received-newest',
+          agent: 'Flux',
+          direction: AgentMessageDirection.received,
+          message: 'Flux: synthetic build is ready',
+          updatedAt: sentAt.add(const Duration(minutes: 2)),
+        ),
+        AgentMessageView(
+          id: 'received-middle',
+          agent: 'Flux',
+          direction: AgentMessageDirection.received,
+          message: 'Flux: inspection in progress',
+          updatedAt: sentAt.add(const Duration(minutes: 1)),
+        ),
+        AgentMessageView(
+          id: 'other-agent',
+          agent: 'Pike',
+          direction: AgentMessageDirection.received,
+          message: 'Pike: unrelated synthetic update',
+          updatedAt: sentAt.add(const Duration(minutes: 3)),
+        ),
+      ]);
+
+    final rendered = state.render();
+    expect(
+      rendered.indexOf('synthetic build is ready'),
+      lessThan(rendered.indexOf('inspection in progress')),
+    );
+    expect(
+      rendered.indexOf('inspection in progress'),
+      lessThan(rendered.indexOf('inspect the synthetic build')),
+    );
+    expect(rendered, isNot(contains('unrelated synthetic update')));
+    expect(rendered, isNot(contains('Flux: synthetic build is ready')));
+  });
+
+  test('does not truncate retained conversation messages between pages', () {
+    final response = List<String>.generate(
+      1800,
+      (index) => 'history${index.toString().padLeft(4, '0')}',
+    ).join(' ');
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux'],
+        exchanges: <AgentExchangeView>[
+          AgentExchangeView(
+            id: 'flux-long-history',
+            agent: 'Flux',
+            message: 'inspect complete retained history',
+            response: response,
+            sentAt: sentAt,
+            legacy: false,
+          ),
+        ],
+      )
+      ..selectNext()
+      ..showSelectedDetail();
+
+    while (state.selectNextDetailPage()) {}
+
+    expect(state.render(), contains('history1799'));
   });
 
   test(
@@ -399,6 +1068,7 @@ void main() {
         )
         ..selectNext()
         ..showSelectedDetail()
+        ..selectDetailListenMode()
         ..beginTargetedSpeech('segment-long');
 
       expect(
@@ -409,12 +1079,12 @@ void main() {
         isTrue,
       );
       expect(state.detailPageCount, greaterThan(1));
-      expect(state.render().split('\n'), hasLength(10));
+      expect(state.render().split('\n'), hasLength(9));
 
       while (state.selectNextDetailPage()) {}
 
       expect(state.render(), contains('spoken119'));
-      expect(state.render().split('\n'), hasLength(10));
+      expect(state.render().split('\n'), hasLength(9));
     },
   );
 }

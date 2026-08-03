@@ -1,4 +1,4 @@
 interface:
   display_name: "Kokoro G2 Transcription Loop"
   short_description: "Validate G2 capture and transcription with Kokoro"
-  default_prompt: "Use $kokoro-g2-transcription-loop to play deterministic English Kokoro speech, validate G2 VAD and transcription turn timing, and diagnose any failures."
+  default_prompt: "Use $kokoro-g2-transcription-loop to reconnect G2 through the Work Bench app button, play deterministic English Kokoro speech through the computer speakers, and validate transcription safety."

@@ -22,7 +22,7 @@ internal class SharedHistoryCache(
     ) {
     companion object {
         private const val DATABASE_NAME = "workbench_shared_history.db"
-        private const val DATABASE_VERSION = 3
+        private const val DATABASE_VERSION = 4
 
         private const val TABLE_META = "cache_meta"
         private const val TABLE_TRANSCRIPTS = "transcripts"
@@ -33,8 +33,8 @@ internal class SharedHistoryCache(
         private const val META_TRANSCRIPTS_SNAPSHOT = "transcripts_snapshot"
         private const val META_MESSAGES_SNAPSHOT = "messages_snapshot"
         private const val MAX_TEXT_CHARACTERS = 65_536
-        internal const val MAX_VISIBLE_TRANSCRIPTS = 20
-        internal const val MAX_VISIBLE_MESSAGES = 20
+        internal const val MAX_VISIBLE_TRANSCRIPTS = 100
+        internal const val MAX_VISIBLE_MESSAGES = 100
         internal const val MAX_VISIBLE_CONVERSATION_TURNS = 100
     }
 
@@ -104,6 +104,12 @@ internal class SharedHistoryCache(
         }
         if (oldVersion < 3) {
             createConversationTable(database)
+        }
+        if (oldVersion < 4) {
+            // Earlier snapshots indexed only the first UI page. Preserve the
+            // cached rows, but force one source-of-truth rescan so scrolling
+            // can reach the expanded retained history window.
+            database.delete(TABLE_META, null, null)
         }
     }
 

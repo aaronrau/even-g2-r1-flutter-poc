@@ -123,6 +123,16 @@ the original speaker volume even after failure. Every run must contain explicit
 baseline only from audio summaries before `playback_start`; ignore stale VAD
 and transcript markers before it.
 
+Before any acoustic playback, foreground Work Bench and use its primary button
+for a complete disconnect/reconnect cycle. If necessary, connect first; then
+tap **Disconnect**, wait for **Connect devices**, tap **Connect devices**, and
+wait for **Disconnect** plus fresh post-reconnect G2 audio summaries. The
+runners must enforce this preflight and refuse to start the computer speaker if
+it fails. If startup temporarily disables the button, wait for the current
+pipeline-ready marker and retry the same visible button; accept late fresh
+audio during that wait. Never treat an old connection or streaming marker as
+readiness, and never use phone/app playback.
+
 Use a fresh output directory for every trial. Preserve the WAV, SHA-256
 manifest, device log, and JSON report for passes and failures. Never rerun until
 one trial passes and then omit earlier failures. Diagnose and report transport,

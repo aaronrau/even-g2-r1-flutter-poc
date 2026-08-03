@@ -36,6 +36,12 @@ WebSocket inbound event → durable `.received.message.txt`
 - up to 32 case-insensitive, deduplicated agent names; and
 - an optional legacy message shape.
 
+Home shows the configured address to the right of the local-audio model
+status. The adjacent text distinguishes not configured, disconnected,
+connecting, connected, and error states; its dot turns green only after the
+socket receives `connection.ready`. The address remains UI-only and is
+excluded from logs.
+
 The path is fixed to `/ws`. The complete validated schema is in
 [`voice_websocket.example.json`](../voice_websocket.example.json). The runtime
 file is `workbench/voice_websocket.json` under the platform application-support
@@ -155,8 +161,12 @@ inbound events. Voice memo finalization retains priority over this action.
 When no transcript is visibly `Queued:`, the single-tap interaction expands
 progress lookup into a gesture-controlled selector with `Dismiss` selected
 first, up to five one-line agent rows, and the local Memo row last. Tapping an
-agent loads its five newest acknowledged exchanges, newest first, and swipe up/down
-pages through their complete bounded content without a network request.
+agent loads every exchange retained for it in the bounded ledger and lists each
+message as `[HH:mm] Message`; swipe up/down pages through the complete content
+without a network request.
+Every successfully indexed inbound response for that open agent reloads the
+durable newest-first list and rebuilds page 1 immediately. Responses for other
+agents remain saved without interrupting the current detail.
 Request-ID correlation prevents an arbitrary recent response from the same
 agent from replacing a saved result. The complete state machine, data model,
 failure behavior, implementation, and physical-device acceptance flow are documented in
@@ -209,6 +219,43 @@ unexpected disconnect, it reconnects with bounded backoff, waits for the next
 
 Changing the saved configuration clears the in-memory resume cursor so an
 event ID from one server is never sent to another.
+
+### Phone Messages agent filter and direct send
+
+The phone **Messages** tab shows an **All** chip followed by the saved
+configured agent names in one horizontally scrollable grayscale row. **All**
+is selected by default and shows the ordinary combined shared-folder message
+and transcript view without a message field. Selecting an agent chip filters
+the body to the app-private sent and correlated received records for exactly
+that agent and reveals one full-width `Message <agent>` field. Agent selection
+immediately focuses that field and opens the keyboard; its **Send** action
+submits the message. **All** clears focus and dismisses the composer and
+keyboard.
+The filtered history comes from the bounded exchange ledger, so it remains
+available without requiring a shared folder and does not infer an agent from
+private free-form text. The G2 selected-agent detail calls this same retained
+message loader and keeps the same newest-message-first ordering. Selecting
+**All**, or deselecting the active agent, restores the ordinary combined view
+and dismisses the message field.
+Both views initially render 20 retained entries and append the next 20-row page
+as a scroll ends near the bottom. The phone index keeps the newest 100 socket
+messages and 100 transcripts available to this incremental view instead of
+stopping after its first page; the atomic files remain the durable source.
+
+Every readable inbound socket message is atomically saved as a received record
+before the client acknowledges its event. This includes plain-text frames,
+JSON-string frames, progress/completion summaries, and readable error updates,
+whether or not they correlate to a configured-agent exchange. Protocol-only
+connection, ping/pong, and positive-acknowledgement frames are not message
+history.
+
+A typed message uses the chip as explicit routing intent: it does not require
+`Hey` or the agent name in the field. Modern delivery uses the same direct,
+single-attempt acknowledgement path as selected-agent G2 speech. Only a
+matching positive `message.accepted` result clears the draft, shows success,
+and archives/indexes the sent message. Rejection, busy, timeout, or connection
+loss leaves the draft editable and shows an inline retryable failure. Message
+text and configured agent names remain excluded from logs.
 
 ## Routing and G2 display
 
@@ -281,11 +328,13 @@ final filename ends in `.sent.message.txt` or `.received.message.txt`. When
 File storage is selected, completed records are exported to that shared
 folder. Existing records are synchronized at startup and when the folder
 changes. The **Messages** tab retains both directions with saved transcripts
-and their playable WAV files. The separate **Conversation** tab contains only
-optional speaker-attributed turns. Normal tab loads use the app-private SQLite
-history indexes; the explicit refresh action reconciles external shared-folder
-edits. A persistence or export failure never blocks the G2 display or
-WebSocket receive loop.
+and their playable WAV files. Its configured-agent chips filter exact
+correlated sent/received history and expose the direct-send field described
+above. The separate **Conversation** tab contains only optional
+speaker-attributed turns. Normal tab loads use the app-private SQLite history
+indexes; the explicit refresh action reconciles external shared-folder edits.
+A persistence or export failure never blocks the G2 display or WebSocket
+receive loop.
 
 If G2 is temporarily disconnected, Work Bench retains the FIFO. A terminal
 two-second hold starts only after that terminal state was written successfully.

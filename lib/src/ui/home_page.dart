@@ -6,10 +6,12 @@ import '../ble/ble_models.dart';
 import '../startup/startup_state.dart';
 import '../util/hex.dart';
 import '../wearable_controller.dart';
+import '../websocket/voice_websocket_client.dart';
 import 'app_version_label.dart';
 import 'conversation_analysis_settings.dart';
 import 'home_history_panel.dart';
 import 'transcript_correction_settings.dart';
+import 'voice_websocket_home_status.dart';
 import 'voice_websocket_settings.dart';
 import 'workbench_theme.dart';
 
@@ -208,6 +210,12 @@ final class _HomePageState extends State<HomePage> {
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.bodySmall,
             ),
+          ),
+          const SizedBox(width: 8),
+          VoiceWebSocketHomeStatus(
+            host: controller.voiceWebSocketConfig.host,
+            port: controller.voiceWebSocketConfig.port,
+            status: controller.voiceWebSocketStatus,
           ),
           if (startup.phase == StartupPhase.failed)
             IconButton(
@@ -422,6 +430,8 @@ final class _HomePageState extends State<HomePage> {
         conversations: controller.conversations,
         voiceMemos: controller.voiceMemos,
         messages: controller.sharedWebSocketMessages,
+        agentNames: controller.voiceWebSocketConfig.agentNames,
+        agentMessages: controller.agentMessages,
         transcriptions: controller.sharedTranscripts,
         supportsSharedFolder: controller.supportsSharedAudioFolder,
         sharedFolderName: controller.sharedAudioFolder?.displayName,
@@ -437,8 +447,10 @@ final class _HomePageState extends State<HomePage> {
         pendingConversationCount: controller.pendingConversationCount,
         isLoadingConversations: controller.isLoadingConversations,
         isLoadingMessages: controller.isLoadingSharedMessages,
+        isLoadingAgentMessages: controller.isLoadingAgentMessages,
         isStorageBusy: _busy || controller.isExportingSharedAudio,
         messageError: controller.sharedMessageError,
+        agentMessageError: controller.agentMessageError,
         conversationError:
             controller.conversationAnalysisError ??
             controller.conversationLoadError,
@@ -449,6 +461,7 @@ final class _HomePageState extends State<HomePage> {
         onRefreshConversations: () => _run(controller.refreshConversations),
         onLoadMessages: controller.refreshSharedMessages,
         onLoadConversations: controller.refreshConversations,
+        onSendAgentMessage: controller.sendDirectAgentMessage,
         onTabChanged: (tab) {
           final messagesSelected = tab == HomeHistoryTab.messages;
           controller.setSharedMessageViewActive(messagesSelected);
@@ -465,11 +478,11 @@ final class _HomePageState extends State<HomePage> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: <Widget>[
+        _buildVoiceWebSocketCard(),
+        const SizedBox(height: 12),
         _buildTranscriptionSettingsCard(),
         const SizedBox(height: 12),
         _buildConversationAnalysisCard(),
-        const SizedBox(height: 12),
-        _buildVoiceWebSocketCard(),
         const SizedBox(height: 12),
         _buildDisplayToolsCard(),
         const SizedBox(height: 12),
@@ -513,6 +526,7 @@ final class _HomePageState extends State<HomePage> {
   Widget _buildVoiceWebSocketCard() {
     final theme = Theme.of(context);
     return Card(
+      key: const ValueKey<String>('tools-agent-connection'),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -544,6 +558,7 @@ final class _HomePageState extends State<HomePage> {
         !controller.isSwitchingSpeechModel &&
         !controller.startup.isBusy;
     return Card(
+      key: const ValueKey<String>('tools-transcription'),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -890,6 +905,12 @@ final class _HomePageState extends State<HomePage> {
                 Text('82%', style: theme.textTheme.bodySmall),
               ],
             ),
+            const SizedBox(height: 8),
+            const VoiceWebSocketHomeStatus(
+              host: '192.0.2.10',
+              port: 8787,
+              status: VoiceWebSocketStatus.ready,
+            ),
             const SizedBox(height: 16),
             Text('Peer views', style: theme.textTheme.titleSmall),
             const SizedBox(height: 8),
@@ -908,6 +929,42 @@ final class _HomePageState extends State<HomePage> {
                     Tab(height: 48, text: 'Conversation'),
                   ],
                 ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text('Agent messages', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 8),
+            IgnorePointer(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  const Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: <Widget>[
+                      ChoiceChip(
+                        label: Text('All'),
+                        selected: false,
+                        showCheckmark: false,
+                      ),
+                      ChoiceChip(
+                        label: Text('Flux'),
+                        selected: true,
+                        showCheckmark: false,
+                      ),
+                      ChoiceChip(
+                        label: Text('Pike'),
+                        selected: false,
+                        showCheckmark: false,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const TextField(
+                    textInputAction: TextInputAction.send,
+                    decoration: InputDecoration(labelText: 'Message Flux'),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 16),
@@ -1041,7 +1098,10 @@ final class _HomePageState extends State<HomePage> {
             Text(
               '16dp section padding • 12dp group gap • 8dp control gap\n'
               '48dp minimum targets • grayscale UI • green status dots only\n'
+              'Agent socket status right-aligns IP:port and non-ready text\n'
               'Text tabs with an underline switch between peer views\n'
+              'Agent chips filter both directions and reveal one direct-send '
+              'field\n'
               'Speaker turns use aligned labels with grayscale color markers\n'
               'Labeled dropdowns select one persisted setting\n'
               'Discrete sliders expose bounded numeric thresholds\n'

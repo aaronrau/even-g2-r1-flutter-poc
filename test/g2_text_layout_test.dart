@@ -5,10 +5,12 @@ void main() {
   const layout = G2TextLayout.history;
 
   test('history layout owns the shared physical and measured bounds', () {
-    expect(layout.physicalContentWidthPixels, 576);
+    expect(layout.paddingPixels, 4);
+    expect(layout.physicalContentWidthPixels, 568);
     expect(layout.displayHeightPixels, 288);
-    expect(layout.wrappingWidthPixels, 620);
-    expect(layout.maximumVisibleRows, 10);
+    expect(layout.measurementSafetyPixels, 18);
+    expect(layout.wrappingWidthPixels, 600);
+    expect(layout.maximumVisibleRows, 9);
     expect(layout.maximumPageCharacters, 2048);
   });
 
@@ -28,6 +30,20 @@ void main() {
     );
   });
 
+  test('measured continuation indent stays inside the row width', () {
+    final row = layout.fitLineWithLeading(
+      List<String>.filled(80, 'continuation').join(' '),
+      leading: '     ',
+    );
+
+    expect(row, startsWith('     '));
+    expect(row, endsWith('…'));
+    expect(
+      layout.textWidth(row),
+      lessThanOrEqualTo(layout.wrappingWidthPixels),
+    );
+  });
+
   test('selector blocks stay intact within the shared row budget', () {
     final pages = layout.paginateBlocks<int>(
       <int>[1, 2, 2, 2, 2, 2, 2],
@@ -36,17 +52,30 @@ void main() {
     );
 
     expect(pages, <List<int>>[
-      <int>[1, 2, 2, 2, 2],
-      <int>[2, 2],
+      <int>[1, 2, 2, 2],
+      <int>[2, 2, 2],
+    ]);
+  });
+
+  test('fixed selector header is reserved on every block page', () {
+    final pages = layout.paginateBlocks<int>(
+      <int>[2, 2, 2, 2, 2],
+      rowCount: (rows) => rows,
+      headerRows: 1,
+    );
+
+    expect(pages, <List<int>>[
+      <int>[2, 2, 2, 2],
+      <int>[2],
     ]);
   });
 
   test('detail pages repeat the prior final row at the next page top', () {
     final lines = List<String>.generate(20, (index) => 'row $index');
-    final pages = layout.paginateLines(lines, rowsPerPage: 9, overlapRows: 1);
+    final pages = layout.paginateLines(lines, rowsPerPage: 8, overlapRows: 1);
 
     expect(pages, hasLength(3));
-    expect(pages.first, hasLength(9));
+    expect(pages.first, hasLength(8));
     expect(pages[1].first, pages.first.last);
     expect(pages[2].first, pages[1].last);
     expect(pages.last.last, 'row 19');

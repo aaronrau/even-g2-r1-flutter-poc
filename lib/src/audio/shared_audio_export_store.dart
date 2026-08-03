@@ -87,8 +87,8 @@ final class SharedConversationTurn {
 final class SharedAudioExportStore extends ChangeNotifier {
   static const String correctionPromptFileName =
       'workbench-correction-prompt.txt';
-  static const int maximumVisibleTranscripts = 20;
-  static const int maximumVisibleMessages = 20;
+  static const int maximumVisibleTranscripts = 100;
+  static const int maximumVisibleMessages = 100;
   static const int maximumVisibleConversationTurns = 100;
 
   SharedAudioExportStore({

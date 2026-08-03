@@ -160,24 +160,48 @@ expose for a true locked Hub mode.
 - Implements the fallback single-tap agent history selector with `Dismiss`
   selected first, up to five agent options, and the local Memo option last.
   Each option begins `Agent - content` and uses a second row only when that
-  combined text overflows. A shared measured layout fills up to 10 visible
-  rows and adaptively pages only when the complete selector does not fit.
-  Tap-to-dismiss detail pages contain that selected agent's five newest
-  request-ID-correlated exchanges. Swipe up/down pages through the full recent
-  content without sending a new request; the prior page's final content row is
-  repeated first on the next page. History uses a borderless, zero-padding
-  576×288 text viewport; long details retain nine body rows and show only a
-  proportional right-edge scroll thumb. While an
-  agent row or its detail page is selected, speech that starts is bound to that
-  configured agent, enters Gemma correction without requiring a spoken `Hey`
-  or agent name, and routes only the live corrected result. Agent detail pages
-  show an active dot beside the name and replace their body with the latest
-  `Listening…`, `Sending:`, and `Sent:`/`Saved:` transcript state. Tapping an
-  active detail finishes speech or prioritizes its correction instead of
-  dismissing it. In agent detail, VAD keeps appending PCM to the same speech
+  combined text overflows. The continuation row receives one extra leading
+  space after the fixed 20-pixel pointer gutter. The gutter keeps first-row
+  content at the same horizontal position while selection moves. A shared
+  measured layout fills up to nine visible rows and adaptively pages only when
+  the complete selector does not fit. Each agent preview uses its newest
+  durable message by timestamp, whether that message was sent or received.
+  Agent detail pages rebuild the same durable newest-message-first sent and
+  received list as the phone agent tab, shown as `[HH:mm] Message`. Saving the
+  socket configuration does not clear this history, and startup reindexes its
+  durable message files if the performance index is missing. Agent details
+  open with `   [Flux]` and `> • Listen Mode - Tap to start`; opening the agent
+  does not target audio. A second tap changes the Listen arrow from `>` to `<`
+  and enables targeting. Swipe up stops Listen Mode and moves the active `<`
+  control to the Flux title; tapping there returns to the selector. Swipe down
+  returns focus to Listen Mode, and subsequent down swipes page forward.
+  Exiting Listen Mode clears its temporary
+  listening overlay, restores the message page that was visible before speech,
+  and immediately re-enables history paging. Memo details
+  continue paging immediately. The prior page's final
+  content row is repeated first on the next page. History uses a borderless
+  576×288 viewport with a stable four-pixel inset on every selector and detail
+  rebuild; long agent details retain seven body rows beneath their two fixed
+  controls, Memo details retain eight, and both show only a proportional
+  right-edge scroll thumb. Only speech beginning while Listen Mode is selected
+  is bound directly to that configured agent and enters Gemma correction
+  without requiring a spoken `Hey` or agent name. Otherwise audio follows the
+  ordinary transcription and wake-word route. Speech changes the control row
+  to `< • Listening - Tap to send`. The VAD endpoint, or an earlier tap, exits
+  Listen Mode immediately, finalizes only that snapshotted turn for
+  correction/send, and shows `< • Sending - Tap to dismiss` with the raw
+  transcript as soon as STT completes; tapping
+  while sending dismisses the detail
+  while delivery continues. New speech after Listen Mode exit or dismissal is
+  no longer targeted to the previously selected agent. In active
+  Listen Mode, VAD keeps appending PCM to the same speech
   turn while speech resumes. One full second with VAD inactive finalizes that
   turn; only then does STT finish, Gemma correct once, and the selected-agent
-  command send once. Dismiss and Memo never enable this endpoint override. See
+  command send once. Selected-agent correction enters ahead of pending normal
+  corrections while any already-running Gemma inference finishes safely.
+  Every indexed matching-agent socket response refreshes page 1 immediately;
+  other-agent responses remain durable without interrupting the open detail.
+  Dismiss and Memo never enable this endpoint override. See
   [`docs/G2_AGENT_HISTORY_SELECTOR.md`](docs/G2_AGENT_HISTORY_SELECTOR.md).
 - Draws a dim-to-bright pulsing dot in the upper-left using LC3 global gain and
   an adaptive silence floor.
@@ -376,6 +400,14 @@ time-to-first-token, token rates, and end-to-end pipeline time. Logs contain
 only segment identifiers and measurements, never transcript text beyond the
 existing explicit physical-test marker.
 
+Every physical Kokoro runner foregrounds Work Bench and enforces a complete
+app-button disconnect/reconnect cycle before playback. It waits for fresh G2
+frame summaries after the reconnect and fails without playing audio if that
+preflight is unavailable. A startup-disabled button is retried only after the
+current pipeline-ready marker, while late fresh audio immediately satisfies the
+wait. Accepted fixtures always play `af_maple` through the computer speakers at
+90%; phone/app playback is not supported.
+
 After the one-turn Kokoro check passes, run the required continuous test with a
 fresh evidence directory outside the repository:
 
@@ -478,7 +510,9 @@ adb -s <android-serial> shell monkey \
   -c android.intent.category.LAUNCHER 1
 ```
 
-The Home status then reports the selected model and the qualified provider.
+The Home status reports the selected model and qualified provider. To its
+right, the agent socket indicator shows the configured address and a text
+connection state; its dot is green only while the socket is ready.
 Work Bench reports STT and VAD separately under **Tools → Transcription**.
 On Android API 29 or newer, each worker first tries the vendored arm64 NNAPI
 runtime with NNAPI's reference-CPU device disabled. A silent warm-up profile
@@ -534,9 +568,16 @@ Then:
    files are exported as they finish.
 3. Return to Home and select **Messages** to browse sent and received agent
    messages, read each original transcript followed by its corrected text, or
-   play the paired WAV. Use **Refresh messages** to reconcile files added,
-   edited, or removed by another app. Select **Conversation** separately for
-   diarized speaker turns, or **Events** for the 30 most recent in-app events.
+   play the paired WAV. **All** shows this complete view without an input field.
+   Select an agent chip to filter both directions, type a direct message, and
+   use the keyboard's **Send** action; the draft clears only after
+   acknowledgement.
+   Agent selection focuses the input automatically; **All** dismisses it.
+   Either message view appends more retained rows as you scroll toward the
+   bottom.
+   Use **Refresh messages** to reconcile files added, edited, or removed by
+   another app. Select **Conversation** separately for diarized speaker turns,
+   or **Events** for the 30 most recent in-app events.
 4. Tap **Connect devices**. Work Bench scans for the G2 pair and R1, connects
    them, and releases the temporary R1 setup link after Tri-Sync handoff.
 5. Speak to pulse the dot and use the ring to display gestures.

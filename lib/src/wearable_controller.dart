@@ -36,9 +36,24 @@ enum WearableGestureAction { ignore, finishMemo, requestAgentSummary }
 
 enum AgentHistorySelectionMove { none, previous, next }
 
+enum AgentDetailSwipeAction {
+  none,
+  focusBack,
+  focusListen,
+  previousPage,
+  nextPage,
+}
+
 enum QueuedTranscriptTapAction { none, save, correctAndRoute }
 
-enum AgentDetailTranscriptTapAction { none, finishSpeech, prioritizeCorrection }
+enum AgentDetailTranscriptTapAction {
+  none,
+  activateListenMode,
+  exitListenMode,
+  finishSpeech,
+  returnToSelector,
+  dismiss,
+}
 
 final class _SelectedAgentSpeechRoute {
   const _SelectedAgentSpeechRoute({required this.agent, required this.source});
@@ -189,6 +204,29 @@ AgentHistorySelectionMove resolveAgentHistorySelectionMove(int gestureType) {
   };
 }
 
+AgentDetailSwipeAction resolveAgentDetailSwipeAction({
+  required int gestureType,
+  required bool isAgentDetail,
+  required G2AgentDetailControl detailControl,
+}) {
+  final move = resolveAgentHistorySelectionMove(gestureType);
+  if (isAgentDetail) {
+    if (move == AgentHistorySelectionMove.previous &&
+        detailControl == G2AgentDetailControl.listen) {
+      return AgentDetailSwipeAction.focusBack;
+    }
+    if (move == AgentHistorySelectionMove.next &&
+        detailControl == G2AgentDetailControl.back) {
+      return AgentDetailSwipeAction.focusListen;
+    }
+  }
+  return switch (move) {
+    AgentHistorySelectionMove.previous => AgentDetailSwipeAction.previousPage,
+    AgentHistorySelectionMove.next => AgentDetailSwipeAction.nextPage,
+    AgentHistorySelectionMove.none => AgentDetailSwipeAction.none,
+  };
+}
+
 QueuedTranscriptTapAction resolveQueuedTranscriptTapAction({
   required int gestureType,
   required bool memoActive,
@@ -204,18 +242,29 @@ QueuedTranscriptTapAction resolveQueuedTranscriptTapAction({
 
 AgentDetailTranscriptTapAction resolveAgentDetailTranscriptTapAction({
   required int gestureType,
+  required bool isAgentDetail,
+  required G2AgentDetailControl detailControl,
+  required bool listenModeSelected,
   required G2AgentDetailSpeechState? speechState,
 }) {
   if (gestureType != 0) {
     return AgentDetailTranscriptTapAction.none;
   }
-  return switch (speechState) {
-    G2AgentDetailSpeechState.listening =>
-      AgentDetailTranscriptTapAction.finishSpeech,
-    G2AgentDetailSpeechState.sending =>
-      AgentDetailTranscriptTapAction.prioritizeCorrection,
-    _ => AgentDetailTranscriptTapAction.none,
-  };
+  if (speechState == G2AgentDetailSpeechState.sending) {
+    return AgentDetailTranscriptTapAction.dismiss;
+  }
+  if (!isAgentDetail) {
+    return AgentDetailTranscriptTapAction.none;
+  }
+  if (detailControl == G2AgentDetailControl.back) {
+    return AgentDetailTranscriptTapAction.returnToSelector;
+  }
+  if (!listenModeSelected) {
+    return AgentDetailTranscriptTapAction.activateListenMode;
+  }
+  return speechState == G2AgentDetailSpeechState.listening
+      ? AgentDetailTranscriptTapAction.finishSpeech
+      : AgentDetailTranscriptTapAction.exitListenMode;
 }
 
 @visibleForTesting
@@ -237,9 +286,7 @@ bool finalTranscriptCanRoute(FinalTranscriptDelivery delivery) =>
 @visibleForTesting
 VoiceWebSocketDeliveryMode deliveryModeForAgentRoute({
   required bool explicitlySelected,
-}) => explicitlySelected
-    ? VoiceWebSocketDeliveryMode.immediate
-    : VoiceWebSocketDeliveryMode.queued;
+}) => VoiceWebSocketDeliveryMode.queued;
 
 final class WearableController extends ChangeNotifier
     with WidgetsBindingObserver {
@@ -339,7 +386,9 @@ final class WearableController extends ChangeNotifier
   bool _agentExchangeStoreReady = false;
   bool _agentHistoryOpening = false;
   bool _agentHistoryClosing = false;
+  bool _isLoadingAgentMessages = false;
   int _agentHistoryGeneration = 0;
+  int _agentMessageRefreshGeneration = 0;
   bool _disposed = false;
   bool _g2UnexpectedlyDisconnected = false;
   bool _linkingController = false;
@@ -347,6 +396,8 @@ final class WearableController extends ChangeNotifier
   bool? _runtimeSessionActive;
   String? _lastControllerLinkKey;
   String? _announcedFinalizedMemoId;
+  String? _agentMessageError;
+  List<AgentMessageView> _agentMessages = const <AgentMessageView>[];
   SpeechModelDefinition _selectedSpeechModel = defaultSpeechModel();
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
 
@@ -376,6 +427,9 @@ final class WearableController extends ChangeNotifier
       _sharedAudioExportStore.transcripts;
   List<SharedWebSocketMessage> get sharedWebSocketMessages =>
       _sharedAudioExportStore.messages;
+  List<AgentMessageView> get agentMessages => _agentMessages;
+  bool get isLoadingAgentMessages => _isLoadingAgentMessages;
+  String? get agentMessageError => _agentMessageError;
   bool get isLoadingSharedMessages =>
       _sharedAudioExportStore.isLoadingTranscripts ||
       _sharedAudioExportStore.isLoadingMessages;
@@ -780,15 +834,21 @@ final class WearableController extends ChangeNotifier
     await _voiceWebSocket.saveConfig(config);
     if (_agentExchangeStoreReady) {
       try {
-        await _agentExchangeStore.clear();
+        await _agentExchangeStore.importExistingSentMessages(
+          paths: await _webSocketMessageStore.savedPaths(),
+          agents: config.agentNames,
+          legacy: config.useLegacyMessageShape,
+        );
       } on Object {
         addLog(
           'WebSocket',
-          '[WorkBench][AgentHistory] state=clear_failed',
+          '[WorkBench][AgentHistory] state=history_reindex_failed '
+              'fallback=retained_index',
           isError: true,
         );
       }
     }
+    await _refreshAgentMessages();
     addLog(
       'WebSocket',
       '[WorkBench][VoiceWebSocket] state=saved '
@@ -843,11 +903,13 @@ final class WearableController extends ChangeNotifier
     } on Object catch (error) {
       failure ??= error;
     }
+    await _refreshAgentMessages();
     addLog(
       'Storage',
       '[WorkBench][SharedStorage] state=list_ready '
           'messages=${sharedWebSocketMessages.length} '
-          'transcriptions=${sharedTranscripts.length}',
+          'transcriptions=${sharedTranscripts.length} '
+          'agent_messages=${agentMessages.length}',
     );
     if (failure != null) {
       throw StateError('Could not refresh the shared message history.');
@@ -873,6 +935,40 @@ final class WearableController extends ChangeNotifier
   bool isPlayingTranscript(SharedTranscript transcript) =>
       transcript.audioFileName != null &&
       transcript.audioFileName == _sharedAudioExportStore.playingAudioFileName;
+
+  Future<bool> sendDirectAgentMessage({
+    required String agent,
+    required String message,
+  }) async {
+    final route = _voiceWebSocket.routeTranscriptToSelectedAgent(
+      selectedAgent: agent,
+      transcript: message,
+    );
+    if (route == null) {
+      return false;
+    }
+    final result = await _voiceWebSocket.sendAgentMessageWithResult(
+      agent: route.agent,
+      message: route.message,
+      deliveryMode: VoiceWebSocketDeliveryMode.immediate,
+    );
+    if (!result.sent) {
+      addLog(
+        'WebSocket',
+        '[WorkBench][VoiceWebSocket] state=direct_send_failed '
+            'characters=${route.message.length}',
+        isError: true,
+      );
+      return false;
+    }
+    await _persistAcknowledgedAgentMessage(result);
+    addLog(
+      'WebSocket',
+      '[WorkBench][VoiceWebSocket] state=direct_sent '
+          'characters=${route.message.length}',
+    );
+    return true;
+  }
 
   Future<void> linkRingAndGlasses() async {
     _lastControllerLinkKey = null;
@@ -1160,6 +1256,14 @@ final class WearableController extends ChangeNotifier
         _voiceMemo.speechStarted(event.segmentId);
       case VadSpeechEventType.ended:
         _voiceMemo.speechEnded(event.segmentId);
+        final selectedRoute = _selectedAgentSpeechRoutes[event.segmentId];
+        if (selectedRoute?.source == 'agent_detail') {
+          _finishAgentDetailSpeech(
+            event.segmentId,
+            source: 'vad_endpoint',
+            flushCurrentSpeech: false,
+          );
+        }
     }
   }
 
@@ -1175,13 +1279,30 @@ final class WearableController extends ChangeNotifier
       if (event.type == 0) {
         final detailTapAction = resolveAgentDetailTranscriptTapAction(
           gestureType: event.type,
+          isAgentDetail: _agentHistory.isAgentDetail,
+          detailControl: _agentHistory.detailControl,
+          listenModeSelected: _agentHistory.detailListenModeSelected,
           speechState: _agentHistory.detailSpeechState,
         );
-        if (detailTapAction != AgentDetailTranscriptTapAction.none) {
-          unawaited(_sendActiveAgentDetailSpeech(detailTapAction));
-          return true;
+        switch (detailTapAction) {
+          case AgentDetailTranscriptTapAction.activateListenMode:
+            _activateAgentDetailListenMode();
+            return true;
+          case AgentDetailTranscriptTapAction.exitListenMode:
+            _exitAgentDetailListenMode(source: 'detail_tap');
+            return true;
+          case AgentDetailTranscriptTapAction.finishSpeech:
+            _finishActiveAgentDetailSpeech();
+            return true;
+          case AgentDetailTranscriptTapAction.returnToSelector:
+            _returnToAgentHistorySelector();
+            return true;
+          case AgentDetailTranscriptTapAction.dismiss:
+            unawaited(_closeAgentHistory(clearDisplay: true));
+            return true;
+          case AgentDetailTranscriptTapAction.none:
+            unawaited(_activateAgentHistorySelection());
         }
-        unawaited(_activateAgentHistorySelection());
       } else if (_agentHistory.mode == G2AgentHistoryMode.selector) {
         switch (resolveAgentHistorySelectionMove(event.type)) {
           case AgentHistorySelectionMove.previous:
@@ -1194,22 +1315,32 @@ final class WearableController extends ChangeNotifier
             break;
         }
       } else if (_agentHistory.mode == G2AgentHistoryMode.detail) {
-        final move = resolveAgentHistorySelectionMove(event.type);
-        final changed = switch (move) {
-          AgentHistorySelectionMove.previous =>
+        final swipeAction = resolveAgentDetailSwipeAction(
+          gestureType: event.type,
+          isAgentDetail: _agentHistory.isAgentDetail,
+          detailControl: _agentHistory.detailControl,
+        );
+        final changed = switch (swipeAction) {
+          AgentDetailSwipeAction.focusBack => _focusAgentBackControlFromSwipe(),
+          AgentDetailSwipeAction.focusListen =>
+            _agentHistory.focusAgentListenControl(),
+          AgentDetailSwipeAction.previousPage =>
             _agentHistory.selectPreviousDetailPage(),
-          AgentHistorySelectionMove.next =>
+          AgentDetailSwipeAction.nextPage =>
             _agentHistory.selectNextDetailPage(),
-          AgentHistorySelectionMove.none => false,
+          AgentDetailSwipeAction.none => false,
         };
         if (changed) {
-          addLog(
-            'WebSocket',
-            '[WorkBench][AgentHistory] state=detail_page_changed '
-                'direction=${move.name} '
-                'page=${_agentHistory.detailPageIndex + 1}/'
-                '${_agentHistory.detailPageCount}',
-          );
+          if (swipeAction == AgentDetailSwipeAction.previousPage ||
+              swipeAction == AgentDetailSwipeAction.nextPage) {
+            addLog(
+              'WebSocket',
+              '[WorkBench][AgentHistory] state=detail_page_changed '
+                  'direction=${swipeAction.name} '
+                  'page=${_agentHistory.detailPageIndex + 1}/'
+                  '${_agentHistory.detailPageCount}',
+            );
+          }
           _queueAgentHistoryDisplay();
         }
       }
@@ -1261,33 +1392,105 @@ final class WearableController extends ChangeNotifier
     }
   }
 
-  Future<void> _sendActiveAgentDetailSpeech(
-    AgentDetailTranscriptTapAction action,
-  ) async {
+  void _finishActiveAgentDetailSpeech() {
     final segmentId = _agentHistory.activeDetailSpeechSegmentId;
     if (segmentId == null) {
       return;
     }
-    switch (action) {
-      case AgentDetailTranscriptTapAction.none:
-        return;
-      case AgentDetailTranscriptTapAction.finishSpeech:
-        _audioPipeline.flushCurrentSpeech();
-        addLog(
-          'WebSocket',
-          '[WorkBench][VoiceRoute] state=detail_tap '
-              'action=finish_for_send',
-        );
-      case AgentDetailTranscriptTapAction.prioritizeCorrection:
-        final prioritized = await _audioPipeline.prioritizeQueuedCorrection(
-          segmentId,
-        );
-        addLog(
-          'WebSocket',
-          '[WorkBench][VoiceRoute] state=detail_tap '
-              'action=${prioritized ? 'correction_prioritized' : 'correction_pending_or_in_flight'}',
-        );
+    _finishAgentDetailSpeech(
+      segmentId,
+      source: 'detail_tap',
+      flushCurrentSpeech: true,
+    );
+  }
+
+  void _finishAgentDetailSpeech(
+    String segmentId, {
+    required String source,
+    required bool flushCurrentSpeech,
+  }) {
+    if (!_agentHistory.finishTargetedSpeechCapture(segmentId)) {
+      return;
     }
+    _syncSelectedAgentVadMode();
+    _queueAgentHistoryDisplay();
+    if (flushCurrentSpeech) {
+      _audioPipeline.flushCurrentSpeech();
+    }
+    addLog(
+      'WebSocket',
+      '[WorkBench][VoiceRoute] state=detail_speech_finished '
+          'source=$source action=finish_for_send',
+    );
+  }
+
+  void _activateAgentDetailListenMode() {
+    if (!_agentHistory.selectDetailListenMode()) {
+      return;
+    }
+    _syncSelectedAgentVadMode();
+    _queueAgentHistoryDisplay();
+    addLog(
+      'WebSocket',
+      '[WorkBench][AgentHistory] state=listen_mode_selected source=detail_tap',
+    );
+  }
+
+  bool _focusAgentBackControlFromSwipe() {
+    var changed = false;
+    if (_agentHistory.detailListenModeSelected) {
+      changed = _exitAgentDetailListenMode(
+        source: 'detail_swipe_up',
+        queueDisplay: false,
+      );
+    }
+    final focused = _agentHistory.focusAgentBackControl();
+    if (focused) {
+      addLog(
+        'WebSocket',
+        '[WorkBench][AgentHistory] state=detail_control_focused '
+            'control=back',
+      );
+    }
+    return changed || focused;
+  }
+
+  void _returnToAgentHistorySelector() {
+    final abandonedSegmentId = _agentHistory.activeDetailSpeechSegmentId;
+    if (!_agentHistory.returnToSelector()) {
+      return;
+    }
+    if (abandonedSegmentId != null) {
+      _selectedAgentSpeechRoutes.remove(abandonedSegmentId);
+    }
+    _syncSelectedAgentVadMode();
+    _queueAgentHistoryDisplay();
+    addLog(
+      'WebSocket',
+      '[WorkBench][AgentHistory] state=detail_closed destination=selector',
+    );
+  }
+
+  bool _exitAgentDetailListenMode({
+    required String source,
+    bool queueDisplay = true,
+  }) {
+    final abandonedSegmentId = _agentHistory.activeDetailSpeechSegmentId;
+    if (!_agentHistory.exitDetailListenMode()) {
+      return false;
+    }
+    if (abandonedSegmentId != null) {
+      _selectedAgentSpeechRoutes.remove(abandonedSegmentId);
+    }
+    _syncSelectedAgentVadMode();
+    if (queueDisplay) {
+      _queueAgentHistoryDisplay();
+    }
+    addLog(
+      'WebSocket',
+      '[WorkBench][AgentHistory] state=listen_mode_exited source=$source',
+    );
+    return true;
   }
 
   Future<void> _commitQueuedTranscriptFromTap(
@@ -1344,12 +1547,20 @@ final class WearableController extends ChangeNotifier
     try {
       _glassesStatusQueue.setPaused(true, owner: 'history');
       List<AgentExchangeView> exchanges = const <AgentExchangeView>[];
+      List<AgentMessageView> messages = const <AgentMessageView>[];
       if (_agentExchangeStoreReady) {
         try {
-          exchanges = await _agentExchangeStore.latestForAgents(
-            _voiceWebSocket.config.agentNames,
-            maximumAgents: G2AgentHistoryState.maximumAgents,
-          );
+          final loaded = await Future.wait<Object>(<Future<Object>>[
+            _agentExchangeStore.latestForAgents(
+              _voiceWebSocket.config.agentNames,
+              maximumAgents: G2AgentHistoryState.maximumAgents,
+            ),
+            _agentExchangeStore.retainedMessagesForAgents(
+              _voiceWebSocket.config.agentNames,
+            ),
+          ]);
+          exchanges = loaded[0] as List<AgentExchangeView>;
+          messages = loaded[1] as List<AgentMessageView>;
         } on Object {
           addLog(
             'WebSocket',
@@ -1371,6 +1582,7 @@ final class WearableController extends ChangeNotifier
       _agentHistory.open(
         agents: _voiceWebSocket.config.agentNames,
         exchanges: exchanges,
+        messages: messages,
         memo: memo?.note,
       );
       _syncSelectedAgentVadMode();
@@ -1401,19 +1613,16 @@ final class WearableController extends ChangeNotifier
       await _showAgentHistory();
       return;
     }
-    var exchanges = selected.exchange == null
-        ? const <AgentExchangeView>[]
-        : <AgentExchangeView>[selected.exchange!];
+    List<AgentMessageView>? messages;
     if (_agentExchangeStoreReady) {
       try {
-        exchanges = await _agentExchangeStore.recentForAgent(
+        messages = await _agentExchangeStore.retainedMessagesForAgents(<String>[
           selected.label,
-          maximumExchanges: G2AgentHistoryState.maximumAgentConversations,
-        );
+        ]);
       } on Object {
         addLog(
           'WebSocket',
-          '[WorkBench][AgentHistory] state=conversation_load_failed '
+          '[WorkBench][AgentHistory] state=message_load_failed '
               'fallback=latest',
           isError: true,
         );
@@ -1423,13 +1632,21 @@ final class WearableController extends ChangeNotifier
         _agentHistory.selected?.label != selected.label) {
       return;
     }
-    _agentHistory.showAgentConversations(exchanges);
+    if (messages == null) {
+      _agentHistory.showAgentConversations(
+        selected.exchange == null
+            ? const <AgentExchangeView>[]
+            : <AgentExchangeView>[selected.exchange!],
+      );
+    } else {
+      _agentHistory.showAgentMessages(messages);
+    }
     _syncSelectedAgentVadMode();
     await _showAgentHistory();
     addLog(
       'WebSocket',
-      '[WorkBench][AgentHistory] state=conversation_opened '
-          'exchanges=${exchanges.length}',
+      '[WorkBench][AgentHistory] state=messages_opened '
+          'messages=${messages?.length ?? (selected.exchange == null ? 0 : 1)}',
     );
   }
 
@@ -1438,11 +1655,8 @@ final class WearableController extends ChangeNotifier
   }
 
   void _syncSelectedAgentVadMode() {
-    final hasActiveDetailRoute = _selectedAgentSpeechRoutes.values.any(
-      (route) => route.source == 'agent_detail',
-    );
     _audioPipeline.setSelectedAgentDetailVadMode(
-      _agentHistory.isAgentDetailSpeechTarget || hasActiveDetailRoute,
+      _agentHistory.isAgentDetailSpeechTarget,
     );
   }
 
@@ -1643,30 +1857,7 @@ final class WearableController extends ChangeNotifier
         sent: sent,
       ),
       persistAcknowledgedMessage: sent
-          ? () async {
-              final saved = await _archiveWebSocketMessage(
-                direction: WebSocketMessageDirection.sent,
-                message: '${route.agent}: ${route.message}',
-                failureState: 'sent_save_failed',
-              );
-              if (saved != null && _agentExchangeStoreReady) {
-                try {
-                  await _agentExchangeStore.recordSent(
-                    agent: sendResult.agent,
-                    messagePath: saved.path,
-                    legacy: sendResult.legacy,
-                    requestId: sendResult.requestId,
-                  );
-                } on Object {
-                  addLog(
-                    'WebSocket',
-                    '[WorkBench][AgentHistory] state=sent_index_failed '
-                        'fallback=message_file',
-                    isError: true,
-                  );
-                }
-              }
-            }
+          ? () => _persistAcknowledgedAgentMessage(sendResult)
           : null,
     );
     addLog(
@@ -1776,6 +1967,7 @@ final class WearableController extends ChangeNotifier
     }
     if (savedMessage != null && _agentExchangeStoreReady) {
       try {
+        var indexedAgent = event.agent;
         final exchangeId = await _agentExchangeStore.attachResponse(
           responsePath: savedMessage.path,
           kind: event.kind.name,
@@ -1783,17 +1975,25 @@ final class WearableController extends ChangeNotifier
           agent: event.agent,
           allowLegacyAgentMatch: _voiceWebSocket.config.useLegacyMessageShape,
         );
+        final exchange = exchangeId == null
+            ? null
+            : await _agentExchangeStore.viewById(exchangeId);
+        indexedAgent ??= exchange?.agent;
         if (exchangeId != null &&
             _agentHistory.waitingExchangeId == exchangeId) {
-          final exchange = await _agentExchangeStore.viewById(exchangeId);
           final response = exchange?.response;
           if (response != null &&
-              _agentHistory.acceptResponse(exchangeId, response)) {
+              _agentHistory.acceptResponse(
+                exchangeId,
+                response,
+                receivedAt: exchange?.responseAt,
+              )) {
             _agentHistoryWaitTimer?.cancel();
             _agentHistoryWaitTimer = null;
             _queueAgentHistoryDisplay();
           }
         }
+        await _refreshOpenAgentHistoryFor(indexedAgent);
       } on Object {
         addLog(
           'WebSocket',
@@ -1802,6 +2002,9 @@ final class WearableController extends ChangeNotifier
           isError: true,
         );
       }
+    }
+    if (_sharedMessageViewActive) {
+      unawaited(_refreshAgentMessages());
     }
     await _glassesStatusQueue.queueTransient(
       prefix: 'Received',
@@ -1851,6 +2054,117 @@ final class WearableController extends ChangeNotifier
         isError: true,
       );
       return null;
+    }
+  }
+
+  Future<void> _persistAcknowledgedAgentMessage(
+    VoiceWebSocketSendResult result,
+  ) async {
+    final saved = await _archiveWebSocketMessage(
+      direction: WebSocketMessageDirection.sent,
+      message: '${result.agent}: ${result.message}',
+      failureState: 'sent_save_failed',
+    );
+    if (saved == null || !_agentExchangeStoreReady) {
+      return;
+    }
+    try {
+      await _agentExchangeStore.recordSent(
+        agent: result.agent,
+        messagePath: saved.path,
+        legacy: result.legacy,
+        requestId: result.requestId,
+      );
+      await _refreshOpenAgentHistoryFor(result.agent);
+      if (_sharedMessageViewActive) {
+        await _refreshAgentMessages();
+      }
+    } on Object {
+      addLog(
+        'WebSocket',
+        '[WorkBench][AgentHistory] state=sent_index_failed '
+            'fallback=message_file',
+        isError: true,
+      );
+    }
+  }
+
+  Future<void> _refreshAgentMessages() async {
+    final generation = ++_agentMessageRefreshGeneration;
+    if (!_agentExchangeStoreReady) {
+      _agentMessages = const <AgentMessageView>[];
+      _agentMessageError = 'Agent message history is unavailable.';
+      _isLoadingAgentMessages = false;
+      _safeNotify();
+      return;
+    }
+    final agents = _voiceWebSocket.config.agentNames;
+    if (agents.isEmpty) {
+      _agentMessages = const <AgentMessageView>[];
+      _agentMessageError = null;
+      _isLoadingAgentMessages = false;
+      _safeNotify();
+      return;
+    }
+    _isLoadingAgentMessages = true;
+    _agentMessageError = null;
+    _safeNotify();
+    try {
+      final messages = await _agentExchangeStore.retainedMessagesForAgents(
+        agents,
+      );
+      if (generation == _agentMessageRefreshGeneration) {
+        _agentMessages = messages;
+      }
+    } on Object {
+      if (generation == _agentMessageRefreshGeneration) {
+        _agentMessageError = 'Could not load agent messages. Retry.';
+      }
+    } finally {
+      if (generation == _agentMessageRefreshGeneration) {
+        _isLoadingAgentMessages = false;
+        _safeNotify();
+      }
+    }
+  }
+
+  Future<bool> _refreshOpenAgentHistoryFor(String? agent) async {
+    final openAgent = _agentHistory.openDetailAgent;
+    final normalizedAgent = agent?.trim().toLowerCase();
+    if (_disposed ||
+        !_agentExchangeStoreReady ||
+        openAgent == null ||
+        normalizedAgent == null ||
+        normalizedAgent.isEmpty ||
+        openAgent.trim().toLowerCase() != normalizedAgent) {
+      return false;
+    }
+    try {
+      final messages = await _agentExchangeStore.retainedMessagesForAgents(
+        <String>[openAgent],
+      );
+      if (!_agentHistory.refreshOpenAgentMessages(
+        agent: openAgent,
+        messages: messages,
+      )) {
+        return false;
+      }
+      _syncSelectedAgentVadMode();
+      _queueAgentHistoryDisplay();
+      addLog(
+        'WebSocket',
+        '[WorkBench][AgentHistory] state=messages_refreshed '
+            'source=socket messages=${messages.length}',
+      );
+      return true;
+    } on Object {
+      addLog(
+        'WebSocket',
+        '[WorkBench][AgentHistory] state=message_refresh_failed '
+            'fallback=durable_history',
+        isError: true,
+      );
+      return false;
     }
   }
 
