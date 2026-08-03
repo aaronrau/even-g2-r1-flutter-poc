@@ -107,13 +107,14 @@ final class G2AgentHistoryState {
     ];
     for (final agent in configuredAgents.where(chosenAgents.contains)) {
       final exchange = byAgent[agent.toLowerCase()];
+      final message = exchange == null
+          ? ''
+          : _stripSpeakerPrefix(exchange.message, agent);
       rows.add(
         G2AgentHistoryEntry(
           kind: G2AgentHistoryEntryKind.agent,
           label: agent,
-          preview: exchange == null || _oneLine(exchange.message).isEmpty
-              ? 'No sent message'
-              : _oneLine(exchange.message),
+          preview: message.isEmpty ? 'No sent message' : _oneLine(message),
           exchange: exchange,
         ),
       );
@@ -383,7 +384,7 @@ final class G2AgentHistoryState {
 
   String _renderDetail({required bool cancel}) {
     final titleLabel = detailTitleIsAgent
-        ? 'Agent: ${_oneLine(detailTitle ?? 'Unknown')}'
+        ? '${_speakerLabel(detailTitle ?? 'Unknown')}'
               '${isAgentDetailSpeechTarget ? ' •' : ''}'
         : _oneLine(detailTitle ?? 'History');
     final action = cancel ? 'cancel' : 'dismiss';
@@ -437,12 +438,15 @@ final class G2AgentHistoryState {
     final sections = <String>[];
     for (var index = 0; index < exchanges.length; index++) {
       final exchange = exchanges[index];
-      final message = exchange.message.trim();
-      final response = exchange.response?.trim();
+      final speaker = _speakerLabel(exchange.agent);
+      final message = _stripSpeakerPrefix(exchange.message, exchange.agent);
+      final response = exchange.response == null
+          ? null
+          : _stripSpeakerPrefix(exchange.response!, exchange.agent);
       sections.add(
         '${index == 0 ? 'Latest conversation' : 'Earlier conversation ${index + 1}'}\n'
         'You: ${message.isEmpty ? 'No saved message' : message}\n'
-        'Agent: ${response == null || response.isEmpty ? 'No response yet' : response}',
+        '$speaker ${response == null || response.isEmpty ? 'No response yet' : response}',
       );
     }
     return sections.join('\n\n');
@@ -455,6 +459,25 @@ final class G2AgentHistoryState {
   }
 
   static String _oneLine(String value) => _layout.oneLine(value);
+
+  static String _speakerLabel(String value) {
+    final name = _oneLine(value).replaceFirst(RegExp(r':+$'), '');
+    return '${name.isEmpty ? 'Unknown' : name}:';
+  }
+
+  static String _stripSpeakerPrefix(String value, String speaker) {
+    final trimmed = value.trim();
+    final name = _oneLine(speaker).replaceFirst(RegExp(r':+$'), '');
+    if (name.isEmpty) {
+      return trimmed;
+    }
+    return trimmed
+        .replaceFirst(
+          RegExp('^${RegExp.escape(name)}\\s*:\\s*', caseSensitive: false),
+          '',
+        )
+        .trimLeft();
+  }
 
   static String _truncate(String value, int maximumRunes) {
     final runes = value.runes.toList(growable: false);

@@ -92,14 +92,14 @@ rebuilds the visualizer page and resumes pulse rendering.
 Selecting an agent opens its five newest acknowledged exchanges, newest first:
 
 ```text
-[ Agent: Agent One · Tap to dismiss ]
+[ Agent One: · Tap to dismiss ]
 Latest conversation
 You: <most recent command>
-Agent: <correlated response or No response yet>
+Agent One: <correlated response or No response yet>
 
 Earlier conversation 2
 You: <previous command>
-Agent: <correlated response or No response yet>
+Agent One: <correlated response or No response yet>
 ```
 
 Commands and responses may wrap because this is a detail view, not a selector
@@ -113,7 +113,9 @@ is bounded to five direct ledger paths and never scans the complete message
 archive.
 
 Every detail page begins with `[ Memo · Tap to dismiss ]` or
-`[ Agent: <name> · Tap to dismiss ]`. Explicit LF, CRLF, and CR line breaks
+`[ <name>: · Tap to dismiss ]`. Response rows use that same `<name>:` label,
+strip an identical stored prefix first, and therefore never render a duplicated
+agent name. Explicit LF, CRLF, and CR line breaks
 in saved Memo or response text remain hard line breaks; blank paragraph
 separators remain blank display rows. Only horizontal spacing is normalized
 before long lines are wrapped.

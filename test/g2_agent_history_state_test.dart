@@ -94,7 +94,7 @@ void main() {
 
     state.showWaiting(exchange);
     expect(state.selectedSpeechAgent, 'Pike');
-    expect(state.render(), startsWith('[ Agent: Pike • · Tap to cancel ]\n'));
+    expect(state.render(), startsWith('[ Pike: • · Tap to cancel ]\n'));
     expect(state.render(), contains('Waiting for response'));
     expect(state.acceptResponse('different-exchange', 'Wrong response'), false);
     expect(state.mode, G2AgentHistoryMode.waiting);
@@ -121,10 +121,7 @@ void main() {
         ..showSelectedDetail();
 
       expect(state.selectedSpeechAgent, 'Pike');
-      expect(
-        state.render(),
-        startsWith('[ Agent: Pike • · Tap to dismiss ]\n'),
-      );
+      expect(state.render(), startsWith('[ Pike: • · Tap to dismiss ]\n'));
 
       expect(state.beginTargetedSpeech('segment-1'), isTrue);
       expect(state.render(), contains('Listening…'));
@@ -292,9 +289,9 @@ void main() {
       ..showSelectedDetail();
 
     expect(state.detailPageCount, greaterThan(1));
-    expect(state.render(), startsWith('[ Agent: Pike • · Tap to dismiss ]\n'));
+    expect(state.render(), startsWith('[ Pike: • · Tap to dismiss ]\n'));
     while (state.selectNextDetailPage()) {}
-    expect(state.render(), startsWith('[ Agent: Pike • · Tap to dismiss ]\n'));
+    expect(state.render(), startsWith('[ Pike: • · Tap to dismiss ]\n'));
     expect(state.render(), contains('result119'));
     expect(state.render().split('\n'), hasLength(10));
   });
@@ -353,12 +350,39 @@ void main() {
     expect(
       state.render(),
       contains(
-        '[ Agent: Pike • · Tap to dismiss ]\nLatest conversation\n'
-        'You: report synthetic progress\nAgent: First result\n'
+        '[ Pike: • · Tap to dismiss ]\nLatest conversation\n'
+        'You: report synthetic progress\nPike: First result\n'
         'Second result\nThird result\n\n'
         'Final paragraph.',
       ),
     );
+  });
+
+  test('shows the agent name once in selector and detail rows', () {
+    final state = G2AgentHistoryState()
+      ..open(
+        agents: const <String>['Flux'],
+        exchanges: <AgentExchangeView>[
+          AgentExchangeView(
+            id: 'flux-exchange',
+            agent: 'Flux',
+            message: 'Flux: inspect the synthetic build',
+            response: 'Flux: synthetic build is ready',
+            sentAt: sentAt,
+            legacy: false,
+          ),
+        ],
+      )
+      ..selectNext();
+
+    expect(state.render(), contains('> Flux - inspect the synthetic build'));
+    expect(state.render(), isNot(contains('Flux - Flux:')));
+
+    state.showSelectedDetail();
+    expect(state.render(), startsWith('[ Flux: • · Tap to dismiss ]\n'));
+    expect(state.render(), contains('Flux: synthetic build is ready'));
+    expect(state.render(), isNot(contains('Flux: Flux:')));
+    expect(state.render(), isNot(contains('Agent:')));
   });
 
   test(
