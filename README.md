@@ -181,9 +181,12 @@ expose for a true locked Hub mode.
   continue paging immediately. The prior page's final
   content row is repeated first on the next page. History uses a borderless
   576×288 viewport with a stable four-pixel inset on every selector and detail
-  rebuild; long agent details retain seven body rows beneath their two fixed
+  page; long agent details retain seven body rows beneath their two fixed
   controls, Memo details retain eight, and both show only a proportional
-  right-edge scroll thumb. Only speech beginning while Listen Mode is selected
+  right-edge scroll thumb. Detail pages are pre-paginated, keep a fixed
+  scrollbar image container, and use serialized in-place updates while
+  scrolling instead of rebuilding the page on every swipe. Only speech
+  beginning while Listen Mode is selected
   is bound directly to that configured agent and enters Gemma correction
   without requiring a spoken `Hey` or agent name. Otherwise audio follows the
   ordinary transcription and wake-word route. Speech changes the control row

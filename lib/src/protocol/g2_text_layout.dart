@@ -6,7 +6,9 @@ import 'g2_protocol.dart';
 /// breaks. The host therefore mirrors the firmware font closely enough to
 /// create deterministic selector and detail pages before sending them.
 final class G2TextLayout {
-  static const int historyMaximumPageCharacters = 2048;
+  // EvenHub text-container upgrades accept at most 2,000 characters. Keep
+  // every pre-paginated selector/detail update inside that firmware boundary.
+  static const int historyMaximumPageCharacters = 2000;
 
   const G2TextLayout({
     required this.displayWidthPixels,

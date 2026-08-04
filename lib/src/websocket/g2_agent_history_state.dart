@@ -54,6 +54,9 @@ final class G2AgentHistoryState {
   String? detailSpeechSegmentId;
   String? detailSpeechTranscript;
   G2AgentDetailSpeechState? detailSpeechState;
+  String? _cachedDetailBody;
+  int? _cachedDetailRowsPerPage;
+  List<List<String>>? _cachedDetailPages;
 
   bool get isOpen => mode != G2AgentHistoryMode.closed;
   bool get isAgentDetail =>
@@ -695,12 +698,27 @@ final class G2AgentHistoryState {
   }
 
   List<List<String>> _detailPages() {
-    final wrapped = _layout.wrapText(_renderDetailBody());
-    return _layout.paginateLines(
+    final body = _renderDetailBody();
+    final rowsPerPage = detailBodyLinesPerPage;
+    final cached = _cachedDetailPages;
+    if (cached != null &&
+        _cachedDetailRowsPerPage == rowsPerPage &&
+        _cachedDetailBody == body) {
+      return cached;
+    }
+    final wrapped = _layout.wrapText(body);
+    final pages = _layout.paginateLines(
       wrapped,
-      rowsPerPage: detailBodyLinesPerPage,
+      rowsPerPage: rowsPerPage,
       overlapRows: detailPageOverlapLines,
     );
+    final immutable = List<List<String>>.unmodifiable(
+      pages.map(List<String>.unmodifiable),
+    );
+    _cachedDetailBody = body;
+    _cachedDetailRowsPerPage = rowsPerPage;
+    _cachedDetailPages = immutable;
+    return immutable;
   }
 
   String _renderDetailBody() {

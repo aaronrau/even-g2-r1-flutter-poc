@@ -567,15 +567,15 @@ final class G2Protocol {
   static const int fullPageTextPaddingLength = 4;
   static const int expandedTextBorderWidth = 0;
   static const int expandedTextBorderColor = 5;
-  // Keep the history selector and every rebuilt detail page on the same
-  // firmware inset. Without a non-zero inset, the first glyph can appear to
-  // shift at the display edge when a physical swipe rebuilds the page.
+  // Keep the history selector and every detail page on the same firmware
+  // inset. Without a non-zero inset, the first glyph can appear to shift at
+  // the display edge as selection and detail content change.
   static const int expandedTextPaddingLength = 4;
-  // G2 image containers accept width 20–288 and height 20–144. Keep the
-  // visible thumb at the final 4 px of a valid right-edge 20 px image. Detail
-  // text keeps the complete 576 px firmware viewport; host wrapping leaves a
-  // readable right margin while the black portion of this overlay stays
-  // invisible on the display.
+  // G2 image containers accept width 20–288 and height 20–144. Keep one stable
+  // 20x144 container centered at the right edge, and move only the visible
+  // 4-pixel thumb inside its bitmap. A stable container lets detail page turns
+  // use the firmware's in-place text/image upgrade path instead of rebuilding
+  // the complete page for every physical swipe.
   static const int fullPageIndicatorInset = expandedTextBorderWidth;
   static const int fullPageIndicatorX =
       fullPageTextWidth - fullPageIndicatorWidth - fullPageIndicatorInset;
@@ -586,6 +586,10 @@ final class G2Protocol {
   static const int fullPageIndicatorTrailingClearance = 2;
   static const int fullPageIndicatorMinimumHeight = 20;
   static const int fullPageIndicatorMaximumHeight = 144;
+  static const int fullPageIndicatorHeight = fullPageIndicatorMaximumHeight;
+  static const int fullPageIndicatorY =
+      (fullPageTextHeight - fullPageIndicatorHeight) ~/ 2;
+  static const int fullPageIndicatorMinimumThumbHeight = 8;
   static const int maximumMemoRunes = 4096;
   static const int memoLineRunes = 48;
   static const int memoBodyLinesPerPage = 7;
@@ -922,15 +926,11 @@ final class G2Protocol {
     // repeated protobuf field, continues to expose the primary text object.
     page.writeMessage(3, text.takeBytes());
     if (renderPageIndicator) {
-      final geometry = detailPageIndicatorGeometry(
-        pageIndex: pageIndex,
-        pageCount: pageCount,
-      );
       final indicator = ProtoWriter()
         ..writeInt32(1, fullPageIndicatorX)
-        ..writeInt32(2, geometry.y)
+        ..writeInt32(2, fullPageIndicatorY)
         ..writeInt32(3, fullPageIndicatorWidth)
-        ..writeInt32(4, geometry.height)
+        ..writeInt32(4, fullPageIndicatorHeight)
         ..writeInt32(5, 10)
         ..writeString(6, 'img-10');
       page.writeMessage(4, indicator.takeBytes());
@@ -948,14 +948,13 @@ final class G2Protocol {
   }) {
     final count = pageCount < 1 ? 1 : pageCount;
     final index = pageIndex.clamp(0, count - 1);
-    final availableHeight = fullPageTextHeight - (2 * fullPageIndicatorInset);
-    final height = (availableHeight / count).ceil().clamp(
-      fullPageIndicatorMinimumHeight,
-      fullPageIndicatorMaximumHeight,
+    final height = (fullPageIndicatorHeight / count).ceil().clamp(
+      fullPageIndicatorMinimumThumbHeight,
+      fullPageIndicatorHeight,
     );
-    final travel = availableHeight - height;
+    final travel = fullPageIndicatorHeight - height;
     final y =
-        fullPageIndicatorInset +
+        fullPageIndicatorY +
         (count == 1 ? 0 : ((travel * index) / (count - 1)).round());
     return (y: y, height: height);
   }
@@ -969,14 +968,16 @@ final class G2Protocol {
       pageCount: pageCount,
     );
     final pixels = List<int>.filled(
-      fullPageIndicatorWidth * geometry.height,
+      fullPageIndicatorWidth * fullPageIndicatorHeight,
       0,
     );
     final barStart =
         fullPageIndicatorWidth -
         fullPageIndicatorTrailingClearance -
         fullPageIndicatorBarWidth;
-    for (var y = 0; y < geometry.height; y++) {
+    final thumbStart = geometry.y - fullPageIndicatorY;
+    final thumbEnd = thumbStart + geometry.height;
+    for (var y = thumbStart; y < thumbEnd; y++) {
       final rowStart = y * fullPageIndicatorWidth;
       pixels.fillRange(
         rowStart + barStart,
@@ -986,7 +987,7 @@ final class G2Protocol {
     }
     return G2Bitmap.build4Bit(
       width: fullPageIndicatorWidth,
-      height: geometry.height,
+      height: fullPageIndicatorHeight,
       grayscale: pixels,
     );
   }

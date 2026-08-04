@@ -269,9 +269,9 @@ The atomic raw transcript creates one G2 FIFO item as `Queued:` without
 waiting for Gemma or the network. The segment ID follows that same item through
 correction and routing, so the corrected result does not create a duplicate
 display entry. Every `Queued:`, `Sending:`, `Sent:`, `Saved:`, and `Received:`
-render rebuilds the full-height 576×288 text page instead of updating the
-compact two-row visualizer slot. Long ordinary statuses therefore use the
-complete vertical viewport and the firmware's full-page scrolling behavior.
+status renders in the full-height 576×288 text page instead of the compact
+two-row visualizer slot. Long ordinary statuses therefore use the complete
+vertical viewport and the firmware's full-page scrolling behavior.
 The live turn reaches STT only after the nominal 1.75-second
 total-silence VAD boundary; speech resuming before that boundary remains in the
 same turn. A single tap while this item is still `Queued:` is consumed before

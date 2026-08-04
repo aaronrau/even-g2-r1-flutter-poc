@@ -42,7 +42,7 @@ The agent history selector uses the Hub rebuild command to replace that compact
 startup/create command is not reused because firmware accepts it only at page
 startup and otherwise retains the existing visualizer geometry. The selector
 uses a borderless container with the same four-pixel inner inset on every
-selector and detail rebuild. Each agent begins as
+selector and detail page. Each agent begins as
 `Agent - content` and flows into at most one continuation row. A fixed 20-pixel
 pointer gutter keeps both rows aligned when selection moves.
 A shared measured-text layout fills up to nine rows. Short entries therefore fit
@@ -66,21 +66,22 @@ pixel-width-wrapped content.
 Swipe down advances, swipe up goes back, and neither boundary wraps. To
 preserve reading position, the final content row of one page repeats as the
 first content row of the next page.
-A separate firmware-valid 20-pixel-wide image container overlays the right
-edge and renders one continuous 4-pixel solid foreground rectangle. Fourteen
-black pixels precede it and a two-pixel black mask follows it, covering the
-native edge artifact so no background track is visible. The detail text keeps
-the full borderless `576x288` firmware viewport. Host wrapping uses the G2
+A separate firmware-valid 20-by-144-pixel image container is centered at the
+right edge. Its position and dimensions remain fixed while paging. Each bitmap
+renders one continuous 4-pixel solid foreground rectangle that moves inside
+that container. Fourteen black pixels precede it and a two-pixel black mask
+follows it, covering the native edge artifact so no background track is
+visible. The detail text keeps the full borderless `576x288` firmware viewport.
+Host wrapping uses the G2
 glyph advances published by
 `@evenrealities/pretext`. A shared 50-unit physical calibration compensates for
 standalone-advance measurement versus firmware kerning and uses roughly five
 more average characters per line. The text container remains 576 pixels wide,
 with 568 pixels inside the stable inset. The thumb stops two pixels before the
-right edge and is the only visible scroll decoration. One-page details omit
-the unnecessary
-indicator because a 288-pixel image would exceed the G2's 144-pixel
-image-container height limit. On multi-page details the rectangle shrinks and
-moves proportionally. Selector pages do not create the image.
+right edge and is the only visible scroll decoration. One-page details omit the
+unnecessary indicator. On multi-page details the rectangle shrinks and moves
+proportionally within the fixed container. Selector pages do not create the
+image.
 
 The native `TextContainerProperty` protocol exposes position, size, border,
 padding, identity, event capture, and content, but no font-size control. The
@@ -89,13 +90,16 @@ the small stable inset, calibrated pixel-width wrapping, adaptive selector
 paging, and the seven-row agent or eight-row Memo detail body. Rasterizing
 smaller text into full-page image quadrants would require hundreds of BLE
 fragments per update and is not used for an interactive menu.
-History rendering is serialized and coalesced by page signature before it
-reaches BLE. While one render is in flight, only the newest pending page is
-retained, so rapid swipes do not wait behind intermediate full-page rebuilds.
-Firmware notifications therefore cannot recursively resend the same page. The
-thumb bitmap waits for the same 300 ms page-settle interval as the proven
-drawing tool. A completed controlled rebuild cancels any stale recovery
-scheduled by the firmware's expected page-replacement lifecycle events. The phone's
+History detail text is wrapped and paginated once per content revision. Render
+writes are serialized and coalesced by page signature before they reach BLE.
+While one render is in flight, only the newest pending page is retained, so
+rapid swipes do not wait behind obsolete intermediate updates. Firmware
+notifications therefore cannot recursively resend the same page. Ordinary
+page turns use a text-container upgrade followed by the fixed-container thumb
+bitmap. Only a structure-changing full-page rebuild waits for the same 300 ms
+page-settle interval as the proven drawing tool. A completed controlled rebuild
+cancels any stale recovery scheduled by the firmware's expected
+page-replacement lifecycle events. The phone's
 `Test detail thumb` action closes an open history selector, sends synthetic
 top, middle, and bottom pages at two-second intervals without private history,
 then restores the Hub page automatically.

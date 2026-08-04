@@ -177,9 +177,9 @@ void main() {
       expect(body[6], G2Protocol.expandedTextBorderColor);
       expect(body[8], G2Protocol.expandedTextPaddingLength);
       expect(indicator[1], G2Protocol.fullPageIndicatorX);
-      expect(indicator[2], geometry.y);
+      expect(indicator[2], G2Protocol.fullPageIndicatorY);
       expect(indicator[3], G2Protocol.fullPageIndicatorWidth);
-      expect(indicator[4], geometry.height);
+      expect(indicator[4], G2Protocol.fullPageIndicatorHeight);
       expect(indicator[5], 10);
       expect(utf8.decode(indicator[6]! as Uint8List), 'img-10');
       expect(
@@ -195,7 +195,10 @@ void main() {
         header.getInt32(18, Endian.little),
         G2Protocol.fullPageIndicatorWidth,
       );
-      expect(header.getInt32(22, Endian.little), geometry.height);
+      expect(
+        header.getInt32(22, Endian.little),
+        G2Protocol.fullPageIndicatorHeight,
+      );
       final packedRowBytes = (G2Protocol.fullPageIndicatorWidth + 1) ~/ 2;
       final paddedRowBytes = (packedRowBytes + 3) & ~3;
       final leadingBlackBytes =
@@ -206,8 +209,11 @@ void main() {
       final barBytes = G2Protocol.fullPageIndicatorBarWidth ~/ 2;
       final trailingBlackBytes =
           G2Protocol.fullPageIndicatorTrailingClearance ~/ 2;
-      for (var row = 0; row < geometry.height; row++) {
+      final thumbStart = geometry.y - G2Protocol.fullPageIndicatorY;
+      final thumbEnd = thumbStart + geometry.height;
+      for (var row = 0; row < G2Protocol.fullPageIndicatorHeight; row++) {
         final offset = 118 + row * paddedRowBytes;
+        final displayRow = G2Protocol.fullPageIndicatorHeight - row - 1;
         expect(
           bitmap.sublist(offset, offset + leadingBlackBytes),
           everyElement(0x00),
@@ -217,7 +223,9 @@ void main() {
             offset + leadingBlackBytes,
             offset + leadingBlackBytes + barBytes,
           ),
-          everyElement(0xff),
+          everyElement(
+            displayRow >= thumbStart && displayRow < thumbEnd ? 0xff : 0x00,
+          ),
         );
         expect(
           bitmap.sublist(
@@ -251,10 +259,45 @@ void main() {
         pageCount: 1,
       );
 
-      expect(top, (y: 0, height: 96));
-      expect(middle, (y: 96, height: 96));
-      expect(bottom, (y: 192, height: 96));
-      expect(single, (y: 0, height: G2Protocol.fullPageIndicatorMaximumHeight));
+      expect(top, (y: 72, height: 48));
+      expect(middle, (y: 120, height: 48));
+      expect(bottom, (y: 168, height: 48));
+      expect(single, (
+        y: G2Protocol.fullPageIndicatorY,
+        height: G2Protocol.fullPageIndicatorHeight,
+      ));
+    });
+
+    test('keeps the image container fixed while the thumb moves', () {
+      final protocol = G2Protocol();
+      final containers = <Map<int, Object>>[];
+      for (final pageIndex in <int>[0, 1, 2]) {
+        final rebuild = protocol.rebuildTextPage(
+          'synthetic page $pageIndex',
+          showPageIndicator: true,
+          pageIndex: pageIndex,
+          pageCount: 3,
+        );
+        final outer = ProtoReader(rebuild).readFields();
+        final page = ProtoReader(outer[7]! as Uint8List).readFields();
+        containers.add(ProtoReader(page[4]! as Uint8List).readFields());
+      }
+
+      expect(
+        containers.map((container) => container[2]),
+        everyElement(G2Protocol.fullPageIndicatorY),
+      );
+      expect(
+        containers.map((container) => container[4]),
+        everyElement(G2Protocol.fullPageIndicatorHeight),
+      );
+      expect(<int>[
+        for (var pageIndex = 0; pageIndex < 3; pageIndex++)
+          G2Protocol.detailPageIndicatorGeometry(
+            pageIndex: pageIndex,
+            pageCount: 3,
+          ).y,
+      ], orderedEquals(<int>[72, 120, 168]));
     });
 
     test('keeps every multi-page thumb inside G2 image limits', () {
@@ -266,13 +309,22 @@ void main() {
           );
           expect(
             geometry.height,
-            inInclusiveRange(20, 144),
+            inInclusiveRange(
+              G2Protocol.fullPageIndicatorMinimumThumbHeight,
+              G2Protocol.fullPageIndicatorHeight,
+            ),
+            reason: 'page ${pageIndex + 1}/$pageCount',
+          );
+          expect(
+            geometry.y,
+            greaterThanOrEqualTo(G2Protocol.fullPageIndicatorY),
             reason: 'page ${pageIndex + 1}/$pageCount',
           );
           expect(
             geometry.y + geometry.height,
             lessThanOrEqualTo(
-              G2Protocol.fullPageTextHeight - G2Protocol.fullPageIndicatorInset,
+              G2Protocol.fullPageIndicatorY +
+                  G2Protocol.fullPageIndicatorHeight,
             ),
             reason: 'page ${pageIndex + 1}/$pageCount',
           );

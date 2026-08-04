@@ -613,6 +613,11 @@ final class G2Connection {
     _visibleGestureTimer?.cancel();
     _visibleGestureTimer = null;
     _visibleGesturePageLabel = null;
+    final wasFullPageTextActive = _fullPageTextActive;
+    final previousIndicatorActive = _fullPageTextIndicatorActive;
+    final previousBorderWidth = _fullPageTextBorderWidth;
+    final previousBorderColor = _fullPageTextBorderColor;
+    final previousPaddingLength = _fullPageTextPaddingLength;
     _fullPageTextPageCount = pageCount < 1 ? 1 : pageCount;
     _fullPageTextPageIndex = pageIndex.clamp(0, _fullPageTextPageCount - 1);
     _fullPageTextBorderWidth = borderWidth.clamp(0, 32);
@@ -622,14 +627,34 @@ final class G2Connection {
     // exceed the G2 image-container maximum height of 144 px.
     _fullPageTextIndicatorActive =
         showPageIndicator && _fullPageTextPageCount > 1;
-    if (!_fullPageTextActive || !_pageCreated) {
+    final canUpgradeInPlace =
+        wasFullPageTextActive &&
+        _pageCreated &&
+        previousIndicatorActive == _fullPageTextIndicatorActive &&
+        previousBorderWidth == _fullPageTextBorderWidth &&
+        previousBorderColor == _fullPageTextBorderColor &&
+        previousPaddingLength == _fullPageTextPaddingLength;
+    if (!wasFullPageTextActive || !_pageCreated) {
       _fullPageTextActive = true;
       await _createFullPageText(content);
+    } else if (canUpgradeInPlace) {
+      // Detail pages are pre-paginated on the phone. Keep the page and its
+      // event-capture/image containers stable, then upgrade only the bounded
+      // text and thumb bitmap. Rebuilding here can race the firmware's page
+      // lifecycle during a physical swipe and drop the G2 link.
+      await _sendPayload(
+        G2Ids.serviceEvenHub,
+        _protocol.updateText(content),
+        reserveFlag: true,
+        priority: AsyncWritePriority.high,
+      );
+      _lastPageContent = content;
+      if (await _sendFullPageTextIndicator(settleAfterRebuild: false)) {
+        _finishControlledPageRebuild('full-page text upgraded');
+      }
     } else {
-      // A TextEvent swipe also changes the G2 firmware's native text viewport.
-      // A command-5 content update preserves that offset, so a logically new
-      // Memo/agent page can remain outside the visible viewport. Rebuild the
-      // full-height surface to reset it to the top and restore evt-0 capture.
+      // Rebuild only when the page structure changes, such as adding or
+      // removing the detail-thumb image container.
       await _sendPayload(
         G2Ids.serviceEvenHub,
         _protocol.rebuildTextPage(
@@ -645,7 +670,7 @@ final class G2Connection {
         priority: AsyncWritePriority.high,
       );
       _lastPageContent = content;
-      if (await _sendFullPageTextIndicator()) {
+      if (await _sendFullPageTextIndicator(settleAfterRebuild: true)) {
         _finishControlledPageRebuild('full-page text updated');
       }
     }
@@ -710,12 +735,14 @@ final class G2Connection {
       priority: AsyncWritePriority.high,
     );
     _lastPageContent = content;
-    if (await _sendFullPageTextIndicator()) {
+    if (await _sendFullPageTextIndicator(settleAfterRebuild: true)) {
       _finishControlledPageRebuild('full-page text created');
     }
   }
 
-  Future<bool> _sendFullPageTextIndicator() async {
+  Future<bool> _sendFullPageTextIndicator({
+    required bool settleAfterRebuild,
+  }) async {
     if (!_fullPageTextIndicatorActive) {
       return isConnected && _fullPageTextActive;
     }
@@ -724,7 +751,9 @@ final class G2Connection {
     // A full-page rebuild can emit abnormal_exit/system_exit while firmware
     // replaces its prior container. Give that transition the same settle time
     // as the proven drawing path before uploading the separate thumb bitmap.
-    await Future<void>.delayed(const Duration(milliseconds: 300));
+    if (settleAfterRebuild) {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
     if (!isConnected ||
         !_fullPageTextActive ||
         !_fullPageTextIndicatorActive ||
@@ -750,7 +779,9 @@ final class G2Connection {
     _log(
       'G2 TX',
       'Detail page thumb sent (${pageIndex + 1}/$pageCount; '
-          'y=${geometry.y}; height=${geometry.height})',
+          'thumb_y=${geometry.y}; thumb_height=${geometry.height}; '
+          'container_y=${G2Protocol.fullPageIndicatorY}; '
+          'container_height=${G2Protocol.fullPageIndicatorHeight})',
     );
     return true;
   }

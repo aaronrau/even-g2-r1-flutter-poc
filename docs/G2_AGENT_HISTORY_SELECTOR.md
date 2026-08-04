@@ -159,22 +159,23 @@ history body. Explicit LF, CRLF, and CR line breaks in saved Memo or message
 text remain hard line breaks; blank paragraph separators remain blank display
 rows. Only horizontal spacing is normalized before long lines are wrapped.
 
-Each logical page change rebuilds the full-height text surface instead of only
-updating its content. Current G2 firmware preserves the native text viewport
-after the swipe that generated the app event; rebuilding resets that viewport
-to the top and re-registers the invisible gesture-capture container. This keeps
-Memo and agent detail paging visibly synchronized with app state.
+Detail bodies are wrapped and paginated once per content revision, then reused
+while the wearer scrolls. A logical page turn keeps the current EvenHub page,
+gesture-capture container, and image container alive and serially upgrades only
+the bounded text and thumb bitmap. A full-page rebuild is reserved for a real
+structure change, such as entering or leaving multi-page detail mode. This
+avoids racing the firmware page lifecycle on every physical swipe.
 
-Multi-page detail mode adds one firmware-valid 20-pixel-wide image container at
-the right edge. Four pixels form one continuous solid rectangle, with 14 black
-pixels before it and a two-pixel black mask after it. The black pixels blend
-into the display and cover the firmware edge artifact, so only the thumb is
-visible. The thumb shrinks and moves from top to bottom in proportion to the
-current host page. A one-page detail does not need an indicator and therefore
-does not create the otherwise over-height image. The image overlays the edge
-of the full 576-pixel text surface. Its black mask ends at the right display
-edge while the visible thumb stops two pixels before it. There is no outline or
-background track.
+Multi-page detail mode adds one firmware-valid 20-by-144-pixel image container
+centered at the right edge. The container never moves or changes size while
+paging. Inside its bitmap, four pixels form one continuous solid rectangle,
+with 14 black pixels before it and a two-pixel black mask after it. The black
+pixels blend into the display and cover the firmware edge artifact, so only the
+proportional thumb is visible as it moves through the fixed container. A
+one-page detail does not need an indicator and therefore does not create the
+image container. The image overlays the edge of the full 576-pixel text
+surface. Its black mask ends at the right display edge while the visible thumb
+stops two pixels before it. There is no outline or background track.
 Selector pages do not create the image container.
 
 ### Empty Memo or agent row
@@ -548,8 +549,8 @@ gesture-controlled ownership.
   changing selector geometry;
 - duplicate notifications and state callbacks coalesce to one page render and
   one thumb upload while that signature is queued, active, or already shown;
-- rapid swipes retain only the latest pending page while one BLE rebuild is
-  active, instead of replaying every intermediate page;
+- rapid swipes retain only the latest pending page while one serialized BLE
+  text/thumb update is active, instead of replaying every intermediate page;
 - dismiss clears private text before restoring the pulse;
 - BLE timeout cannot stall later selector writes;
 - disconnect/reconnect rerenders no more than one bounded private page.

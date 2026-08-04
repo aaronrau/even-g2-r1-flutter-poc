@@ -11,7 +11,7 @@ void main() {
     expect(layout.measurementSafetyPixels, 18);
     expect(layout.wrappingWidthPixels, 600);
     expect(layout.maximumVisibleRows, 9);
-    expect(layout.maximumPageCharacters, 2048);
+    expect(layout.maximumPageCharacters, 2000);
   });
 
   test('selector text is limited to two measured rows', () {
